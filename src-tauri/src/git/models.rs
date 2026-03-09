@@ -53,6 +53,29 @@ pub struct CommitSummary {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CommitGraphRow {
+    pub hash: String,
+    pub short_hash: String,
+    pub parent_hashes: Vec<String>,
+    pub author_name: String,
+    pub authored_at: String,
+    pub subject: String,
+    pub decorations: String,
+    pub lane: usize,
+    pub active_lanes: Vec<usize>,
+    pub merge_commit: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitGraphPage {
+    pub rows: Vec<CommitGraphRow>,
+    pub has_more: bool,
+    pub next_skip: usize,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub relative_path: String,
     pub file_name: String,

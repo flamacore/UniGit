@@ -10,15 +10,17 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
-  CommitSummary,
+  CommitGraphPage,
+  CommitGraphRow,
   FileChange,
   FilePreview,
   RepositorySnapshot,
   createCommit,
   inspectFilePreview,
   inspectRepository,
-  listCommitHistory,
+  listCommitGraph,
   stageFiles,
   unstageFiles,
 } from "../features/repositories/api";
@@ -78,6 +80,26 @@ const formatUnixTimestamp = (timestamp: number | null) => {
 
 const hasDiffContent = (preview: FilePreview | null) => {
   return Boolean(preview?.stagedDiff || preview?.unstagedDiff);
+};
+
+const getDiffLineClassName = (line: string) => {
+  if (line.startsWith("+++") || line.startsWith("---")) {
+    return "diff-line diff-line--file";
+  }
+
+  if (line.startsWith("@@")) {
+    return "diff-line diff-line--hunk";
+  }
+
+  if (line.startsWith("+")) {
+    return "diff-line diff-line--added";
+  }
+
+  if (line.startsWith("-")) {
+    return "diff-line diff-line--removed";
+  }
+
+  return "diff-line";
 };
 
 type ChangeSortKey = "name" | "folder" | "extension" | "status";
@@ -318,7 +340,10 @@ export function App() {
   } = useRepositoryStore();
 
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null);
-  const [history, setHistory] = useState<CommitSummary[]>([]);
+  const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
+  const [graphNextSkip, setGraphNextSkip] = useState(0);
+  const [graphHasMore, setGraphHasMore] = useState(false);
+  const [graphLoading, setGraphLoading] = useState(false);
   const [historyFilter, setHistoryFilter] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
@@ -334,24 +359,41 @@ export function App() {
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
+  const applyGraphPage = useCallback((page: CommitGraphPage, mode: "replace" | "append") => {
+    setCommitGraph((currentRows) => {
+      if (mode === "replace") {
+        return page.rows;
+      }
+
+      const seen = new Set(currentRows.map((row) => row.hash));
+      const appended = page.rows.filter((row) => !seen.has(row.hash));
+      return [...currentRows, ...appended];
+    });
+    setGraphHasMore(page.hasMore);
+    setGraphNextSkip(page.nextSkip);
+  }, []);
+
   const refreshRepository = useCallback(async () => {
     if (!selectedRepository) {
       setSnapshot(null);
-      setHistory([]);
+      setCommitGraph([]);
+      setGraphHasMore(false);
+      setGraphNextSkip(0);
       return;
     }
 
     setLoading(true);
+    setGraphLoading(true);
     setError(null);
 
     try {
-      const [nextSnapshot, nextHistory] = await Promise.all([
+      const [nextSnapshot, nextGraph] = await Promise.all([
         inspectRepository(selectedRepository),
-        listCommitHistory(selectedRepository),
+        listCommitGraph(selectedRepository, 260, 0),
       ]);
 
       setSnapshot(nextSnapshot);
-      setHistory(nextHistory);
+      applyGraphPage(nextGraph, "replace");
 
       if (selectedChangePath) {
         const stillExists = nextSnapshot.files.some(
@@ -366,11 +408,31 @@ export function App() {
         reason instanceof Error ? reason.message : "Failed to read repository.";
       setError(message);
       setSnapshot(null);
-      setHistory([]);
+      setCommitGraph([]);
+      setGraphHasMore(false);
+      setGraphNextSkip(0);
     } finally {
       setLoading(false);
+      setGraphLoading(false);
     }
-  }, [selectedChangePath, selectedRepository]);
+  }, [applyGraphPage, selectedChangePath, selectedRepository]);
+
+  const loadMoreGraph = useCallback(async () => {
+    if (!selectedRepository || graphLoading || !graphHasMore) {
+      return;
+    }
+
+    setGraphLoading(true);
+
+    try {
+      const nextPage = await listCommitGraph(selectedRepository, 260, graphNextSkip);
+      applyGraphPage(nextPage, "append");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Graph loading failed.");
+    } finally {
+      setGraphLoading(false);
+    }
+  }, [applyGraphPage, graphHasMore, graphLoading, graphNextSkip, selectedRepository]);
 
   useEffect(() => {
     if (!selectedRepository || !selectedChangePath) {
@@ -531,12 +593,12 @@ export function App() {
 
   const filteredHistory = useMemo(() => {
     if (!historyFilter.trim()) {
-      return history;
+      return commitGraph;
     }
 
     const query = historyFilter.trim().toLowerCase();
 
-    return history.filter((commit) => {
+    return commitGraph.filter((commit) => {
       return [
         commit.subject,
         commit.authorName,
@@ -545,7 +607,7 @@ export function App() {
         commit.decorations,
       ].some((value) => value.toLowerCase().includes(query));
     });
-  }, [history, historyFilter]);
+  }, [commitGraph, historyFilter]);
 
   const branchLabel = snapshot?.detachedHead
     ? `Detached at ${snapshot.currentBranch}`
@@ -732,163 +794,151 @@ export function App() {
             </div>
           </div>
 
-          <div className="inspector-column">
-            <section className="panel inspector">
-              <div className="board__header">
-                <div>
-                  <p className="eyebrow">Selection</p>
-                  <h3 className="title-truncate" title={selectedChange?.path ?? undefined}>{selectedChange?.path ?? "Nothing selected"}</h3>
-                </div>
+          <CommitGraphCanvas
+            rows={filteredHistory}
+            filter={historyFilter}
+            onFilterChange={setHistoryFilter}
+            onLoadMore={() => void loadMoreGraph()}
+            hasMore={graphHasMore}
+            loading={graphLoading}
+          />
+
+          <section className="panel inspector inspector--long">
+            <div className="board__header">
+              <div>
+                <p className="eyebrow">Selection</p>
+                <h3 className="title-truncate" title={selectedChange?.path ?? undefined}>
+                  {selectedChange?.path ?? "Nothing selected"}
+                </h3>
               </div>
-              {selectedChange ? (
-                <div className="selection-card panel-scroll">
-                  <span className={clsx("pill", `pill--${getStatusTone(selectedChange)}`)}>
-                    {selectedChange.displayStatus}
-                  </span>
-                  <dl>
-                    <div>
-                      <dt>Index</dt>
-                      <dd>{selectedChange.indexStatus || "clean"}</dd>
-                    </div>
-                    <div>
-                      <dt>Working tree</dt>
-                      <dd>{selectedChange.worktreeStatus || "clean"}</dd>
-                    </div>
-                    <div>
-                      <dt>Status</dt>
-                      <dd>{previewLoading ? "Loading" : preview?.supportHint ?? "Not loaded"}</dd>
-                    </div>
-                  </dl>
+            </div>
+            {selectedChange ? (
+              <div className="selection-card panel-scroll">
+                <span className={clsx("pill", `pill--${getStatusTone(selectedChange)}`)}>
+                  {selectedChange.displayStatus}
+                </span>
+                <dl>
+                  <div>
+                    <dt>Index</dt>
+                    <dd>{selectedChange.indexStatus || "clean"}</dd>
+                  </div>
+                  <div>
+                    <dt>Working tree</dt>
+                    <dd>{selectedChange.worktreeStatus || "clean"}</dd>
+                  </div>
+                  <div>
+                    <dt>Status</dt>
+                    <dd>{previewLoading ? "Loading" : preview?.supportHint ?? "Not loaded"}</dd>
+                  </div>
+                </dl>
 
-                  <div className="preview-panel">
-                    <div className="preview-panel__header">
-                      <strong>{previewHeading}</strong>
-                      {preview ? (
-                        <span className="preview-panel__meta">{formatFileSize(preview.fileSizeBytes)}</span>
-                      ) : null}
-                    </div>
-
-                    {previewLoading ? <p className="muted">Loading preview...</p> : null}
-                    {previewError ? <p className="muted">{previewError}</p> : null}
-
-                    {!previewLoading && !previewError && preview?.previewKind === "image" && preview.imageDataUrl ? (
-                      <div className="preview-frame">
-                        <img className="preview-image" src={preview.imageDataUrl} alt={preview.relativePath} />
-                      </div>
-                    ) : null}
-
-                    {!previewLoading && !previewError && preview?.previewKind === "text" ? (
-                      <div className="preview-frame preview-frame--code">
-                        <pre className="preview-code">{preview.textExcerpt}</pre>
-                      </div>
-                    ) : null}
-
-                    {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" ? (
-                      <div className="preview-frame preview-frame--placeholder">
-                        <p>{preview.supportHint}</p>
-                      </div>
-                    ) : null}
-
-                    {!previewLoading && !previewError && hasDiffContent(preview) ? (
-                      <div className="diff-stack">
-                        <div className="preview-panel__header">
-                          <strong>Exact changes</strong>
-                          <span className="preview-panel__meta">Git diff</span>
-                        </div>
-
-                        {preview?.unstagedDiff ? (
-                          <div className="diff-card">
-                            <div className="diff-card__header">
-                              <span className="pill pill--mixed">Unstaged diff</span>
-                            </div>
-                            <pre className="diff-code">{preview.unstagedDiff}</pre>
-                          </div>
-                        ) : null}
-
-                        {preview?.stagedDiff ? (
-                          <div className="diff-card">
-                            <div className="diff-card__header">
-                              <span className="pill pill--success">Staged diff</span>
-                            </div>
-                            <pre className="diff-code">{preview.stagedDiff}</pre>
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    {!previewLoading && !previewError && preview?.assetSummary ? (
-                      <div className="asset-summary">
-                        <div className="preview-panel__header">
-                          <strong>{preview.assetSummary.assetKind}</strong>
-                          <span className="preview-panel__meta">{preview.assetSummary.pipelineState}</span>
-                        </div>
-                        <dl className="preview-details">
-                          {preview.assetSummary.details.map((detail) => (
-                            <div key={`${detail.label}-${detail.value}`}>
-                              <dt>{detail.label}</dt>
-                              <dd>{detail.value}</dd>
-                            </div>
-                          ))}
-                        </dl>
-                      </div>
-                    ) : null}
-
+                <div className="preview-panel">
+                  <div className="preview-panel__header">
+                    <strong>{previewHeading}</strong>
                     {preview ? (
-                      <dl className="preview-details">
-                        <div>
-                          <dt>Type</dt>
-                          <dd>{preview.mimeType}</dd>
-                        </div>
-                        <div>
-                          <dt>Extension</dt>
-                          <dd>{preview.extension || "none"}</dd>
-                        </div>
-                        <div>
-                          <dt>Modified</dt>
-                          <dd>{formatUnixTimestamp(preview.modifiedAt)}</dd>
-                        </div>
-                      </dl>
+                      <span className="preview-panel__meta">{formatFileSize(preview.fileSizeBytes)}</span>
                     ) : null}
                   </div>
-                </div>
-              ) : (
-                <p className="muted">Pick a file to inspect its current Git state.</p>
-              )}
-            </section>
 
-            <section className="panel history-panel">
-              <div className="board__header">
-                <div>
-                  <p className="eyebrow">History</p>
-                  <h3>History</h3>
-                </div>
-                <input
-                  className="history-filter"
-                  placeholder="Filter history"
-                  value={historyFilter}
-                  onChange={(event) => setHistoryFilter(event.target.value)}
-                />
-              </div>
+                  {previewLoading ? <p className="muted">Loading preview...</p> : null}
+                  {previewError ? <p className="muted">{previewError}</p> : null}
 
-              <div className="history-list panel-scroll">
-                {filteredHistory.map((commit) => (
-                  <article key={commit.hash} className="history-card">
-                    <div className="history-card__top">
-                      <strong>{commit.subject}</strong>
-                      <span>{commit.shortHash}</span>
+                  {!previewLoading && !previewError && hasDiffContent(preview) ? (
+                    <div className="diff-stack">
+                      <div className="preview-panel__header">
+                        <strong>Exact changes</strong>
+                        <span className="preview-panel__meta">Git diff</span>
+                      </div>
+
+                      {preview?.unstagedDiff ? (
+                        <div className="diff-card">
+                          <div className="diff-card__header">
+                            <span className="pill pill--mixed">Unstaged diff</span>
+                          </div>
+                          <pre className="diff-code">
+                            {preview.unstagedDiff.split("\n").map((line, index) => (
+                              <div key={`unstaged-${index}`} className={getDiffLineClassName(line)}>
+                                {line || " "}
+                              </div>
+                            ))}
+                          </pre>
+                        </div>
+                      ) : null}
+
+                      {preview?.stagedDiff ? (
+                        <div className="diff-card">
+                          <div className="diff-card__header">
+                            <span className="pill pill--success">Staged diff</span>
+                          </div>
+                          <pre className="diff-code">
+                            {preview.stagedDiff.split("\n").map((line, index) => (
+                              <div key={`staged-${index}`} className={getDiffLineClassName(line)}>
+                                {line || " "}
+                              </div>
+                            ))}
+                          </pre>
+                        </div>
+                      ) : null}
                     </div>
-                    <div className="history-card__meta">
-                      <span>{commit.authorName}</span>
-                      <span>{formatRelativeTime(commit.authoredAt)}</span>
+                  ) : null}
+
+                  {!previewLoading && !previewError && preview?.previewKind === "image" && preview.imageDataUrl ? (
+                    <div className="preview-frame">
+                      <img className="preview-image" src={preview.imageDataUrl} alt={preview.relativePath} />
                     </div>
-                    {commit.decorations ? (
-                      <div className="history-card__refs">{commit.decorations}</div>
-                    ) : null}
-                  </article>
-                ))}
+                  ) : null}
+
+                  {!previewLoading && !previewError && preview?.previewKind === "text" ? (
+                    <div className="preview-frame preview-frame--code">
+                      <pre className="preview-code">{preview.textExcerpt}</pre>
+                    </div>
+                  ) : null}
+
+                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" ? (
+                    <div className="preview-frame preview-frame--placeholder">
+                      <p>{preview.supportHint}</p>
+                    </div>
+                  ) : null}
+
+                  {!previewLoading && !previewError && preview?.assetSummary ? (
+                    <div className="asset-summary">
+                      <div className="preview-panel__header">
+                        <strong>{preview.assetSummary.assetKind}</strong>
+                        <span className="preview-panel__meta">{preview.assetSummary.pipelineState}</span>
+                      </div>
+                      <dl className="preview-details">
+                        {preview.assetSummary.details.map((detail) => (
+                          <div key={`${detail.label}-${detail.value}`}>
+                            <dt>{detail.label}</dt>
+                            <dd>{detail.value}</dd>
+                          </div>
+                        ))}
+                      </dl>
+                    </div>
+                  ) : null}
+
+                  {preview ? (
+                    <dl className="preview-details">
+                      <div>
+                        <dt>Type</dt>
+                        <dd>{preview.mimeType}</dd>
+                      </div>
+                      <div>
+                        <dt>Extension</dt>
+                        <dd>{preview.extension || "none"}</dd>
+                      </div>
+                      <div>
+                        <dt>Modified</dt>
+                        <dd>{formatUnixTimestamp(preview.modifiedAt)}</dd>
+                      </div>
+                    </dl>
+                  ) : null}
+                </div>
               </div>
-            </section>
-          </div>
+            ) : (
+              <p className="muted">Pick a file to inspect its current Git state.</p>
+            )}
+          </section>
         </section>
       </main>
     </div>

@@ -43,6 +43,19 @@ export type CommitSummary = {
   decorations: string;
 };
 
+export type CommitGraphRow = CommitSummary & {
+  parentHashes: string[];
+  lane: number;
+  activeLanes: number[];
+  mergeCommit: boolean;
+};
+
+export type CommitGraphPage = {
+  rows: CommitGraphRow[];
+  hasMore: boolean;
+  nextSkip: number;
+};
+
 export type FilePreview = {
   relativePath: string;
   fileName: string;
@@ -76,6 +89,10 @@ export const inspectRepository = (repoPath: string) => {
 
 export const listCommitHistory = (repoPath: string, limit = 40) => {
   return invoke<CommitSummary[]>("list_commit_history", { repoPath, limit });
+};
+
+export const listCommitGraph = (repoPath: string, limit = 240, skip = 0) => {
+  return invoke<CommitGraphPage>("list_commit_graph", { repoPath, limit, skip });
 };
 
 export const stageFiles = (repoPath: string, paths: string[]) => {

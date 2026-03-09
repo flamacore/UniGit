@@ -7,8 +7,8 @@ use thiserror::Error;
 use tokio::process::Command;
 
 use super::models::{
-    AssetDetail, AssetSummary, CommitSummary, FileChange, FilePreview, RepositoryCounts,
-    RepositorySnapshot,
+    AssetDetail, AssetSummary, CommitGraphPage, CommitGraphRow, CommitSummary, FileChange,
+    FilePreview, RepositoryCounts, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -46,6 +46,13 @@ pub async fn inspect_file_preview(repo_path: String, relative_path: String) -> R
 #[command]
 pub async fn list_commit_history(repo_path: String, limit: usize) -> Result<Vec<CommitSummary>, String> {
     list_commit_history_inner(repo_path, limit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn list_commit_graph(repo_path: String, limit: usize, skip: usize) -> Result<CommitGraphPage, String> {
+    list_commit_graph_inner(repo_path, limit, skip)
         .await
         .map_err(|error| error.to_string())
 }
@@ -141,6 +148,127 @@ async fn list_commit_history_inner(repo_path: String, limit: usize) -> GitResult
         .collect();
 
     Ok(commits)
+}
+
+async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -> GitResult<CommitGraphPage> {
+    let path = validate_repository_path(&repo_path)?;
+    let page_limit = limit.clamp(40, 2_000);
+    let format = "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s%x1f%D";
+    let log_output = run_git(
+        path,
+        [
+            "log",
+            "--topo-order",
+            &format!("--max-count={}", page_limit + 1),
+            &format!("--skip={skip}"),
+            "--date=iso-strict",
+            &format!("--pretty=format:{format}"),
+        ],
+    )
+    .await?;
+
+    let mut parsed_rows = Vec::new();
+
+    for line in log_output.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.split('\u{1f}');
+        let hash = match parts.next() {
+            Some(value) => value.to_string(),
+            None => continue,
+        };
+
+        let short_hash = parts.next().unwrap_or_default().to_string();
+        let parent_hashes = parts
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let author_name = parts.next().unwrap_or_default().to_string();
+        let authored_at = parts.next().unwrap_or_default().to_string();
+        let subject = parts.next().unwrap_or_default().to_string();
+        let decorations = parts.next().unwrap_or_default().to_string();
+
+        parsed_rows.push((
+            hash,
+            short_hash,
+            parent_hashes,
+            author_name,
+            authored_at,
+            subject,
+            decorations,
+        ));
+    }
+
+    let has_more = parsed_rows.len() > page_limit;
+
+    if has_more {
+        parsed_rows.truncate(page_limit);
+    }
+
+    let mut active_lanes: Vec<Option<String>> = Vec::new();
+    let mut rows = Vec::with_capacity(parsed_rows.len());
+
+    for (hash, short_hash, parent_hashes, author_name, authored_at, subject, decorations) in parsed_rows {
+        let lane = if let Some(index) = active_lanes
+            .iter()
+            .position(|entry| entry.as_deref() == Some(hash.as_str()))
+        {
+            index
+        } else if let Some(index) = active_lanes.iter().position(Option::is_none) {
+            active_lanes[index] = Some(hash.clone());
+            index
+        } else {
+            active_lanes.push(Some(hash.clone()));
+            active_lanes.len() - 1
+        };
+
+        let active_lane_set = active_lanes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| value.as_ref().map(|_| index))
+            .collect::<Vec<_>>();
+
+        if let Some(first_parent) = parent_hashes.first() {
+            active_lanes[lane] = Some(first_parent.clone());
+        } else {
+            active_lanes[lane] = None;
+        }
+
+        for parent in parent_hashes.iter().skip(1) {
+            if active_lanes.iter().any(|entry| entry.as_deref() == Some(parent.as_str())) {
+                continue;
+            }
+
+            if let Some(index) = active_lanes.iter().position(Option::is_none) {
+                active_lanes[index] = Some(parent.clone());
+            } else {
+                active_lanes.push(Some(parent.clone()));
+            }
+        }
+
+        while active_lanes.last().is_some_and(Option::is_none) {
+            active_lanes.pop();
+        }
+
+        rows.push(CommitGraphRow {
+            hash,
+            short_hash,
+            parent_hashes: parent_hashes.clone(),
+            author_name,
+            authored_at,
+            subject,
+            decorations,
+            lane,
+            active_lanes: active_lane_set,
+            merge_commit: parent_hashes.len() > 1,
+        });
+    }
+
+    Ok(CommitGraphPage {
+        next_skip: skip + rows.len(),
+        has_more,
+        rows,
+    })
 }
 
 async fn inspect_file_preview_inner(repo_path: String, relative_path: String) -> GitResult<FilePreview> {

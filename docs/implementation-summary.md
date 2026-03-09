@@ -1,0 +1,187 @@
+# UniGit Implementation Summary
+
+## Purpose
+
+This file is the durable running summary of what has already been built, what decisions were made, what phase the project is currently in, and where the next work should continue after context compaction.
+
+## Current phase
+
+The project is currently in active Phase 2 with early Phase 3 preview work already underway.
+
+- Phase 1 foundation is effectively in place.
+- Phase 2 now has a first real graph foundation: paged commit-graph data, lane metadata, and a canvas-driven graph viewport.
+- Phase 3 remains active through the preview and inspection pipeline foundation.
+
+## Stack and architecture
+
+- Desktop shell: Tauri 2
+- Frontend: React + TypeScript + Vite
+- Backend: Rust
+- Git integration strategy: Git CLI orchestration from Rust, not libgit2 yet
+- Packaging target: Windows-first native desktop app
+- UX stance: minimal modal friction, direct actions, inline consequences where possible
+
+## What exists now
+
+### Application shell
+
+- Tauri desktop shell is configured and builds successfully.
+- React frontend is structured around a compact top chrome instead of a persistent left sidebar.
+- Repository switching happens through top tabs.
+- The app uses a viewport-contained layout with internal pane scrolling.
+- Large-screen scaling for 4K-class displays is already handled.
+
+### Repository management
+
+- Local repositories can be added from a folder picker.
+- Repositories are persisted locally in browser storage on the frontend side.
+- Repositories can be selected and removed from the tab strip.
+
+### Git backend
+
+- Repository inspection command exists in Rust.
+- Commit history listing exists in Rust.
+- Commit graph paging exists and now returns lane-aware graph rows in pages instead of a single small list.
+- Stage files command exists.
+- Unstage files command exists.
+- Commit command exists.
+- All of these are invoked from the frontend through Tauri commands.
+
+### Working tree UI
+
+- Two-lane changes view exists: unstaged and staged.
+- Drag-and-drop between lanes exists.
+- One-click stage and unstage buttons exist.
+- Commit box exists.
+- Files changed after staging are detected and surfaced in status logic.
+
+### Change list behavior
+
+- Change rows now use a left-side colored marker instead of plain text status labels.
+- Marker semantics currently include changed, changed-after-staging, removed, moved or renamed, added or untracked, and conflict.
+- File entries no longer rely on hard truncation alone.
+- Paths can wrap responsively when shown.
+- There are controls to filter the list.
+- There are controls to show or hide paths.
+- There are controls to sort by name, folder, extension, or status.
+- Sort direction can be toggled.
+- `.meta` files are treated specially.
+- If a file and its `.meta` partner both exist in the same lane, the `.meta` file is always listed directly under the source file regardless of sorting or filtering.
+- `.meta` entries are rendered with reduced visual emphasis.
+
+### Selection inspector and preview foundation
+
+- The selection inspector loads metadata for the selected file.
+- Inline text preview exists.
+- Inline image preview exists.
+- Exact staged and unstaged Git diffs exist for text-capable files.
+- Diff block now appears before the raw preview block.
+- Diff lines are highlighted with semantic backgrounds:
+  - additions in green
+  - removals in red
+  - hunk headers styled separately
+  - file headers styled separately
+
+### Asset preview foundation
+
+- Preview command returns structured metadata for asset-oriented files.
+- PSD header parsing exists.
+- FBX basic container or version detection exists.
+- GLTF summary parsing exists.
+- GLB container summary parsing exists.
+- Current asset handling is metadata-first; true rendered asset previews are not built yet.
+
+### History UI and graph foundation
+
+- The previous stacked history list has been replaced by a dedicated middle graph viewport.
+- The graph now renders on a real canvas-backed surface instead of using lane markers inside list rows.
+- Commit nodes and lane tracks are colorized per lane.
+- Merge commits are visually distinct from regular commits.
+- Commit cards are virtualized as positioned overlays on top of the graph canvas.
+- The graph viewport supports both horizontal and vertical scrolling.
+- The graph viewport supports fullscreen mode for inspection.
+- The graph fetch path is paged so the UI does not need to request only a tiny fixed slice.
+- The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
+
+## Major UX corrections already made
+
+These were explicitly corrected during iteration:
+
+- Removed bloated number panels for staged, unstaged, and related counts from the main layout.
+- Removed the unnecessary permanent left pane.
+- Reworked the shell to be denser and less amateur-looking.
+- Reduced typography size and excessive spacing.
+- Fixed overflows and broken wrapping in the file list.
+- Changed scrolling model from whole-window scroll to contained internal scrolling.
+- Reordered diff and preview so diff is presented first.
+
+## Files that matter most right now
+
+### Frontend
+
+- `src/app/App.tsx`
+  - Main shell, repo tabs, list controls, lanes, graph panel integration, diff-first inspector ordering
+- `src/app/CommitGraphCanvas.tsx`
+  - Canvas-backed commit graph viewport, row windowing, fullscreen toggle, graph paging integration, and card overlays
+- `src/styles.css`
+  - Entire UI system, density, layout, scrolling behavior, change markers, diff highlighting, graph viewport styling
+- `src/features/repositories/api.ts`
+  - Frontend types and Tauri invoke wrappers
+- `src/features/repositories/store/useRepositoryStore.ts`
+  - Local repo persistence and selection state
+- `src/lib/tauri.ts`
+  - Tauri environment helper
+
+### Backend
+
+- `src-tauri/src/main.rs`
+  - Tauri command registration
+- `src-tauri/src/git/service.rs`
+  - Git CLI orchestration, repository inspection, paged commit graph extraction, commit/stage/unstage, preview data, diff extraction, asset metadata parsing
+- `src-tauri/src/git/models.rs`
+  - Shared Rust-side response models including paged graph responses
+- `src-tauri/Cargo.toml`
+  - Rust dependencies
+- `src-tauri/tauri.conf.json`
+  - Tauri configuration
+
+## Validation status
+
+These commands have been run successfully multiple times:
+
+- `npm run build`
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+
+The app has also been run through Tauri dev during iteration.
+
+## What is not done yet
+
+- Cross-lane merge connector refinement and deeper branch topology rendering
+- Rich history query engine beyond client-side filtering of loaded pages
+- Commit detail inspection from graph selection
+- Branch-scoped graph views, ancestry focus, and path history overlays
+- Rendered PSD preview
+- Embedded GLTF/FBX viewer
+- Local ignore layer
+- Destructive power commands
+- Remote management depth
+- Undo and safety ref system
+- Merge conflict editor
+
+## Recommended next step
+
+Next focus should be the real commit graph phase.
+
+That means:
+
+1. Improve merge connector routing and branch continuity in the graph canvas.
+2. Add commit selection and a commit detail or inspection surface.
+3. Extend backend graph paging to support branch, author, and path-oriented queries.
+4. Add stronger graph navigation for gigantic repositories, including jump, focus, and branch-scoped views.
+
+## Notes for future continuation
+
+- Do not reintroduce metric-card bloat unless it becomes optional and genuinely useful.
+- Preserve `.meta` pairing semantics no matter how list filtering and sorting evolve.
+- Keep diff before preview in the inspector.
+- Keep the UI dense and functional rather than decorative.
