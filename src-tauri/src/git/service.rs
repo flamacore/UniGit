@@ -205,10 +205,16 @@ async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -
         parsed_rows.truncate(page_limit);
     }
 
+    let branch_labels = resolve_branch_labels(path, &parsed_rows).await?;
+
     let mut active_lanes: Vec<Option<String>> = Vec::new();
     let mut rows = Vec::with_capacity(parsed_rows.len());
 
     for (hash, short_hash, parent_hashes, author_name, authored_at, subject, decorations) in parsed_rows {
+        let display_branch = branch_labels
+            .get(&hash)
+            .cloned()
+            .unwrap_or_else(|| branch_label_from_decorations(&decorations));
         let lane = if let Some(index) = active_lanes
             .iter()
             .position(|entry| entry.as_deref() == Some(hash.as_str()))
@@ -254,6 +260,7 @@ async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -
             hash,
             short_hash,
             parent_hashes: parent_hashes.clone(),
+            display_branch,
             author_name,
             authored_at,
             subject,
@@ -269,6 +276,78 @@ async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -
         has_more,
         rows,
     })
+}
+
+fn branch_label_from_decorations(decorations: &str) -> String {
+    for ref_name in decorations
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let cleaned = ref_name
+            .strip_prefix("HEAD -> ")
+            .unwrap_or(ref_name)
+            .trim();
+
+        if cleaned.starts_with("tag: ") {
+            continue;
+        }
+
+        if cleaned == "HEAD" {
+            continue;
+        }
+
+        return cleaned.to_string();
+    }
+
+    "history".to_string()
+}
+
+async fn resolve_branch_labels(
+    repo_root: &Path,
+    parsed_rows: &[(String, String, Vec<String>, String, String, String, String)],
+) -> GitResult<std::collections::HashMap<String, String>> {
+    use std::collections::HashMap;
+
+    if parsed_rows.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut args = vec![
+        "name-rev".to_string(),
+        "--name-only".to_string(),
+        "--refs=refs/heads/*".to_string(),
+    ];
+
+    args.extend(parsed_rows.iter().map(|row| row.0.clone()));
+
+    let output = run_git_owned(repo_root, args).await?;
+    let mut labels = HashMap::new();
+
+    for ((hash, _, _, _, _, _, decorations), raw_label) in parsed_rows.iter().zip(output.lines()) {
+        let label = sanitize_branch_label(raw_label)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| branch_label_from_decorations(decorations));
+        labels.insert(hash.clone(), label);
+    }
+
+    Ok(labels)
+}
+
+fn sanitize_branch_label(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+
+    if trimmed.is_empty() || trimmed == "undefined" {
+        return None;
+    }
+
+    let normalized = trimmed
+        .strip_prefix("remotes/")
+        .unwrap_or(trimmed)
+        .replace("refs/heads/", "")
+        .replace("refs/remotes/", "");
+
+    Some(normalized)
 }
 
 async fn inspect_file_preview_inner(repo_path: String, relative_path: String) -> GitResult<FilePreview> {

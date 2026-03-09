@@ -45,6 +45,7 @@ export type CommitSummary = {
 
 export type CommitGraphRow = CommitSummary & {
   parentHashes: string[];
+  displayBranch: string;
   lane: number;
   activeLanes: number[];
   mergeCommit: boolean;

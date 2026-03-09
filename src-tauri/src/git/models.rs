@@ -57,6 +57,7 @@ pub struct CommitGraphRow {
     pub hash: String,
     pub short_hash: String,
     pub parent_hashes: Vec<String>,
+    pub display_branch: String,
     pub author_name: String,
     pub authored_at: String,
     pub subject: String,

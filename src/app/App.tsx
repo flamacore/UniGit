@@ -4,12 +4,13 @@ import {
   FolderPlus,
   GitBranch,
   GitCommitHorizontal,
+  GripVertical,
   RefreshCw,
   Undo2,
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
   CommitGraphPage,
@@ -358,6 +359,8 @@ export function App() {
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [panelFractions, setPanelFractions] = useState({ left: 0.4, middle: 0.28, right: 0.32 });
+  const contentGridRef = useRef<HTMLElement | null>(null);
 
   const applyGraphPage = useCallback((page: CommitGraphPage, mode: "replace" | "append") => {
     setCommitGraph((currentRows) => {
@@ -617,6 +620,76 @@ export function App() {
     ? `${preview.previewKind[0].toUpperCase()}${preview.previewKind.slice(1)} preview`
     : "Preview";
 
+  const resizePanels = useCallback((separator: "left" | "right", clientX: number) => {
+    const container = contentGridRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const bounds = container.getBoundingClientRect();
+    const totalWidth = bounds.width;
+
+    if (!totalWidth) {
+      return;
+    }
+
+    setPanelFractions((current) => {
+      const leftPx = current.left * totalWidth;
+      const middlePx = current.middle * totalWidth;
+      const rightPx = current.right * totalWidth;
+      const nextX = clientX - bounds.left;
+      const minLeft = 320;
+      const minMiddle = 260;
+      const minRight = 320;
+
+      if (separator === "left") {
+        const clampedLeft = Math.min(
+          Math.max(nextX, minLeft),
+          totalWidth - minMiddle - minRight,
+        );
+        const newMiddle = leftPx + middlePx - clampedLeft;
+
+        return {
+          left: clampedLeft / totalWidth,
+          middle: newMiddle / totalWidth,
+          right: rightPx / totalWidth,
+        };
+      }
+
+      const rightStart = Math.min(
+        Math.max(nextX, minLeft + minMiddle),
+        totalWidth - minRight,
+      );
+      const newMiddle = rightStart - leftPx;
+      const newRight = totalWidth - rightStart;
+
+      return {
+        left: leftPx / totalWidth,
+        middle: newMiddle / totalWidth,
+        right: newRight / totalWidth,
+      };
+    });
+  }, []);
+
+  const startResize = useCallback((separator: "left" | "right") => {
+    const handlePointerMove = (event: PointerEvent) => {
+      resizePanels(separator, event.clientX);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [resizePanels]);
+
+  const gridTemplateColumns = useMemo(() => {
+    return `${panelFractions.left}fr 12px ${panelFractions.middle}fr 12px ${panelFractions.right}fr`;
+  }, [panelFractions]);
+
   return (
     <div className="shell">
       <header className="chrome panel">
@@ -696,7 +769,11 @@ export function App() {
         {error ? <div className="banner banner--error">{error}</div> : null}
         {statusMessage ? <div className="banner">{statusMessage}</div> : null}
 
-        <section className="content-grid">
+        <section
+          ref={contentGridRef}
+          className="content-grid"
+          style={{ gridTemplateColumns }}
+        >
           <div className="board panel">
             <div className="board__header">
               <div>
@@ -794,6 +871,15 @@ export function App() {
             </div>
           </div>
 
+          <div
+            className="panel-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={() => startResize("left")}
+          >
+            <GripVertical size={14} />
+          </div>
+
           <CommitGraphCanvas
             rows={filteredHistory}
             filter={historyFilter}
@@ -802,6 +888,15 @@ export function App() {
             hasMore={graphHasMore}
             loading={graphLoading}
           />
+
+          <div
+            className="panel-resizer"
+            role="separator"
+            aria-orientation="vertical"
+            onPointerDown={() => startResize("right")}
+          >
+            <GripVertical size={14} />
+          </div>
 
           <section className="panel inspector inspector--long">
             <div className="board__header">
