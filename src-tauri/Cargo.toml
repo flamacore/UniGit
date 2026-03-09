@@ -1,0 +1,18 @@
+[package]
+name = "unigit"
+version = "0.1.0"
+description = "A premium desktop Git client for game-development workflows."
+authors = ["GitHub Copilot"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "time"] }
