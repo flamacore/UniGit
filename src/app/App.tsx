@@ -80,9 +80,212 @@ const hasDiffContent = (preview: FilePreview | null) => {
   return Boolean(preview?.stagedDiff || preview?.unstagedDiff);
 };
 
+type ChangeSortKey = "name" | "folder" | "extension" | "status";
+
+type ChangeListOptions = {
+  query: string;
+  showPaths: boolean;
+  sortBy: ChangeSortKey;
+  sortDirection: "asc" | "desc";
+};
+
+type ChangeListItem = {
+  change: FileChange;
+  isMeta: boolean;
+  fileName: string;
+  parentPath: string;
+  marker: {
+    tone: string;
+    label: string;
+  };
+};
+
 const formatRepoLabel = (path: string) => {
   const segments = path.split(/[/\\]/).filter(Boolean);
   return segments[segments.length - 1] ?? path;
+};
+
+const normalizePath = (path: string) => path.replace(/\\/g, "/");
+
+const isMetaFile = (path: string) => normalizePath(path).endsWith(".meta");
+
+const getPairKey = (path: string) => {
+  const normalized = normalizePath(path);
+  return normalized.endsWith(".meta") ? normalized.slice(0, -5) : normalized;
+};
+
+const splitPathForDisplay = (path: string) => {
+  const normalized = normalizePath(path);
+  const segments = normalized.split("/").filter(Boolean);
+
+  if (segments.length <= 1) {
+    return {
+      fileName: normalized,
+      parentPath: "",
+    };
+  }
+
+  return {
+    fileName: segments[segments.length - 1] ?? normalized,
+    parentPath: segments.slice(0, -1).join("/"),
+  };
+};
+
+const getChangeMarker = (change: FileChange) => {
+  if (change.conflicted) {
+    return { tone: "conflict", label: "Conflict" };
+  }
+
+  if (
+    change.indexStatus === "deleted" ||
+    change.worktreeStatus === "deleted"
+  ) {
+    return { tone: "removed", label: "Removed" };
+  }
+
+  if (
+    change.indexStatus === "renamed" ||
+    change.worktreeStatus === "renamed" ||
+    change.indexStatus === "copied" ||
+    change.worktreeStatus === "copied"
+  ) {
+    return { tone: "moved", label: "Moved or renamed" };
+  }
+
+  if (change.stagedModified) {
+    return { tone: "restaged", label: "Changed after staging" };
+  }
+
+  if (change.untracked) {
+    return { tone: "new", label: "Untracked" };
+  }
+
+  if (change.indexStatus === "added" || change.worktreeStatus === "added") {
+    return { tone: "added", label: "Added" };
+  }
+
+  return { tone: "changed", label: "Changed" };
+};
+
+const getSortValue = (change: FileChange, sortBy: ChangeSortKey) => {
+  const normalized = getPairKey(change.path);
+  const parts = splitPathForDisplay(normalized);
+  const marker = getChangeMarker(change);
+
+  switch (sortBy) {
+    case "folder":
+      return parts.parentPath.toLowerCase();
+    case "extension": {
+      const extension = parts.fileName.includes(".")
+        ? parts.fileName.split(".").pop() ?? ""
+        : "";
+      return extension.toLowerCase();
+    }
+    case "status":
+      return marker.tone;
+    case "name":
+    default:
+      return parts.fileName.toLowerCase();
+  }
+};
+
+const matchesChangeQuery = (change: FileChange, query: string) => {
+  if (!query) {
+    return true;
+  }
+
+  const candidate = [
+    change.path,
+    getPairKey(change.path),
+    change.displayStatus,
+    change.indexStatus,
+    change.worktreeStatus,
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  return candidate.includes(query);
+};
+
+const buildChangeList = (
+  files: FileChange[],
+  options: ChangeListOptions,
+): ChangeListItem[] => {
+  const groups = new Map<string, { primary?: FileChange; meta?: FileChange }>();
+
+  for (const change of files) {
+    const key = getPairKey(change.path);
+    const group = groups.get(key) ?? {};
+
+    if (isMetaFile(change.path)) {
+      group.meta = change;
+    } else {
+      group.primary = change;
+    }
+
+    groups.set(key, group);
+  }
+
+  const query = options.query.trim().toLowerCase();
+
+  const orderedGroups = Array.from(groups.entries())
+    .filter(([, group]) => {
+      const primaryMatch = group.primary
+        ? matchesChangeQuery(group.primary, query)
+        : false;
+      const metaMatch = group.meta ? matchesChangeQuery(group.meta, query) : false;
+
+      return primaryMatch || metaMatch;
+    })
+    .sort(([, left], [, right]) => {
+      const leftAnchor = left.primary ?? left.meta;
+      const rightAnchor = right.primary ?? right.meta;
+
+      if (!leftAnchor || !rightAnchor) {
+        return 0;
+      }
+
+      const leftValue = getSortValue(leftAnchor, options.sortBy);
+      const rightValue = getSortValue(rightAnchor, options.sortBy);
+      const baseComparison = leftValue.localeCompare(rightValue);
+
+      if (baseComparison !== 0) {
+        return options.sortDirection === "asc" ? baseComparison : -baseComparison;
+      }
+
+      const leftPath = getPairKey(leftAnchor.path);
+      const rightPath = getPairKey(rightAnchor.path);
+      const tiebreak = leftPath.localeCompare(rightPath);
+      return options.sortDirection === "asc" ? tiebreak : -tiebreak;
+    });
+
+  return orderedGroups.flatMap(([, group]) => {
+    const items: ChangeListItem[] = [];
+
+    if (group.primary) {
+      const parts = splitPathForDisplay(group.primary.path);
+      items.push({
+        change: group.primary,
+        isMeta: false,
+        fileName: parts.fileName,
+        parentPath: parts.parentPath,
+        marker: getChangeMarker(group.primary),
+      });
+    }
+
+    if (group.meta) {
+      const parts = splitPathForDisplay(group.meta.path);
+      items.push({
+        change: group.meta,
+        isMeta: true,
+        fileName: parts.fileName,
+        parentPath: parts.parentPath,
+        marker: getChangeMarker(group.meta),
+      });
+    }
+
+    return items;
+  });
 };
 
 const getStatusTone = (change: FileChange) => {
@@ -126,6 +329,10 @@ export function App() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [changeQuery, setChangeQuery] = useState("");
+  const [showPaths, setShowPaths] = useState(true);
+  const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   const refreshRepository = useCallback(async () => {
     if (!selectedRepository) {
@@ -284,7 +491,7 @@ export function App() {
     }
   }, [commitMessage, refreshRepository, selectedRepository]);
 
-  const unstagedChanges = useMemo(
+  const rawUnstagedChanges = useMemo(
     () =>
       snapshot?.files.filter(
         (file) => file.unstaged || file.untracked || file.conflicted,
@@ -292,9 +499,29 @@ export function App() {
     [snapshot?.files],
   );
 
-  const stagedChanges = useMemo(
+  const rawStagedChanges = useMemo(
     () => snapshot?.files.filter((file) => file.staged) ?? [],
     [snapshot?.files],
+  );
+
+  const changeListOptions = useMemo<ChangeListOptions>(
+    () => ({
+      query: changeQuery,
+      showPaths,
+      sortBy,
+      sortDirection,
+    }),
+    [changeQuery, showPaths, sortBy, sortDirection],
+  );
+
+  const unstagedChanges = useMemo(
+    () => buildChangeList(rawUnstagedChanges, changeListOptions),
+    [changeListOptions, rawUnstagedChanges],
+  );
+
+  const stagedChanges = useMemo(
+    () => buildChangeList(rawStagedChanges, changeListOptions),
+    [changeListOptions, rawStagedChanges],
   );
 
   const selectedChange = useMemo(
@@ -417,6 +644,39 @@ export function App() {
               <p className="board__hint">Drag, click, commit. Nothing extra.</p>
             </div>
 
+            <div className="changes-toolbar">
+              <input
+                className="changes-filter"
+                placeholder="Filter files"
+                value={changeQuery}
+                onChange={(event) => setChangeQuery(event.target.value)}
+              />
+              <select
+                className="changes-select"
+                value={sortBy}
+                onChange={(event) => setSortBy(event.target.value as ChangeSortKey)}
+              >
+                <option value="name">Sort: name</option>
+                <option value="folder">Sort: folder</option>
+                <option value="extension">Sort: extension</option>
+                <option value="status">Sort: status</option>
+              </select>
+              <button
+                className="ghost-button"
+                onClick={() =>
+                  setSortDirection((value) => (value === "asc" ? "desc" : "asc"))
+                }
+              >
+                {sortDirection === "asc" ? "A-Z" : "Z-A"}
+              </button>
+              <button
+                className={clsx("ghost-button", !showPaths && "ghost-button--active")}
+                onClick={() => setShowPaths((value) => !value)}
+              >
+                {showPaths ? "Hide paths" : "Show paths"}
+              </button>
+            </div>
+
             <div className="lanes">
               <DropLane
                 title="Unstaged"
@@ -431,6 +691,7 @@ export function App() {
                     void runFileOperation("unstage", paths);
                   }
                 }}
+                showPaths={showPaths}
                 onSelect={setSelectedChangePath}
                 selectedPath={selectedChangePath}
               />
@@ -447,6 +708,7 @@ export function App() {
                     void runFileOperation("stage", paths);
                   }
                 }}
+                showPaths={showPaths}
                 onSelect={setSelectedChangePath}
                 selectedPath={selectedChangePath}
               />
@@ -636,12 +898,13 @@ export function App() {
 type DropLaneProps = {
   title: string;
   icon: JSX.Element;
-  items: FileChange[];
+  items: ChangeListItem[];
   actionLabel: string;
   dropAction: "stage" | "unstage";
   disabled: boolean;
   onAction: (path: string) => void;
   onDropFiles: (paths: string[], origin: "staged" | "unstaged") => void;
+  showPaths: boolean;
   onSelect: (path: string) => void;
   selectedPath: string | null;
 };
@@ -655,6 +918,7 @@ function DropLane({
   disabled,
   onAction,
   onDropFiles,
+  showPaths,
   onSelect,
   selectedPath,
 }: DropLaneProps) {
@@ -692,41 +956,53 @@ function DropLane({
       </header>
 
       <div className="lane__list">
-        {items.map((item) => (
-          <article
-            key={`${title}-${item.path}`}
-            className={clsx(
-              "change-card",
-              selectedPath === item.path && "change-card--selected",
-            )}
-            draggable={!disabled}
-            onDragStart={(event) => {
-              event.dataTransfer.setData(
-                "application/x-unigit-change",
-                JSON.stringify({
-                  paths: [item.path],
-                  origin: dropAction === "stage" ? "unstaged" : "staged",
-                }),
-              );
-            }}
-            onClick={() => onSelect(item.path)}
-          >
-            <div className="change-card__text">
-              <strong className="title-truncate" title={item.path}>{item.path}</strong>
-              <p>{item.displayStatus}</p>
-            </div>
-            <button
-              className="ghost-button"
-              disabled={disabled}
-              onClick={(event) => {
-                event.stopPropagation();
-                onAction(item.path);
+        {items.map((item) => {
+          return (
+            <article
+              key={`${title}-${item.change.path}`}
+              className={clsx(
+                "change-card",
+                selectedPath === item.change.path && "change-card--selected",
+                item.isMeta && "change-card--meta",
+              )}
+              draggable={!disabled}
+              onDragStart={(event) => {
+                event.dataTransfer.setData(
+                  "application/x-unigit-change",
+                  JSON.stringify({
+                    paths: [item.change.path],
+                    origin: dropAction === "stage" ? "unstaged" : "staged",
+                  }),
+                );
               }}
+              onClick={() => onSelect(item.change.path)}
             >
-              {actionLabel}
-            </button>
-          </article>
-        ))}
+              <div className="change-card__main">
+                <span
+                  className={clsx("change-marker", `change-marker--${item.marker.tone}`)}
+                  title={item.marker.label}
+                  aria-label={item.marker.label}
+                />
+                <div className="change-card__text">
+                  <strong title={item.change.path}>{item.fileName}</strong>
+                  {showPaths && item.parentPath ? (
+                    <p title={item.parentPath}>{item.parentPath}</p>
+                  ) : null}
+                </div>
+              </div>
+              <button
+                className="ghost-button"
+                disabled={disabled}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAction(item.change.path);
+                }}
+              >
+                {actionLabel}
+              </button>
+            </article>
+          );
+        })}
 
         {!items.length ? <p className="muted">No files here.</p> : null}
       </div>
