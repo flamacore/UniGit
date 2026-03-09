@@ -80,6 +80,11 @@ const hasDiffContent = (preview: FilePreview | null) => {
   return Boolean(preview?.stagedDiff || preview?.unstagedDiff);
 };
 
+const formatRepoLabel = (path: string) => {
+  const segments = path.split(/[/\\]/).filter(Boolean);
+  return segments[segments.length - 1] ?? path;
+};
+
 const getStatusTone = (change: FileChange) => {
   if (change.conflicted) {
     return "conflict";
@@ -325,91 +330,79 @@ export function App() {
 
   return (
     <div className="shell">
-      <aside className="sidebar panel">
-        <div className="sidebar__header">
-          <div>
-            <p className="eyebrow">Workspace</p>
-            <h1>UniGit</h1>
+      <header className="chrome panel">
+        <div className="chrome__row">
+          <div className="brand-block">
+            <p className="eyebrow">UniGit</p>
+            <h1>Desktop</h1>
           </div>
-          <button className="icon-button" onClick={() => void pickRepository()}>
-            <FolderPlus size={18} />
+
+          <div className="repo-tabs panel-scroll">
+            {repositories.length === 0 ? (
+              <button className="repo-tab repo-tab--empty" onClick={() => void pickRepository()}>
+                Add repository
+              </button>
+            ) : null}
+
+            {repositories.map((repo) => {
+              const active = repo === selectedRepository;
+              return (
+                <button
+                  key={repo}
+                  className={clsx("repo-tab", active && "repo-tab--active")}
+                  onClick={() => selectRepository(repo)}
+                  title={repo}
+                >
+                  <span className="repo-tab__label">{formatRepoLabel(repo)}</span>
+                  <span className="repo-tab__path">{repo}</span>
+                  <span
+                    className="repo-tab__remove"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeRepository(repo);
+                    }}
+                  >
+                    <X size={12} />
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <button className="icon-button icon-button--strong" onClick={() => void pickRepository()}>
+            <FolderPlus size={16} />
           </button>
         </div>
 
-        <div className="repo-list panel-scroll">
-          {repositories.length === 0 ? (
-            <div className="empty-state">
-              <p>No repositories added yet.</p>
-              <button className="primary-button" onClick={() => void pickRepository()}>
-                Add local repository
-              </button>
+        <div className="chrome__row chrome__row--secondary">
+          <div className="branch-summary">
+            <div className="branch-chip">
+              <GitBranch size={14} />
+              <span>{branchLabel}</span>
             </div>
-          ) : null}
-
-          {repositories.map((repo) => {
-            const active = repo === selectedRepository;
-            return (
-              <button
-                key={repo}
-                className={clsx("repo-tile", active && "repo-tile--active")}
-                onClick={() => selectRepository(repo)}
-              >
-                <span className="repo-tile__path">{repo}</span>
-                <span
-                  className="repo-tile__remove"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    removeRepository(repo);
-                  }}
-                >
-                  <X size={14} />
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <header className="topbar panel">
-          <div>
-            <p className="eyebrow">Current branch</p>
-            <h2>{branchLabel}</h2>
+            {selectedRepository ? (
+              <span className="meta-inline" title={selectedRepository}>
+                {selectedRepository}
+              </span>
+            ) : null}
           </div>
 
           <div className="topbar__actions">
             <div className="sync-chip">
-              <GitBranch size={16} />
-              <span>{snapshot ? `${snapshot.ahead} ahead / ${snapshot.behind} behind` : "Not loaded"}</span>
+              <span>{snapshot ? `${snapshot.ahead} ahead / ${snapshot.behind} behind` : "No repo"}</span>
             </div>
             <button
               className="icon-button"
               disabled={!selectedRepository || loading || submitting}
               onClick={() => void refreshRepository()}
             >
-              <RefreshCw size={18} />
+              <RefreshCw size={16} />
             </button>
           </div>
-        </header>
+        </div>
+      </header>
 
-        <section className="overview-grid">
-          <div className="metric panel">
-            <span>Unstaged</span>
-            <strong>{snapshot?.counts.unstaged ?? 0}</strong>
-          </div>
-          <div className="metric panel">
-            <span>Staged</span>
-            <strong>{snapshot?.counts.staged ?? 0}</strong>
-          </div>
-          <div className="metric panel">
-            <span>Conflicts</span>
-            <strong>{snapshot?.counts.conflicted ?? 0}</strong>
-          </div>
-          <div className="metric panel">
-            <span>Changed after staging</span>
-            <strong>{snapshot?.counts.stagedModified ?? 0}</strong>
-          </div>
-        </section>
+      <main className="workspace">
 
         {error ? <div className="banner banner--error">{error}</div> : null}
         {statusMessage ? <div className="banner">{statusMessage}</div> : null}
@@ -419,9 +412,9 @@ export function App() {
             <div className="board__header">
               <div>
                 <p className="eyebrow">Changes</p>
-                <h3>Drag between lanes</h3>
+                <h3>Working tree</h3>
               </div>
-              <p className="board__hint">Staged-modified files stay visible in both lanes.</p>
+              <p className="board__hint">Drag, click, commit. Nothing extra.</p>
             </div>
 
             <div className="lanes">
@@ -462,7 +455,7 @@ export function App() {
             <div className="commit-box">
               <textarea
                 className="commit-box__input"
-                placeholder="Commit message. No ceremony, just commit."
+                placeholder="Commit message"
                 value={commitMessage}
                 onChange={(event) => setCommitMessage(event.target.value)}
               />
@@ -482,7 +475,7 @@ export function App() {
               <div className="board__header">
                 <div>
                   <p className="eyebrow">Selection</p>
-                  <h3>{selectedChange?.path ?? "Nothing selected"}</h3>
+                  <h3 className="title-truncate" title={selectedChange?.path ?? undefined}>{selectedChange?.path ?? "Nothing selected"}</h3>
                 </div>
               </div>
               {selectedChange ? (
@@ -500,7 +493,7 @@ export function App() {
                       <dd>{selectedChange.worktreeStatus || "clean"}</dd>
                     </div>
                     <div>
-                      <dt>Preview status</dt>
+                      <dt>Status</dt>
                       <dd>{previewLoading ? "Loading" : preview?.supportHint ?? "Not loaded"}</dd>
                     </div>
                   </dl>
@@ -605,11 +598,11 @@ export function App() {
               <div className="board__header">
                 <div>
                   <p className="eyebrow">History</p>
-                  <h3>Recent commits</h3>
+                  <h3>History</h3>
                 </div>
                 <input
                   className="history-filter"
-                  placeholder="Filter author, message, hash"
+                  placeholder="Filter history"
                   value={historyFilter}
                   onChange={(event) => setHistoryFilter(event.target.value)}
                 />
@@ -691,7 +684,7 @@ function DropLane({
       }}
     >
       <header className="lane__header">
-        <span>{icon}</span>
+        <span className="lane__icon">{icon}</span>
         <div>
           <h4>{title}</h4>
           <p>{items.length} files</p>
@@ -718,8 +711,8 @@ function DropLane({
             }}
             onClick={() => onSelect(item.path)}
           >
-            <div>
-              <strong>{item.path}</strong>
+            <div className="change-card__text">
+              <strong className="title-truncate" title={item.path}>{item.path}</strong>
               <p>{item.displayStatus}</p>
             </div>
             <button
