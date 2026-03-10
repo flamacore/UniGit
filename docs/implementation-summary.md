@@ -97,10 +97,13 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The graph now renders on a real canvas-backed surface instead of using lane markers inside list rows.
 - Commit nodes and lane tracks are colorized per lane.
 - Merge commits are visually distinct from regular commits.
-- Commit cards are virtualized as positioned overlays on top of the graph canvas.
+- The graph now uses an inline git-log style row layout beside the lane block rather than floating commit cards.
 - The graph viewport supports both horizontal and vertical scrolling.
 - The graph viewport supports fullscreen mode for inspection.
 - The graph fetch path is paged so the UI does not need to request only a tiny fixed slice.
+- The graph viewport now includes live controls for lane scaling and lane-block width cropping.
+- The graph rows are rendered through a translated virtualized row container instead of individually positioned overlays.
+- Graph scrollbar styling has been themed to match the rest of the application.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made
@@ -122,7 +125,7 @@ These were explicitly corrected during iteration:
 - `src/app/App.tsx`
   - Main shell, repo tabs, list controls, lanes, graph panel integration, diff-first inspector ordering
 - `src/app/CommitGraphCanvas.tsx`
-  - Canvas-backed commit graph viewport, row windowing, fullscreen toggle, graph paging integration, and card overlays
+  - Canvas-backed commit graph viewport, row windowing, inline graph rows, scale and lane-width controls, fullscreen toggle, and graph paging integration
 - `src/styles.css`
   - Entire UI system, density, layout, scrolling behavior, change markers, diff highlighting, graph viewport styling
 - `src/features/repositories/api.ts`

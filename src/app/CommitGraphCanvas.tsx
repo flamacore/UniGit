@@ -90,6 +90,7 @@ export function CommitGraphCanvas({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingRef = useRef(loading);
+  const previousRowHeightRef = useRef(BASE_ROW_HEIGHT * 0.55);
   const [laneScale, setLaneScale] = useState(0.55);
   const [laneCropWidth, setLaneCropWidth] = useState(220);
   const [scrollTop, setScrollTop] = useState(0);
@@ -146,14 +147,14 @@ export function CommitGraphCanvas({
   const rowHeight = Math.max(24, Math.round(BASE_ROW_HEIGHT * laneScale));
   const laneSpacing = Math.max(10, Math.round(BASE_LANE_SPACING * laneScale));
   const graphLeft = Math.max(12, Math.round(BASE_GRAPH_LEFT * laneScale));
-  const graphTop = Math.max(12, Math.round(BASE_GRAPH_TOP * laneScale));
+  const graphTop = BASE_GRAPH_TOP;
   const rowContentOffset = Math.max(10, Math.round(ROW_CONTENT_OFFSET * laneScale));
   const graphNaturalWidth = graphLeft + laneCount * laneSpacing + 24;
   const graphBlockWidth = Math.min(graphNaturalWidth, laneCropWidth);
   const contentWidth = graphBlockWidth + rowContentOffset + ROW_CONTENT_SPACE;
   const totalHeight = rows.length * rowHeight + graphTop * 2;
-  const nodeRadius = Math.max(2.75, BASE_NODE_RADIUS * laneScale);
-  const mergeRadius = Math.max(3.5, BASE_MERGE_RADIUS * laneScale);
+  const nodeRadius = Math.max(3.5, BASE_NODE_RADIUS * laneScale);
+  const mergeRadius = Math.max(4.5, BASE_MERGE_RADIUS * laneScale);
   const offpageRadius = Math.max(2.5, BASE_OFFPAGE_RADIUS * laneScale);
 
   const visibleRange = useMemo(() => {
@@ -177,6 +178,20 @@ export function CommitGraphCanvas({
   const rowIndexByHash = useMemo(() => {
     return new Map(rows.map((row, index) => [row.hash, index]));
   }, [rows]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const previousRowHeight = previousRowHeightRef.current;
+
+    if (!viewport || previousRowHeight === rowHeight) {
+      previousRowHeightRef.current = rowHeight;
+      return;
+    }
+
+    const relativeIndex = viewport.scrollTop / previousRowHeight;
+    viewport.scrollTop = relativeIndex * rowHeight;
+    previousRowHeightRef.current = rowHeight;
+  }, [rowHeight]);
 
   const toggleFullscreen = useCallback(async () => {
     if (!rootRef.current) {
@@ -237,11 +252,13 @@ export function CommitGraphCanvas({
     for (const { row, index } of visibleRows) {
       const y = graphTop + index * rowHeight - scrollTop;
       const nodeX = graphLeft + row.lane * laneSpacing - scrollLeft;
-      const rowTop = y - rowHeight / 2;
-      const rowBottom = y + rowHeight / 2;
+      const snappedY = Math.round(y);
+      const snappedNodeX = Math.round(nodeX);
+      const rowTop = snappedY - rowHeight / 2;
+      const rowBottom = snappedY + rowHeight / 2;
 
       for (const lane of row.activeLanes) {
-        const x = graphLeft + lane * laneSpacing - scrollLeft;
+        const x = Math.round(graphLeft + lane * laneSpacing - scrollLeft) + 0.5;
         context.strokeStyle = `${getLaneColor(lane)}55`;
         context.lineWidth = lane === row.lane ? Math.max(1.35, 2.1 * laneScale) : Math.max(0.9, 1.2 * laneScale);
         context.beginPath();
@@ -257,20 +274,21 @@ export function CommitGraphCanvas({
         const targetY = targetIndex !== undefined
           ? graphTop + targetIndex * rowHeight - scrollTop
           : height + rowHeight;
-        const targetX = graphLeft + parentLane * laneSpacing - scrollLeft;
+        const targetX = Math.round(graphLeft + parentLane * laneSpacing - scrollLeft);
+        const snappedTargetY = Math.round(targetY);
 
         context.strokeStyle = `${getLaneColor(parentLane)}c8`;
         context.lineWidth = parentIndex === 0 ? Math.max(1.4, 2 * laneScale) : Math.max(1, 1.45 * laneScale);
         context.setLineDash(targetIndex === undefined ? [5 * laneScale, 4 * laneScale] : []);
         context.beginPath();
-        context.moveTo(nodeX, y);
+        context.moveTo(snappedNodeX, snappedY);
         context.bezierCurveTo(
-          nodeX,
-          y + 18 * laneScale,
+          snappedNodeX,
+          snappedY + 18 * laneScale,
           targetX,
-          targetY - 18 * laneScale,
+          snappedTargetY - 18 * laneScale,
           targetX,
-          targetY,
+          snappedTargetY,
         );
         context.stroke();
         context.setLineDash([]);
@@ -291,13 +309,13 @@ export function CommitGraphCanvas({
 
       context.fillStyle = getLaneColor(row.lane);
       context.beginPath();
-      context.arc(nodeX, y, row.mergeCommit ? mergeRadius : nodeRadius, 0, Math.PI * 2);
+      context.arc(snappedNodeX, snappedY, row.mergeCommit ? mergeRadius : nodeRadius, 0, Math.PI * 2);
       context.fill();
 
       context.strokeStyle = "rgba(7, 12, 23, 0.95)";
       context.lineWidth = Math.max(1.1, 1.8 * laneScale);
       context.beginPath();
-      context.arc(nodeX, y, (row.mergeCommit ? mergeRadius : nodeRadius) + 1.5, 0, Math.PI * 2);
+      context.arc(snappedNodeX, snappedY, (row.mergeCommit ? mergeRadius : nodeRadius) + 1.5, 0, Math.PI * 2);
       context.stroke();
     }
 
