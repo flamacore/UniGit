@@ -101,6 +101,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The graph viewport supports both horizontal and vertical scrolling.
 - The graph viewport supports fullscreen mode for inspection.
 - The graph fetch path is paged so the UI does not need to request only a tiny fixed slice.
+- The graph feed is currently date-ordered for more intuitive historical reading while retaining branch structure.
 - The graph viewport now includes live controls for lane scaling and lane-block width cropping.
 - The graph rows are rendered through a translated virtualized row container instead of individually positioned overlays.
 - Graph scrollbar styling has been themed to match the rest of the application.

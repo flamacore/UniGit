@@ -158,7 +158,7 @@ async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -
         path,
         [
             "log",
-            "--topo-order",
+            "--date-order",
             &format!("--max-count={}", page_limit + 1),
             &format!("--skip={skip}"),
             "--date=iso-strict",
