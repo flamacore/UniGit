@@ -733,19 +733,20 @@ h4 {
   position: sticky;
   top: 0;
   left: 0;
-  z-index: 1;
+  z-index: 0;
   display: block;
   pointer-events: none;
 }
 
 .graph-space {
-  position: relative;
-  z-index: 2;
+  position: static;
 }
 
 .graph-rows {
-  position: absolute;
+  position: relative;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
   min-width: max-content;
 }
 
@@ -753,10 +754,10 @@ h4 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 12px;
   min-width: max-content;
   width: fit-content;
-  padding: 4px 10px 4px 0;
+  padding: 0;
 }
 
 .graph-row__main {

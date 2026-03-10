@@ -16,7 +16,7 @@ import {
 import type { CommitGraphRow } from "../features/repositories/api";
 
 const BASE_ROW_HEIGHT = 40;
-const OVERSCAN = 12;
+const MIN_ROW_HEIGHT = 36;
 const BASE_LANE_SPACING = 16;
 const BASE_GRAPH_LEFT = 18;
 const BASE_GRAPH_TOP = 28;
@@ -144,7 +144,7 @@ export function CommitGraphCanvas({
     return Math.max(5, highestLane + 1);
   }, [rows]);
 
-  const rowHeight = Math.max(24, Math.round(BASE_ROW_HEIGHT * laneScale));
+  const rowHeight = Math.max(MIN_ROW_HEIGHT, BASE_ROW_HEIGHT);
   const laneSpacing = Math.max(10, Math.round(BASE_LANE_SPACING * laneScale));
   const graphLeft = Math.max(12, Math.round(BASE_GRAPH_LEFT * laneScale));
   const graphTop = BASE_GRAPH_TOP;
@@ -156,24 +156,6 @@ export function CommitGraphCanvas({
   const nodeRadius = Math.max(3.5, BASE_NODE_RADIUS * laneScale);
   const mergeRadius = Math.max(4.5, BASE_MERGE_RADIUS * laneScale);
   const offpageRadius = Math.max(2.5, BASE_OFFPAGE_RADIUS * laneScale);
-
-  const visibleRange = useMemo(() => {
-    const viewportHeight = Math.max(viewportSize.height, rowHeight * 6);
-    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - OVERSCAN);
-    const end = Math.min(
-      rows.length,
-      Math.ceil((scrollTop + viewportHeight) / rowHeight) + OVERSCAN,
-    );
-
-    return { start, end };
-  }, [rowHeight, rows.length, scrollTop, viewportSize.height]);
-
-  const visibleRows = useMemo(() => {
-    return rows.slice(visibleRange.start, visibleRange.end).map((row, localIndex) => ({
-      row,
-      index: visibleRange.start + localIndex,
-    }));
-  }, [rows, visibleRange.end, visibleRange.start]);
 
   const rowIndexByHash = useMemo(() => {
     return new Map(rows.map((row, index) => [row.hash, index]));
@@ -249,7 +231,7 @@ export function CommitGraphCanvas({
       context.stroke();
     }
 
-    for (const { row, index } of visibleRows) {
+    for (const [index, row] of rows.entries()) {
       const y = graphTop + index * rowHeight - scrollTop;
       const nodeX = graphLeft + row.lane * laneSpacing - scrollLeft;
       const snappedY = Math.round(y);
@@ -320,7 +302,7 @@ export function CommitGraphCanvas({
     }
 
     context.restore();
-  }, [graphBlockWidth, graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, scrollLeft, scrollTop, viewportSize.height, viewportSize.width, visibleRows]);
+  }, [graphBlockWidth, graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, scrollLeft, scrollTop, viewportSize.height, viewportSize.width]);
 
   useEffect(() => {
     drawGraph();
@@ -417,11 +399,11 @@ export function CommitGraphCanvas({
           <div
             className="graph-rows"
             style={{
-              left: graphBlockWidth + rowContentOffset,
-              top: graphTop + visibleRange.start * rowHeight,
+              marginLeft: graphBlockWidth + rowContentOffset,
+              paddingTop: graphTop,
             } as CSSProperties}
           >
-            {visibleRows.map(({ row }) => {
+            {rows.map((row) => {
               const refs = row.decorations
                 .split(",")
                 .map((value) => value.trim())
