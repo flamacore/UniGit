@@ -94,7 +94,6 @@ export function CommitGraphCanvas({
   const [laneScale, setLaneScale] = useState(0.55);
   const [laneCropWidth, setLaneCropWidth] = useState(220);
   const [scrollTop, setScrollTop] = useState(0);
-  const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -161,6 +160,19 @@ export function CommitGraphCanvas({
     return new Map(rows.map((row, index) => [row.hash, index]));
   }, [rows]);
 
+  const globallyActiveLanes = useMemo(() => {
+    const lanes = new Set<number>();
+
+    for (const row of rows) {
+      lanes.add(row.lane);
+      for (const activeLane of row.activeLanes) {
+        lanes.add(activeLane);
+      }
+    }
+
+    return lanes;
+  }, [rows]);
+
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const previousRowHeight = previousRowHeightRef.current;
@@ -195,8 +207,8 @@ export function CommitGraphCanvas({
       return;
     }
 
-    const width = Math.max(viewportSize.width, 320);
-    const height = Math.max(viewportSize.height, 320);
+    const width = Math.max(graphBlockWidth, 120);
+    const height = Math.max(totalHeight, 320);
     const dpr = window.devicePixelRatio || 1;
 
     canvas.width = Math.floor(width * dpr);
@@ -216,15 +228,13 @@ export function CommitGraphCanvas({
     context.fillStyle = "rgba(4, 10, 20, 0.72)";
     context.fillRect(0, 0, width, height);
 
-    context.save();
-    context.beginPath();
-    context.rect(0, 0, graphBlockWidth, height);
-    context.clip();
-
     for (let lane = 0; lane < laneCount; lane += 1) {
-      const x = graphLeft + lane * laneSpacing - scrollLeft;
-      context.strokeStyle = `${getLaneColor(lane)}18`;
-      context.lineWidth = 1;
+      const x = graphLeft + lane * laneSpacing;
+      const laneColor = getLaneColor(lane);
+      context.strokeStyle = globallyActiveLanes.has(lane)
+        ? `${laneColor}44`
+        : `${laneColor}18`;
+      context.lineWidth = globallyActiveLanes.has(lane) ? Math.max(1, 1.35 * laneScale) : 1;
       context.beginPath();
       context.moveTo(x, 0);
       context.lineTo(x, height);
@@ -232,15 +242,15 @@ export function CommitGraphCanvas({
     }
 
     for (const [index, row] of rows.entries()) {
-      const y = graphTop + index * rowHeight - scrollTop;
-      const nodeX = graphLeft + row.lane * laneSpacing - scrollLeft;
+      const y = graphTop + index * rowHeight;
+      const nodeX = graphLeft + row.lane * laneSpacing;
       const snappedY = Math.round(y);
       const snappedNodeX = Math.round(nodeX);
       const rowTop = snappedY - rowHeight / 2;
       const rowBottom = snappedY + rowHeight / 2;
 
       for (const lane of row.activeLanes) {
-        const x = Math.round(graphLeft + lane * laneSpacing - scrollLeft) + 0.5;
+        const x = Math.round(graphLeft + lane * laneSpacing) + 0.5;
         context.strokeStyle = `${getLaneColor(lane)}55`;
         context.lineWidth = lane === row.lane ? Math.max(1.35, 2.1 * laneScale) : Math.max(0.9, 1.2 * laneScale);
         context.beginPath();
@@ -254,9 +264,9 @@ export function CommitGraphCanvas({
         const fallbackLane = parentIndex === 0 ? row.lane : row.lane + parentIndex;
         const parentLane = targetIndex !== undefined ? rows[targetIndex]?.lane ?? fallbackLane : fallbackLane;
         const targetY = targetIndex !== undefined
-          ? graphTop + targetIndex * rowHeight - scrollTop
-          : height + rowHeight;
-        const targetX = Math.round(graphLeft + parentLane * laneSpacing - scrollLeft);
+          ? graphTop + targetIndex * rowHeight
+          : height - 12;
+        const targetX = Math.round(graphLeft + parentLane * laneSpacing);
         const snappedTargetY = Math.round(targetY);
 
         context.strokeStyle = `${getLaneColor(parentLane)}c8`;
@@ -300,9 +310,7 @@ export function CommitGraphCanvas({
       context.arc(snappedNodeX, snappedY, (row.mergeCommit ? mergeRadius : nodeRadius) + 1.5, 0, Math.PI * 2);
       context.stroke();
     }
-
-    context.restore();
-  }, [graphBlockWidth, graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, scrollLeft, scrollTop, viewportSize.height, viewportSize.width]);
+  }, [globallyActiveLanes, graphBlockWidth, graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, totalHeight]);
 
   useEffect(() => {
     drawGraph();
@@ -316,7 +324,6 @@ export function CommitGraphCanvas({
     }
 
     setScrollTop(viewport.scrollTop);
-    setScrollLeft(viewport.scrollLeft);
 
     const nearBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - rowHeight * 10;
 
@@ -343,8 +350,6 @@ export function CommitGraphCanvas({
               type="range"
               min="45"
               max="120"
-              step="5"
-              value={Math.round(laneScale * 100)}
               onChange={(event) => setLaneScale(Number(event.target.value) / 100)}
             />
           </label>

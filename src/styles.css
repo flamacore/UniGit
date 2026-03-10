@@ -730,24 +730,28 @@ h4 {
 }
 
 .graph-canvas {
-  position: sticky;
-  top: 0;
-  left: 0;
+  grid-area: 1 / 1;
   z-index: 0;
   display: block;
   pointer-events: none;
+  align-self: start;
+  justify-self: start;
 }
 
 .graph-space {
   position: static;
+  display: grid;
+  align-content: start;
 }
 
 .graph-rows {
+  grid-area: 1 / 1;
   position: relative;
   z-index: 2;
   display: flex;
   flex-direction: column;
   min-width: max-content;
+  align-self: start;
 }
 
 .graph-row {
