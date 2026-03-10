@@ -699,12 +699,34 @@ h4 {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 162, 255, 0.32) rgba(255, 255, 255, 0.04);
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background:
     radial-gradient(circle at 18% 20%, rgba(82, 128, 255, 0.08), transparent 26%),
     radial-gradient(circle at 84% 74%, rgba(53, 211, 192, 0.06), transparent 28%),
     rgba(4, 9, 18, 0.94);
+}
+
+.graph-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.graph-viewport::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 999px;
+}
+
+.graph-viewport::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(121, 164, 255, 0.42), rgba(72, 211, 197, 0.32));
+  border-radius: 999px;
+  border: 1px solid rgba(3, 8, 16, 0.65);
+}
+
+.graph-viewport::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(145, 184, 255, 0.56), rgba(96, 227, 212, 0.42));
 }
 
 .graph-canvas {
@@ -721,12 +743,18 @@ h4 {
   z-index: 2;
 }
 
-.graph-row {
+.graph-rows {
   position: absolute;
+  z-index: 2;
+  min-width: max-content;
+}
+
+.graph-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
+  min-width: max-content;
   width: fit-content;
   padding: 4px 10px 4px 0;
 }
@@ -743,13 +771,10 @@ h4 {
 }
 
 .graph-row__subject {
-  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-1);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .graph-row__meta {

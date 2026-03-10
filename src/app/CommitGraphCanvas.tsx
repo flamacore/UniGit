@@ -15,8 +15,8 @@ import {
 } from "react";
 import type { CommitGraphRow } from "../features/repositories/api";
 
-const BASE_ROW_HEIGHT = 44;
-const OVERSCAN = 8;
+const BASE_ROW_HEIGHT = 40;
+const OVERSCAN = 12;
 const BASE_LANE_SPACING = 16;
 const BASE_GRAPH_LEFT = 18;
 const BASE_GRAPH_TOP = 18;
@@ -90,8 +90,8 @@ export function CommitGraphCanvas({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingRef = useRef(loading);
-  const [laneScale, setLaneScale] = useState(0.7);
-  const [lineCropWidth, setLineCropWidth] = useState(560);
+  const [laneScale, setLaneScale] = useState(0.55);
+  const [laneCropWidth, setLaneCropWidth] = useState(220);
   const [scrollTop, setScrollTop] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
@@ -143,13 +143,14 @@ export function CommitGraphCanvas({
     return Math.max(5, highestLane + 1);
   }, [rows]);
 
-  const rowHeight = Math.max(28, Math.round(BASE_ROW_HEIGHT * laneScale));
+  const rowHeight = Math.max(24, Math.round(BASE_ROW_HEIGHT * laneScale));
   const laneSpacing = Math.max(10, Math.round(BASE_LANE_SPACING * laneScale));
   const graphLeft = Math.max(12, Math.round(BASE_GRAPH_LEFT * laneScale));
   const graphTop = Math.max(12, Math.round(BASE_GRAPH_TOP * laneScale));
   const rowContentOffset = Math.max(10, Math.round(ROW_CONTENT_OFFSET * laneScale));
-  const graphWidth = graphLeft + laneCount * laneSpacing + 24;
-  const contentWidth = graphWidth + rowContentOffset + ROW_CONTENT_SPACE;
+  const graphNaturalWidth = graphLeft + laneCount * laneSpacing + 24;
+  const graphBlockWidth = Math.min(graphNaturalWidth, laneCropWidth);
+  const contentWidth = graphBlockWidth + rowContentOffset + ROW_CONTENT_SPACE;
   const totalHeight = rows.length * rowHeight + graphTop * 2;
   const nodeRadius = Math.max(2.75, BASE_NODE_RADIUS * laneScale);
   const mergeRadius = Math.max(3.5, BASE_MERGE_RADIUS * laneScale);
@@ -217,6 +218,11 @@ export function CommitGraphCanvas({
 
     context.fillStyle = "rgba(4, 10, 20, 0.72)";
     context.fillRect(0, 0, width, height);
+
+    context.save();
+    context.beginPath();
+    context.rect(0, 0, graphBlockWidth, height);
+    context.clip();
 
     for (let lane = 0; lane < laneCount; lane += 1) {
       const x = graphLeft + lane * laneSpacing - scrollLeft;
@@ -294,7 +300,9 @@ export function CommitGraphCanvas({
       context.arc(nodeX, y, (row.mergeCommit ? mergeRadius : nodeRadius) + 1.5, 0, Math.PI * 2);
       context.stroke();
     }
-  }, [graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, scrollLeft, scrollTop, viewportSize.height, viewportSize.width, visibleRows]);
+
+    context.restore();
+  }, [graphBlockWidth, graphLeft, graphTop, laneCount, laneScale, laneSpacing, mergeRadius, nodeRadius, offpageRadius, rowHeight, rowIndexByHash, rows, scrollLeft, scrollTop, viewportSize.height, viewportSize.width, visibleRows]);
 
   useEffect(() => {
     drawGraph();
@@ -341,15 +349,15 @@ export function CommitGraphCanvas({
             />
           </label>
           <label className="graph-control">
-            <span>Crop {lineCropWidth}px</span>
+            <span>Lanes {laneCropWidth}px</span>
             <input
               className="graph-slider"
               type="range"
-              min="260"
-              max="1200"
-              step="20"
-              value={lineCropWidth}
-              onChange={(event) => setLineCropWidth(Number(event.target.value))}
+              min="120"
+              max="520"
+              step="10"
+              value={laneCropWidth}
+              onChange={(event) => setLaneCropWidth(Number(event.target.value))}
             />
           </label>
           <input
@@ -372,6 +380,7 @@ export function CommitGraphCanvas({
       <div className="graph-status-row">
         <span>{rows.length.toLocaleString()} commits loaded</span>
         <span>{laneCount} active lanes</span>
+        <span>{graphBlockWidth}px lane block</span>
         <span>{Math.round(rowHeight)}px rows</span>
         <span>{hasMore ? "Paged history active" : "End of loaded history"}</span>
       </div>
@@ -387,61 +396,67 @@ export function CommitGraphCanvas({
           className="graph-space"
           style={{ width: contentWidth, height: totalHeight } as CSSProperties}
         >
-          {visibleRows.map(({ row, index }) => {
-            const refs = row.decorations
-              .split(",")
-              .map((value) => value.trim())
-              .filter(Boolean)
-              .map(normalizeRefLabel);
-            const uniqueRefs = Array.from(
-              new Set([row.displayBranch, ...refs].filter(Boolean)),
-            );
-            const top = graphTop + index * rowHeight - rowHeight * 0.32;
-            const left = graphWidth + ROW_CONTENT_OFFSET;
+          <div
+            className="graph-rows"
+            style={{
+              left: graphBlockWidth + rowContentOffset,
+              top: graphTop + visibleRange.start * rowHeight,
+            } as CSSProperties}
+          >
+            {visibleRows.map(({ row }) => {
+              const refs = row.decorations
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+                .map(normalizeRefLabel);
+              const uniqueRefs = Array.from(
+                new Set([row.displayBranch, ...refs].filter(Boolean)),
+              );
 
-            return (
-              <div
-                key={row.hash}
-                className="graph-row"
-                style={{ top, left, maxWidth: lineCropWidth + 420 } as CSSProperties}
-              >
-                <div className="graph-row__main" style={{ maxWidth: lineCropWidth } as CSSProperties}>
-                  {uniqueRefs.length ? (
-                    <div className="graph-row__refs">
-                      {uniqueRefs.map((ref, refIndex) => (
-                        <span
-                          key={`${row.hash}-${ref}`}
-                          className={clsx(
-                            "history-ref-pill",
-                            refIndex === 0 && "history-ref-pill--primary",
-                          )}
-                          style={refIndex === 0 ? ({ color: getLaneColor(row.lane) } as CSSProperties) : undefined}
-                        >
-                          {ref}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
+              return (
+                <div
+                  key={row.hash}
+                  className="graph-row"
+                  style={{ height: rowHeight } as CSSProperties}
+                >
+                  <div className="graph-row__main">
+                    {uniqueRefs.length ? (
+                      <div className="graph-row__refs">
+                        {uniqueRefs.map((ref, refIndex) => (
+                          <span
+                            key={`${row.hash}-${ref}`}
+                            className={clsx(
+                              "history-ref-pill",
+                              refIndex === 0 && "history-ref-pill--primary",
+                            )}
+                            style={refIndex === 0 ? ({ color: getLaneColor(row.lane) } as CSSProperties) : undefined}
+                          >
+                            {ref}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
 
-                  <strong className="graph-row__subject" title={row.subject}>
-                    {row.subject}
-                  </strong>
+                    <strong className="graph-row__subject" title={row.subject}>
+                      {row.subject}
+                    </strong>
+                  </div>
+                  <div className="graph-row__meta">
+                    <span>{row.shortHash}</span>
+                    <span>{row.authorName}</span>
+                    <span>{formatRelativeTime(row.authoredAt)}</span>
+                    <span className="muted">
+                      {row.parentHashes.length > 1
+                        ? `${row.parentHashes.length} parents`
+                        : row.parentHashes.length === 1
+                          ? "1 parent"
+                          : "root"}
+                    </span>
+                  </div>
                 </div>
-                <div className="graph-row__meta">
-                  <span>{row.shortHash}</span>
-                  <span>{row.authorName}</span>
-                  <span>{formatRelativeTime(row.authoredAt)}</span>
-                  <span className="muted">
-                    {row.parentHashes.length > 1
-                      ? `${row.parentHashes.length} parents`
-                      : row.parentHashes.length === 1
-                        ? "1 parent"
-                        : "root"}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       </div>
     </section>
