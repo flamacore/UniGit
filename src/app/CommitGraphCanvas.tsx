@@ -15,8 +15,8 @@ import {
 } from "react";
 import type { CommitGraphRow } from "../features/repositories/api";
 
-const BASE_ROW_HEIGHT = 40;
-const MIN_ROW_HEIGHT = 36;
+const BASE_ROW_HEIGHT = 68;
+const MIN_ROW_HEIGHT = 30;
 const BASE_LANE_SPACING = 16;
 const BASE_GRAPH_LEFT = 18;
 const BASE_GRAPH_TOP = 28;
@@ -143,7 +143,7 @@ export function CommitGraphCanvas({
     return Math.max(5, highestLane + 1);
   }, [rows]);
 
-  const rowHeight = Math.max(MIN_ROW_HEIGHT, BASE_ROW_HEIGHT);
+  const rowHeight = Math.max(MIN_ROW_HEIGHT, Math.round(BASE_ROW_HEIGHT * laneScale));
   const laneSpacing = Math.max(10, Math.round(BASE_LANE_SPACING * laneScale));
   const graphLeft = Math.max(12, Math.round(BASE_GRAPH_LEFT * laneScale));
   const graphTop = BASE_GRAPH_TOP;
@@ -155,6 +155,9 @@ export function CommitGraphCanvas({
   const nodeRadius = Math.max(3.5, BASE_NODE_RADIUS * laneScale);
   const mergeRadius = Math.max(4.5, BASE_MERGE_RADIUS * laneScale);
   const offpageRadius = Math.max(2.5, BASE_OFFPAGE_RADIUS * laneScale);
+  const subjectFontSize = Math.max(11, Math.round(13 * laneScale));
+  const metaFontSize = Math.max(9, Math.round(10 * laneScale));
+  const refFontSize = Math.max(9, Math.round(11 * laneScale));
 
   const rowIndexByHash = useMemo(() => {
     return new Map(rows.map((row, index) => [row.hash, index]));
@@ -347,6 +350,8 @@ export function CommitGraphCanvas({
               type="range"
               min="45"
               max="120"
+              step="5"
+              value={Math.round(laneScale * 100)}
               onChange={(event) => setLaneScale(Number(event.target.value) / 100)}
             />
           </label>
@@ -403,6 +408,9 @@ export function CommitGraphCanvas({
             style={{
               marginLeft: graphBlockWidth + rowContentOffset,
               paddingTop: graphTop,
+              ["--graph-subject-size" as string]: `${subjectFontSize}px`,
+              ["--graph-meta-size" as string]: `${metaFontSize}px`,
+              ["--graph-ref-size" as string]: `${refFontSize}px`,
             } as CSSProperties}
           >
             {rows.map((row) => {

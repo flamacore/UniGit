@@ -814,7 +814,7 @@ h4 {
 }
 
 .graph-row__subject {
-  font-size: 13px;
+  font-size: var(--graph-subject-size, 13px);
   font-weight: 600;
   color: var(--text-1);
   white-space: nowrap;
@@ -822,6 +822,7 @@ h4 {
 
 .graph-row__meta {
   color: var(--text-3);
+  font-size: var(--graph-meta-size, 10px);
   flex-wrap: nowrap;
   white-space: nowrap;
 }
@@ -837,7 +838,7 @@ h4 {
   padding: 2px 7px;
   background: rgba(255, 255, 255, 0.16);
   color: #d2ddf4;
-  font-size: 11px;
+  font-size: var(--graph-ref-size, 11px);
   font-weight: 600;
   line-height: 1.2;
 }
