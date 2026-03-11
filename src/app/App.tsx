@@ -10,7 +10,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
   applyCommitFilePatch,
@@ -357,6 +357,8 @@ export function App() {
   const [historyFilter, setHistoryFilter] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
+  const [selectedChangePaths, setSelectedChangePaths] = useState<string[]>([]);
+  const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
   const [commitDetailLoading, setCommitDetailLoading] = useState(false);
@@ -423,6 +425,14 @@ export function App() {
         }
       }
 
+      setSelectedChangePaths((current) =>
+        current.filter((path) => nextSnapshot.files.some((file) => file.path === path)),
+      );
+
+      if (selectionAnchorPath && !nextSnapshot.files.some((file) => file.path === selectionAnchorPath)) {
+        setSelectionAnchorPath(null);
+      }
+
       if (selectedCommitHash) {
         const stillExists = nextGraph.rows.some((commit) => commit.hash === selectedCommitHash);
 
@@ -443,7 +453,7 @@ export function App() {
       setLoading(false);
       setGraphLoading(false);
     }
-  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository]);
+  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath]);
 
   const loadMoreGraph = useCallback(async () => {
     if (!selectedRepository || graphLoading || !graphHasMore) {
@@ -782,6 +792,55 @@ export function App() {
     [selectedChangePath, snapshot?.files],
   );
 
+  const handleSelectChange = useCallback(
+    (path: string, event: MouseEvent<HTMLElement>, orderedPaths: string[]) => {
+      const withPath = (paths: string[]) => (paths.includes(path) ? paths : [...paths, path]);
+      const isToggle = event.ctrlKey || event.metaKey;
+      const isRange = event.shiftKey && selectionAnchorPath;
+
+      if (isRange && selectionAnchorPath) {
+        const startIndex = orderedPaths.indexOf(selectionAnchorPath);
+        const endIndex = orderedPaths.indexOf(path);
+
+        if (startIndex !== -1 && endIndex !== -1) {
+          const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+          const range = orderedPaths.slice(from, to + 1);
+          setSelectedChangePaths(range);
+          setSelectedChangePath(path);
+          return;
+        }
+      }
+
+      if (isToggle) {
+        setSelectedChangePaths((current) => {
+          const next = current.includes(path)
+            ? current.filter((entry) => entry !== path)
+            : [...current, path];
+
+          if (next.length === 0) {
+            setSelectedChangePath(null);
+          } else {
+            setSelectedChangePath(path);
+          }
+
+          return next;
+        });
+        setSelectionAnchorPath(path);
+        return;
+      }
+
+      setSelectedChangePaths(withPath([path]));
+      setSelectedChangePath(path);
+      setSelectionAnchorPath(path);
+    },
+    [selectionAnchorPath],
+  );
+
+  const selectedUnstagedPaths = useMemo(() => {
+    const lanePaths = new Set(unstagedChanges.map((item) => item.change.path));
+    return selectedChangePaths.filter((path) => lanePaths.has(path));
+  }, [selectedChangePaths, unstagedChanges]);
+
   const selectedCommit = useMemo(
     () => commitGraph.find((commit) => commit.hash === selectedCommitHash) ?? null,
     [commitGraph, selectedCommitHash],
@@ -1087,8 +1146,20 @@ export function App() {
                   }
                 }}
                 showPaths={showPaths}
-                onSelect={setSelectedChangePath}
-                selectedPath={selectedChangePath}
+                onSelect={handleSelectChange}
+                selectedPaths={selectedChangePaths}
+                primarySelectedPath={selectedChangePath}
+                bulkActionLabel="Stage selected"
+                bulkActionDisabled={submitting || selectedUnstagedPaths.length === 0}
+                onBulkAction={() => void runFileOperation("stage", selectedUnstagedPaths)}
+                bulkSecondaryLabel="Stage all"
+                bulkSecondaryDisabled={submitting || unstagedChanges.length === 0}
+                onBulkSecondaryAction={() =>
+                  void runFileOperation(
+                    "stage",
+                    unstagedChanges.map((item) => item.change.path),
+                  )
+                }
               />
               <DropLane
                 title="Staged"
@@ -1104,8 +1175,9 @@ export function App() {
                   }
                 }}
                 showPaths={showPaths}
-                onSelect={setSelectedChangePath}
-                selectedPath={selectedChangePath}
+                onSelect={handleSelectChange}
+                selectedPaths={selectedChangePaths}
+                primarySelectedPath={selectedChangePath}
               />
             </div>
             </div>
@@ -1424,8 +1496,15 @@ type DropLaneProps = {
   onAction: (path: string) => void;
   onDropFiles: (paths: string[], origin: "staged" | "unstaged") => void;
   showPaths: boolean;
-  onSelect: (path: string) => void;
-  selectedPath: string | null;
+  onSelect: (path: string, event: MouseEvent<HTMLElement>, orderedPaths: string[]) => void;
+  selectedPaths: string[];
+  primarySelectedPath: string | null;
+  bulkActionLabel?: string;
+  bulkActionDisabled?: boolean;
+  onBulkAction?: () => void;
+  bulkSecondaryLabel?: string;
+  bulkSecondaryDisabled?: boolean;
+  onBulkSecondaryAction?: () => void;
 };
 
 function DropLane({
@@ -1439,8 +1518,17 @@ function DropLane({
   onDropFiles,
   showPaths,
   onSelect,
-  selectedPath,
+  selectedPaths,
+  primarySelectedPath,
+  bulkActionLabel,
+  bulkActionDisabled,
+  onBulkAction,
+  bulkSecondaryLabel,
+  bulkSecondaryDisabled,
+  onBulkSecondaryAction,
 }: DropLaneProps) {
+  const orderedPaths = items.map((item) => item.change.path);
+
   return (
     <section
       className="lane"
@@ -1467,11 +1555,36 @@ function DropLane({
       }}
     >
       <header className="lane__header">
-        <span className="lane__icon">{icon}</span>
-        <div>
-          <h4>{title}</h4>
-          <p>{items.length} files</p>
+        <div className="lane__header-main">
+          <span className="lane__icon">{icon}</span>
+          <div>
+            <h4>{title}</h4>
+            <p>{items.length} files</p>
+          </div>
         </div>
+
+        {bulkActionLabel || bulkSecondaryLabel ? (
+          <div className="lane__actions">
+            {bulkActionLabel && onBulkAction ? (
+              <button
+                className="ghost-button"
+                disabled={bulkActionDisabled}
+                onClick={onBulkAction}
+              >
+                {bulkActionLabel}
+              </button>
+            ) : null}
+            {bulkSecondaryLabel && onBulkSecondaryAction ? (
+              <button
+                className="ghost-button"
+                disabled={bulkSecondaryDisabled}
+                onClick={onBulkSecondaryAction}
+              >
+                {bulkSecondaryLabel}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       <div className="lane__list">
@@ -1481,20 +1594,24 @@ function DropLane({
               key={`${title}-${item.change.path}`}
               className={clsx(
                 "change-card",
-                selectedPath === item.change.path && "change-card--selected",
+                selectedPaths.includes(item.change.path) && "change-card--selected",
+                primarySelectedPath === item.change.path && "change-card--focused",
                 item.isMeta && "change-card--meta",
               )}
               draggable={!disabled}
               onDragStart={(event) => {
+                const draggedPaths = selectedPaths.includes(item.change.path)
+                  ? orderedPaths.filter((path) => selectedPaths.includes(path))
+                  : [item.change.path];
                 event.dataTransfer.setData(
                   "application/x-unigit-change",
                   JSON.stringify({
-                    paths: [item.change.path],
+                    paths: draggedPaths,
                     origin: dropAction === "stage" ? "unstaged" : "staged",
                   }),
                 );
               }}
-              onClick={() => onSelect(item.change.path)}
+              onClick={(event) => onSelect(item.change.path, event, orderedPaths)}
             >
               <div className="change-card__main">
                 <span

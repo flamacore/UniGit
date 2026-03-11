@@ -59,6 +59,8 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Two-lane changes view exists: unstaged and staged.
 - Drag-and-drop between lanes exists.
 - One-click stage and unstage buttons exist.
+- Shift-click and Ctrl/Cmd-click multi-select now exist in the change lanes.
+- The unstaged lane now supports Stage selected and Stage all bulk actions.
 - Commit box exists.
 - Files changed after staging are detected and surfaced in status logic.
 
