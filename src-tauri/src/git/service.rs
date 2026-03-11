@@ -837,13 +837,26 @@ async fn fetch_repository_inner(repo_path: String) -> GitResult<String> {
 
 async fn pull_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
-    let output = run_git_owned(path, vec!["pull".into(), "--ff-only".into()]).await?;
+    let (ahead, behind) = resolve_upstream_divergence(path).await?;
+    let output = if ahead > 0 && behind > 0 {
+        run_git_owned(path, vec!["pull".into(), "--no-rebase".into()]).await?
+    } else {
+        run_git_owned(path, vec!["pull".into(), "--ff-only".into()]).await?
+    };
     let trimmed = output.trim();
 
     if trimmed.is_empty() {
-        Ok("Pull completed.".to_string())
+        if ahead > 0 && behind > 0 {
+            Ok("Pull completed with merge because local and remote history had diverged.".to_string())
+        } else {
+            Ok("Pull completed.".to_string())
+        }
     } else {
-        Ok(trimmed.to_string())
+        if ahead > 0 && behind > 0 {
+            Ok(format!("Pull completed with merge because local and remote history had diverged.\n{trimmed}"))
+        } else {
+            Ok(trimmed.to_string())
+        }
     }
 }
 
@@ -867,6 +880,18 @@ async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
     run_git_owned(path, vec!["reset".into(), "--hard".into(), upstream.clone()]).await?;
 
     Ok(format!("Force pull completed from {upstream}. Safety ref saved at {safety_ref}."))
+}
+
+async fn resolve_upstream_divergence(repo_path: &Path) -> GitResult<(usize, usize)> {
+    let output = run_git_owned(
+        repo_path,
+        vec!["rev-list".into(), "--left-right".into(), "--count".into(), "HEAD...@{u}".into()],
+    )
+    .await?;
+    let mut parts = output.split_whitespace();
+    let ahead = parts.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+    let behind = parts.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
+    Ok((ahead, behind))
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {

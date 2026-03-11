@@ -50,6 +50,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - File-level patch application and reverse patch application now exist from file history entries.
 - Push now exists as a first-class top-bar remote action.
 - Normal pull now exists as a first-class top-bar remote action.
+- Normal pull now auto-detects divergence and falls back to a merge-based pull instead of failing on diverged local and remote history.
 - A first guarded force-pull action now exists with an inline consequence summary and safety ref creation.
 - Push and force-pull outcomes now surface through a dedicated inline remote dialog with clearer failure reasons instead of relying only on the generic error banner.
 - The refresh control now performs a real fetch so ahead/behind state and remote refs can update from the server instead of only rereading local status.
