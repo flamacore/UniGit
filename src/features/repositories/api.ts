@@ -79,6 +79,15 @@ export type CommitDetail = {
   files: CommitFileEntry[];
 };
 
+export type FileHistoryEntry = {
+  hash: string;
+  shortHash: string;
+  authorName: string;
+  authoredAt: string;
+  subject: string;
+  decorations: string;
+};
+
 export type FilePreview = {
   relativePath: string;
   fileName: string;
@@ -122,6 +131,10 @@ export const inspectCommitDetail = (repoPath: string, commitHash: string) => {
   return invoke<CommitDetail>("inspect_commit_detail", { repoPath, commitHash });
 };
 
+export const listFileHistory = (repoPath: string, relativePath: string, limit = 20) => {
+  return invoke<FileHistoryEntry[]>("list_file_history", { repoPath, relativePath, limit });
+};
+
 export const exportFileFromCommit = (
   repoPath: string,
   commitHash: string,
@@ -145,6 +158,20 @@ export const restoreFileFromCommit = (
     repoPath,
     commitHash,
     relativePath,
+  });
+};
+
+export const applyCommitFilePatch = (
+  repoPath: string,
+  commitHash: string,
+  relativePath: string,
+  reverse: boolean,
+) => {
+  return invoke<void>("apply_commit_file_patch", {
+    repoPath,
+    commitHash,
+    relativePath,
+    reverse,
   });
 };
 

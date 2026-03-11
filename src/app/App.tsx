@@ -13,10 +13,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
+  applyCommitFilePatch,
   CommitDetail,
   CommitGraphPage,
   CommitGraphRow,
   FileChange,
+  FileHistoryEntry,
   FilePreview,
   RepositorySnapshot,
   createCommit,
@@ -24,6 +26,7 @@ import {
   inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
+  listFileHistory,
   listCommitGraph,
   restoreFileFromCommit,
   stageFiles,
@@ -363,6 +366,9 @@ export function App() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [fileHistory, setFileHistory] = useState<FileHistoryEntry[]>([]);
+  const [fileHistoryLoading, setFileHistoryLoading] = useState(false);
+  const [fileHistoryError, setFileHistoryError] = useState<string | null>(null);
   const [changeQuery, setChangeQuery] = useState("");
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
@@ -459,6 +465,9 @@ export function App() {
       setPreview(null);
       setPreviewError(null);
       setPreviewLoading(false);
+      setFileHistory([]);
+      setFileHistoryError(null);
+      setFileHistoryLoading(false);
       return;
     }
 
@@ -492,6 +501,47 @@ export function App() {
     };
 
     void loadPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedChangePath, selectedRepository]);
+
+  useEffect(() => {
+    if (!selectedRepository || !selectedChangePath) {
+      setFileHistory([]);
+      setFileHistoryError(null);
+      setFileHistoryLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadFileHistory = async () => {
+      setFileHistoryLoading(true);
+      setFileHistoryError(null);
+
+      try {
+        const nextHistory = await listFileHistory(selectedRepository, selectedChangePath, 16);
+
+        if (!cancelled) {
+          setFileHistory(nextHistory);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setFileHistory([]);
+          setFileHistoryError(
+            reason instanceof Error ? reason.message : "File history loading failed.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setFileHistoryLoading(false);
+        }
+      }
+    };
+
+    void loadFileHistory();
 
     return () => {
       cancelled = true;
@@ -614,8 +664,8 @@ export function App() {
     }
   }, [commitMessage, refreshRepository, selectedRepository]);
 
-  const exportCommitFile = useCallback(async (relativePath: string) => {
-    if (!selectedRepository || !selectedCommitHash) {
+  const exportCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
+    if (!selectedRepository || !commitHash) {
       return;
     }
 
@@ -641,17 +691,17 @@ export function App() {
     setError(null);
 
     try {
-      await exportFileFromCommit(selectedRepository, selectedCommitHash, relativePath, destinationPath);
-      setStatusMessage(`Exported ${relativePath} from ${selectedCommitHash.slice(0, 7)}.`);
+      await exportFileFromCommit(selectedRepository, commitHash, relativePath, destinationPath);
+      setStatusMessage(`Exported ${relativePath} from ${commitHash.slice(0, 7)}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit file export failed.");
     } finally {
       setSubmitting(false);
     }
-  }, [selectedCommitHash, selectedRepository]);
+  }, [selectedRepository]);
 
-  const restoreCommitFile = useCallback(async (relativePath: string) => {
-    if (!selectedRepository || !selectedCommitHash) {
+  const restoreCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
+    if (!selectedRepository || !commitHash) {
       return;
     }
 
@@ -659,8 +709,8 @@ export function App() {
     setError(null);
 
     try {
-      await restoreFileFromCommit(selectedRepository, selectedCommitHash, relativePath);
-      setStatusMessage(`Restored ${relativePath} from ${selectedCommitHash.slice(0, 7)}.`);
+      await restoreFileFromCommit(selectedRepository, commitHash, relativePath);
+      setStatusMessage(`Restored ${relativePath} from ${commitHash.slice(0, 7)}.`);
       setSelectedChangePath(relativePath);
       await refreshRepository();
     } catch (reason) {
@@ -668,7 +718,29 @@ export function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedCommitHash, selectedRepository]);
+  }, [refreshRepository, selectedRepository]);
+
+  const applyFilePatchFromCommit = useCallback(async (commitHash: string, relativePath: string, reverse: boolean) => {
+    if (!selectedRepository || !commitHash) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      await applyCommitFilePatch(selectedRepository, commitHash, relativePath, reverse);
+      setStatusMessage(
+        `${reverse ? "Reverted" : "Applied"} ${relativePath} ${reverse ? "from" : "using"} ${commitHash.slice(0, 7)}.`,
+      );
+      setSelectedChangePath(relativePath);
+      await refreshRepository();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Commit file patch failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository]);
 
   const rawUnstagedChanges = useMemo(
     () =>
@@ -1105,6 +1177,70 @@ export function App() {
                       </div>
                     </dl>
                   ) : null}
+
+                  <div className="file-history-list">
+                    <div className="preview-panel__header">
+                      <strong>File history</strong>
+                      <span className="preview-panel__meta">{fileHistory.length}</span>
+                    </div>
+
+                    {fileHistoryLoading ? <p className="muted">Loading file history...</p> : null}
+                    {fileHistoryError ? <p className="muted">{fileHistoryError}</p> : null}
+
+                    {!fileHistoryLoading && !fileHistoryError
+                      ? fileHistory.map((entry) => (
+                          <div key={`${entry.hash}-${selectedChange.path}`} className="file-history-row">
+                            <div className="file-history-row__main">
+                              <span className="pill pill--default">{entry.shortHash}</span>
+                              <div className="file-history-row__text">
+                                <strong title={entry.subject}>{entry.subject}</strong>
+                                <p>{entry.authorName} {formatRelativeTime(entry.authoredAt)}</p>
+                              </div>
+                            </div>
+                            <div className="file-history-row__actions">
+                              <button
+                                className="ghost-button"
+                                disabled={submitting}
+                                onClick={() => {
+                                  setSelectedCommitHash(entry.hash);
+                                  setSelectedChangePath(null);
+                                }}
+                              >
+                                View
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={submitting}
+                                onClick={() => void exportCommitFile(entry.hash, selectedChange.path)}
+                              >
+                                Export
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={submitting}
+                                onClick={() => void restoreCommitFile(entry.hash, selectedChange.path)}
+                              >
+                                Restore
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={submitting}
+                                onClick={() => void applyFilePatchFromCommit(entry.hash, selectedChange.path, false)}
+                              >
+                                Apply
+                              </button>
+                              <button
+                                className="ghost-button"
+                                disabled={submitting}
+                                onClick={() => void applyFilePatchFromCommit(entry.hash, selectedChange.path, true)}
+                              >
+                                Revert
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      : null}
+                  </div>
                 </div>
               </div>
             ) : selectedCommitHash ? (
@@ -1158,14 +1294,14 @@ export function App() {
                             <button
                               className="ghost-button"
                               disabled={submitting}
-                              onClick={() => void exportCommitFile(file.path)}
+                              onClick={() => void exportCommitFile(commitDetail.hash, file.path)}
                             >
                               Export
                             </button>
                             <button
                               className="ghost-button"
                               disabled={submitting}
-                              onClick={() => void restoreCommitFile(file.path)}
+                              onClick={() => void restoreCommitFile(commitDetail.hash, file.path)}
                             >
                               Restore
                             </button>

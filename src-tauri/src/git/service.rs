@@ -8,8 +8,8 @@ use tokio::process::Command;
 
 use super::models::{
     AssetDetail, AssetSummary, CommitDetail, CommitFileEntry, CommitGraphPage,
-    CommitGraphRow, CommitSummary, FileChange, FilePreview, RepositoryCounts,
-    RepositorySnapshot,
+    CommitGraphRow, CommitSummary, FileChange, FileHistoryEntry, FilePreview,
+    RepositoryCounts, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -61,6 +61,18 @@ pub async fn restore_file_from_commit(
 }
 
 #[command]
+pub async fn apply_commit_file_patch(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+    reverse: bool,
+) -> Result<(), String> {
+    apply_commit_file_patch_inner(repo_path, commit_hash, relative_path, reverse)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn inspect_file_preview(repo_path: String, relative_path: String) -> Result<FilePreview, String> {
     inspect_file_preview_inner(repo_path, relative_path)
         .await
@@ -70,6 +82,13 @@ pub async fn inspect_file_preview(repo_path: String, relative_path: String) -> R
 #[command]
 pub async fn list_commit_history(repo_path: String, limit: usize) -> Result<Vec<CommitSummary>, String> {
     list_commit_history_inner(repo_path, limit)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn list_file_history(repo_path: String, relative_path: String, limit: usize) -> Result<Vec<FileHistoryEntry>, String> {
+    list_file_history_inner(repo_path, relative_path, limit)
         .await
         .map_err(|error| error.to_string())
 }
@@ -179,6 +198,47 @@ async fn list_commit_history_inner(repo_path: String, limit: usize) -> GitResult
         .collect();
 
     Ok(commits)
+}
+
+async fn list_file_history_inner(repo_path: String, relative_path: String, limit: usize) -> GitResult<Vec<FileHistoryEntry>> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_path = relative_path.trim();
+    let max_count = limit.clamp(1, 100);
+
+    if trimmed_path.is_empty() {
+        return Err(GitServiceError::InvalidFileSelection);
+    }
+
+    let format = "%H%x1f%h%x1f%an%x1f%aI%x1f%s%x1f%D";
+    let output = run_git_owned(
+        path,
+        vec![
+            "log".into(),
+            format!("--max-count={max_count}"),
+            "--follow".into(),
+            "--date=iso-strict".into(),
+            format!("--pretty=format:{format}"),
+            "--".into(),
+            trimmed_path.to_string(),
+        ],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split('\u{1f}');
+            Some(FileHistoryEntry {
+                hash: parts.next()?.to_string(),
+                short_hash: parts.next()?.to_string(),
+                author_name: parts.next()?.to_string(),
+                authored_at: parts.next()?.to_string(),
+                subject: parts.next()?.to_string(),
+                decorations: parts.next().unwrap_or_default().to_string(),
+            })
+        })
+        .collect())
 }
 
 async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -> GitResult<CommitGraphPage> {
@@ -636,6 +696,59 @@ async fn restore_file_from_commit_inner(
     .map(|_| ())
 }
 
+async fn apply_commit_file_patch_inner(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+    reverse: bool,
+) -> GitResult<()> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_hash = commit_hash.trim();
+    let trimmed_path = relative_path.trim();
+
+    if trimmed_hash.is_empty() || trimmed_path.is_empty() {
+        return Err(GitServiceError::InvalidFileSelection);
+    }
+
+    let parents_output = run_git_owned(
+        path,
+        vec!["show".into(), "--no-patch".into(), "--format=%P".into(), trimmed_hash.to_string()],
+    )
+    .await?;
+    let first_parent = parents_output.split_whitespace().next().map(ToString::to_string);
+    let base = first_parent.unwrap_or_else(|| "4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string());
+
+    let patch = run_git_bytes_owned(
+        path,
+        vec![
+            "diff".into(),
+            "--binary".into(),
+            base,
+            trimmed_hash.to_string(),
+            "--".into(),
+            trimmed_path.to_string(),
+        ],
+    )
+    .await?;
+
+    if patch.is_empty() {
+        return Ok(());
+    }
+
+    let mut args = vec![
+        "apply".into(),
+        "--3way".into(),
+        "--reject".into(),
+        "--whitespace=nowarn".into(),
+    ];
+
+    if reverse {
+        args.push("--reverse".into());
+    }
+
+    run_git_owned_with_input(path, args, patch).await.map(|_| ())
+}
+
 async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bool) -> GitResult<()> {
     let path = validate_repository_path(&repo_path)?;
 
@@ -755,6 +868,42 @@ async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<V
     }
 
     Ok(output.stdout)
+}
+
+async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Vec<u8>) -> GitResult<String> {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(&input)
+            .await
+            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+
+    if !output.status.success() {
+        return Err(GitServiceError::GitCommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileChange>, RepositoryCounts) {

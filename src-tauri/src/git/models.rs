@@ -103,6 +103,17 @@ pub struct CommitDetail {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct FileHistoryEntry {
+    pub hash: String,
+    pub short_hash: String,
+    pub author_name: String,
+    pub authored_at: String,
+    pub subject: String,
+    pub decorations: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub relative_path: String,
     pub file_name: String,

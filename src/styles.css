@@ -580,7 +580,8 @@ h4 {
 .asset-summary,
 .diff-stack,
 .preview-panel,
-.commit-file-list {
+.commit-file-list,
+.file-history-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -597,6 +598,47 @@ h4 {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+.file-history-row,
+.file-history-row__main,
+.file-history-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-history-row {
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.file-history-row__main {
+  min-width: 0;
+  flex: 1;
+}
+
+.file-history-row__text {
+  min-width: 0;
+}
+
+.file-history-row__text strong,
+.file-history-row__text p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-history-row__text p {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.file-history-row__actions {
   flex-shrink: 0;
 }
 
