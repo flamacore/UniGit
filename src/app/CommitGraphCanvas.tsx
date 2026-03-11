@@ -395,12 +395,12 @@ export function CommitGraphCanvas({
         className="graph-viewport"
         onScroll={handleScroll}
       >
-        <canvas ref={canvasRef} className="graph-canvas" />
-
         <div
           className="graph-space"
           style={{ width: contentWidth, height: totalHeight } as CSSProperties}
         >
+          <canvas ref={canvasRef} className="graph-canvas" />
+
           <div
             className="graph-rows"
             style={{
