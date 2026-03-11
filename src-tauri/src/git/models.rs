@@ -114,6 +114,20 @@ pub struct FileHistoryEntry {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct BranchEntry {
+    pub full_name: String,
+    pub name: String,
+    pub branch_kind: String,
+    pub remote_name: Option<String>,
+    pub tracking_name: Option<String>,
+    pub tracking_state: Option<String>,
+    pub is_current: bool,
+    pub commit_hash: String,
+    pub subject: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub relative_path: String,
     pub file_name: String,

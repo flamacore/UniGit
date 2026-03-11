@@ -1,10 +1,14 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import {
+  ChevronDown,
+  ChevronRight,
+  Expand,
   FolderPlus,
   GitBranch,
   GitCommitHorizontal,
   GripVertical,
+  Minimize2,
   RefreshCw,
   Undo2,
   Upload,
@@ -14,6 +18,7 @@ import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } fr
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
   applyCommitFilePatch,
+  BranchEntry,
   CommitDetail,
   CommitGraphPage,
   CommitGraphRow,
@@ -22,19 +27,23 @@ import {
   FilePreview,
   RepositorySnapshot,
   createCommit,
+  deleteBranch,
   exportFileFromCommit,
   fetchRepository,
   forcePullRepository,
   inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
+  listBranches,
   listFileHistory,
   listCommitGraph,
   logClientEvent,
   pullRepository,
   pushRepository,
+  renameBranch,
   restoreFileFromCommit,
   stageFiles,
+  switchBranch,
   unstageFiles,
 } from "../features/repositories/api";
 import { useRepositoryStore } from "../features/repositories/store/useRepositoryStore";
@@ -415,6 +424,75 @@ const getStatusTone = (change: FileChange) => {
   return "default";
 };
 
+const buildBranchTree = (entries: BranchEntry[], scope: string): BranchTreeNode[] => {
+  const roots: Array<BranchTreeNode & { childMap: Map<string, BranchTreeNode & { childMap: Map<string, any> }> }> = [];
+  const rootMap = new Map<string, BranchTreeNode & { childMap: Map<string, any> }>();
+
+  const ensureNode = (
+    parentChildren: Array<BranchTreeNode & { childMap: Map<string, any> }>,
+    parentMap: Map<string, BranchTreeNode & { childMap: Map<string, any> }>,
+    id: string,
+    label: string,
+  ) => {
+    let node = parentMap.get(id);
+
+    if (!node) {
+      node = {
+        id,
+        label,
+        branch: null,
+        children: [],
+        childMap: new Map(),
+      };
+      parentMap.set(id, node);
+      parentChildren.push(node);
+    }
+
+    return node;
+  };
+
+  for (const branch of entries) {
+    const segments = branch.name.split("/").filter(Boolean);
+    let currentChildren = roots;
+    let currentMap = rootMap;
+    let path = scope;
+
+    segments.forEach((segment, index) => {
+      path = `${path}/${segment}`;
+      const node = ensureNode(currentChildren, currentMap, path, segment);
+
+      if (index === segments.length - 1) {
+        node.branch = branch;
+      }
+
+      currentChildren = node.children as Array<BranchTreeNode & { childMap: Map<string, any> }>;
+      currentMap = node.childMap;
+    });
+  }
+
+  const sortNodes = (nodes: Array<BranchTreeNode & { childMap?: Map<string, any> }>): BranchTreeNode[] => {
+    return nodes
+      .sort((left, right) => {
+        const leftFolder = left.children.length > 0;
+        const rightFolder = right.children.length > 0;
+
+        if (leftFolder !== rightFolder) {
+          return leftFolder ? -1 : 1;
+        }
+
+        return left.label.localeCompare(right.label);
+      })
+      .map((node) => ({
+        id: node.id,
+        label: node.label,
+        branch: node.branch,
+        children: sortNodes(node.children as Array<BranchTreeNode & { childMap?: Map<string, any> }>),
+      }));
+  };
+
+  return sortNodes(roots);
+};
+
 export function App() {
   const {
     repositories,
@@ -425,6 +503,9 @@ export function App() {
   } = useRepositoryStore();
 
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null);
+  const [branches, setBranches] = useState<BranchEntry[]>([]);
+  const [selectedBranchFullName, setSelectedBranchFullName] = useState<string | null>(null);
+  const [branchQuery, setBranchQuery] = useState("");
   const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
   const [graphNextSkip, setGraphNextSkip] = useState(0);
   const [graphHasMore, setGraphHasMore] = useState(false);
@@ -454,7 +535,9 @@ export function App() {
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
+  const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
 
   const applyGraphPage = useCallback((page: CommitGraphPage, mode: "replace" | "append") => {
@@ -480,6 +563,8 @@ export function App() {
   const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
       setSnapshot(null);
+      setBranches([]);
+      setSelectedBranchFullName(null);
       setCommitGraph([]);
       setGraphHasMore(false);
       setGraphNextSkip(0);
@@ -502,13 +587,23 @@ export function App() {
         }
       }
 
-      const [nextSnapshot, nextGraph] = await Promise.all([
+      const [nextSnapshot, nextBranches, nextGraph] = await Promise.all([
         inspectRepository(selectedRepository),
+        listBranches(selectedRepository),
         listCommitGraph(selectedRepository, 260, 0),
       ]);
 
       setSnapshot(nextSnapshot);
+      setBranches(nextBranches);
       applyGraphPage(nextGraph, "replace");
+
+      setSelectedBranchFullName((current) => {
+        if (current && nextBranches.some((branch) => branch.fullName === current)) {
+          return current;
+        }
+
+        return nextBranches.find((branch) => branch.isCurrent)?.fullName ?? null;
+      });
 
       if (selectedChangePath) {
         const stillExists = nextSnapshot.files.some(
@@ -998,6 +1093,33 @@ export function App() {
     return selectedChangePaths.filter((path) => lanePaths.has(path));
   }, [selectedChangePaths, unstagedChanges]);
 
+  const selectedBranch = useMemo(
+    () => branches.find((branch) => branch.fullName === selectedBranchFullName) ?? null,
+    [branches, selectedBranchFullName],
+  );
+
+  const filteredBranches = useMemo(() => {
+    const query = branchQuery.trim().toLowerCase();
+    const visible = !query
+      ? branches
+      : branches.filter((branch) => {
+          return [
+            branch.name,
+            branch.branchKind,
+            branch.trackingName ?? "",
+            branch.subject,
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(query);
+        });
+
+    return {
+      local: visible.filter((branch) => branch.branchKind === "local"),
+      remote: visible.filter((branch) => branch.branchKind === "remote"),
+    };
+  }, [branchQuery, branches]);
+
   const selectedCommit = useMemo(
     () => commitGraph.find((commit) => commit.hash === selectedCommitHash) ?? null,
     [commitGraph, selectedCommitHash],
@@ -1078,6 +1200,34 @@ export function App() {
     });
   }, []);
 
+  const resizeGraphPanels = useCallback((clientX: number) => {
+    const container = graphSplitRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const bounds = container.getBoundingClientRect();
+    const totalWidth = bounds.width;
+
+    if (!totalWidth) {
+      return;
+    }
+
+    setGraphFractions(() => {
+      const nextX = clientX - bounds.left;
+      const minLeft = 220;
+      const minRight = 420;
+      const clampedLeft = Math.min(Math.max(nextX, minLeft), totalWidth - minRight);
+      const newRight = totalWidth - clampedLeft;
+
+      return {
+        left: clampedLeft / totalWidth,
+        right: newRight / totalWidth,
+      };
+    });
+  }, []);
+
   const startResize = useCallback(() => {
     const handlePointerMove = (event: PointerEvent) => {
       resizePanels(event.clientX);
@@ -1092,9 +1242,93 @@ export function App() {
     window.addEventListener("pointerup", handlePointerUp);
   }, [resizePanels]);
 
+  const startGraphResize = useCallback(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      resizeGraphPanels(event.clientX);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [resizeGraphPanels]);
+
   const lowerGridTemplateColumns = useMemo(() => {
     return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
+
+  const graphGridTemplateColumns = useMemo(() => {
+    return `${graphFractions.left}fr 12px ${graphFractions.right}fr`;
+  }, [graphFractions]);
+
+  const runSwitchBranch = useCallback(async (fullName: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.switch", `Switching branch ${fullName}.`);
+      const result = await switchBranch(selectedRepository, fullName);
+      setStatusMessage(result);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Branch switch failed.";
+      setError(message);
+      writeClientLog("git.branch.switch.error", `Branch switch failed for ${fullName}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
+
+  const runRenameBranch = useCallback(async (currentName: string, nextName: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.rename", `Renaming branch ${currentName} to ${nextName}.`);
+      const result = await renameBranch(selectedRepository, currentName, nextName);
+      setStatusMessage(result);
+      await refreshRepository();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Branch rename failed.";
+      setError(message);
+      writeClientLog("git.branch.rename.error", `Branch rename failed for ${currentName}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
+
+  const runDeleteBranch = useCallback(async (fullName: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.delete", `Deleting branch ${fullName}.`);
+      const result = await deleteBranch(selectedRepository, fullName);
+      setStatusMessage(result);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Branch deletion failed.";
+      setError(message);
+      writeClientLog("git.branch.delete.error", `Branch deletion failed for ${fullName}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
 
   const runPush = useCallback(async () => {
     if (!selectedRepository) {
@@ -1320,20 +1554,48 @@ export function App() {
         ) : null}
 
         <section className="content-grid">
-          <section className="panel graph-panel graph-panel--embedded">
-            <CommitGraphCanvas
-              rows={filteredHistory}
-              filter={historyFilter}
-              onFilterChange={setHistoryFilter}
-              onLoadMore={() => void loadMoreGraph()}
-              hasMore={graphHasMore}
-              loading={graphLoading}
-              selectedCommitHash={selectedCommitHash}
-              onSelectCommit={(commitHash) => {
-                setSelectedCommitHash(commitHash);
-                setSelectedChangePath(null);
-              }}
-            />
+          <section className="panel graph-shell graph-panel--embedded">
+            <div
+              ref={graphSplitRef}
+              className="graph-split"
+              style={{ gridTemplateColumns: graphGridTemplateColumns }}
+            >
+              <BranchPane
+                localBranches={filteredBranches.local}
+                remoteBranches={filteredBranches.remote}
+                filter={branchQuery}
+                onFilterChange={setBranchQuery}
+                selectedBranchFullName={selectedBranchFullName}
+                onSelectBranch={setSelectedBranchFullName}
+                onSwitchBranch={(fullName) => void runSwitchBranch(fullName)}
+                onRenameBranch={(currentName, nextName) => void runRenameBranch(currentName, nextName)}
+                onDeleteBranch={(fullName) => void runDeleteBranch(fullName)}
+                disabled={submitting}
+              />
+
+              <div
+                className="panel-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                onPointerDown={() => startGraphResize()}
+              >
+                <GripVertical size={14} />
+              </div>
+
+              <CommitGraphCanvas
+                rows={filteredHistory}
+                filter={historyFilter}
+                onFilterChange={setHistoryFilter}
+                onLoadMore={() => void loadMoreGraph()}
+                hasMore={graphHasMore}
+                loading={graphLoading}
+                selectedCommitHash={selectedCommitHash}
+                onSelectCommit={(commitHash) => {
+                  setSelectedCommitHash(commitHash);
+                  setSelectedChangePath(null);
+                }}
+              />
+            </div>
           </section>
 
           <section
@@ -1759,6 +2021,34 @@ type DropLaneProps = {
   onBulkSecondaryAction?: () => void;
 };
 
+type BranchPaneProps = {
+  localBranches: BranchEntry[];
+  remoteBranches: BranchEntry[];
+  filter: string;
+  onFilterChange: (value: string) => void;
+  selectedBranchFullName: string | null;
+  onSelectBranch: (fullName: string) => void;
+  onSwitchBranch: (fullName: string) => void;
+  onRenameBranch: (currentName: string, nextName: string) => void;
+  onDeleteBranch: (fullName: string) => void;
+  disabled: boolean;
+};
+
+type BranchContextMenuState = {
+  branch: BranchEntry;
+  x: number;
+  y: number;
+  renameValue: string;
+  renameMode: boolean;
+};
+
+type BranchTreeNode = {
+  id: string;
+  label: string;
+  branch: BranchEntry | null;
+  children: BranchTreeNode[];
+};
+
 function DropLane({
   title,
   icon,
@@ -1894,6 +2184,274 @@ function DropLane({
 
         {!items.length ? <p className="muted">No files here.</p> : null}
       </div>
+    </section>
+  );
+}
+
+function BranchPane({
+  localBranches,
+  remoteBranches,
+  filter,
+  onFilterChange,
+  selectedBranchFullName,
+  onSelectBranch,
+  onSwitchBranch,
+  onRenameBranch,
+  onDeleteBranch,
+  disabled,
+}: BranchPaneProps) {
+  const rootRef = useRef<HTMLElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<BranchContextMenuState | null>(null);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => new Set(["local", "remote"]));
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const localTree = useMemo(() => buildBranchTree(localBranches, "local"), [localBranches]);
+  const remoteTree = useMemo(() => buildBranchTree(remoteBranches, "remote"), [remoteBranches]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === rootRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [contextMenu]);
+
+  const toggleFullscreen = useCallback(async () => {
+    if (!rootRef.current) {
+      return;
+    }
+
+    if (document.fullscreenElement === rootRef.current) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await rootRef.current.requestFullscreen();
+  }, []);
+
+  const toggleNode = (id: string) => {
+    setExpandedNodes((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const openContextMenu = (event: MouseEvent<HTMLElement>, branch: BranchEntry) => {
+    event.preventDefault();
+    onSelectBranch(branch.fullName);
+
+    const bounds = rootRef.current?.getBoundingClientRect();
+    setContextMenu({
+      branch,
+      x: bounds ? event.clientX - bounds.left : 16,
+      y: bounds ? event.clientY - bounds.top : 16,
+      renameValue: branch.name.replace(/^origin\//, ""),
+      renameMode: false,
+    });
+  };
+
+  const renderTreeNodes = (nodes: BranchTreeNode[], depth: number) => {
+    return nodes.map((node) => {
+      const isExpanded = filter.trim() ? true : expandedNodes.has(node.id);
+      const hasChildren = node.children.length > 0;
+      const branch = node.branch;
+
+      return (
+        <div key={node.id} className="branch-tree-node">
+          {branch ? (
+            <button
+              className={clsx(
+                "branch-row",
+                "branch-row--tree",
+                selectedBranchFullName === branch.fullName && "branch-row--selected",
+                branch.isCurrent && "branch-row--current",
+              )}
+              style={{ paddingLeft: `${10 + depth * 18}px` }}
+              onClick={() => {
+                onSelectBranch(branch.fullName);
+                setContextMenu(null);
+              }}
+              onContextMenu={(event) => openContextMenu(event, branch)}
+            >
+              <div className="branch-row__top">
+                <div className="branch-row__label">
+                  {hasChildren ? (
+                    <span
+                      className="branch-tree-toggle"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleNode(node.id);
+                      }}
+                    >
+                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    </span>
+                  ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
+                  <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
+                    {branch.branchKind}
+                  </span>
+                </div>
+                {branch.isCurrent ? <span className="pill pill--success">current</span> : null}
+              </div>
+              <strong title={branch.name}>{branch.name}</strong>
+              <p title={branch.subject}>{branch.subject || "No subject"}</p>
+              {branch.trackingName ? (
+                <span className="branch-row__meta">
+                  {branch.trackingName}{branch.trackingState ? ` ${branch.trackingState}` : ""}
+                </span>
+              ) : null}
+            </button>
+          ) : (
+            <button
+              className="branch-folder-row"
+              style={{ paddingLeft: `${10 + depth * 18}px` }}
+              onClick={() => toggleNode(node.id)}
+            >
+              <span className="branch-tree-toggle">
+                {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              </span>
+              <strong>{node.label}</strong>
+              <span className="muted">{node.children.length}</span>
+            </button>
+          )}
+
+          {hasChildren && isExpanded ? (
+            <div className="branch-tree-children">
+              {renderTreeNodes(node.children, depth + 1)}
+            </div>
+          ) : null}
+        </div>
+      );
+    });
+  };
+
+  const renderBranchGroup = (title: string, nodes: BranchTreeNode[]) => {
+    return (
+      <div className="branch-group">
+        <div className="branch-group__header">
+          <strong>{title}</strong>
+          <span className="muted">{nodes.length}</span>
+        </div>
+
+        <div className="branch-group__list">
+          {nodes.length ? renderTreeNodes(nodes, 0) : <p className="muted">No branches here.</p>}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <section ref={rootRef} className={clsx("branch-panel", isFullscreen && "branch-panel--fullscreen")}>
+      <div className="board__header">
+        <div>
+          <p className="eyebrow">Branches</p>
+          <h3>{selectedBranchFullName ? (localBranches.concat(remoteBranches).find((branch) => branch.fullName === selectedBranchFullName)?.name ?? "Branch view") : "Branch view"}</h3>
+        </div>
+        <button className="ghost-button" onClick={() => void toggleFullscreen()}>
+          {isFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
+          {isFullscreen ? "Window" : "Fullscreen"}
+        </button>
+      </div>
+
+      <input
+        className="history-filter"
+        placeholder="Filter branches"
+        value={filter}
+        onChange={(event) => onFilterChange(event.target.value)}
+      />
+
+      <div className="branch-panel__scroll panel-scroll">
+        {renderBranchGroup("Local", localTree)}
+        {renderBranchGroup("Remote", remoteTree)}
+      </div>
+
+      {contextMenu ? (
+        <div
+          className="branch-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          {!contextMenu.renameMode ? (
+            <>
+              <button
+                className="ghost-button"
+                disabled={disabled}
+                onClick={() => {
+                  onSwitchBranch(contextMenu.branch.fullName);
+                  setContextMenu(null);
+                }}
+              >
+                Switch to
+              </button>
+              {contextMenu.branch.branchKind === "local" ? (
+                <button
+                  className="ghost-button"
+                  disabled={disabled}
+                  onClick={() => setContextMenu((current) => current ? { ...current, renameMode: true } : current)}
+                >
+                  Rename
+                </button>
+              ) : null}
+              <button
+                className="ghost-button ghost-button--danger"
+                disabled={disabled || contextMenu.branch.isCurrent}
+                onClick={() => {
+                  onDeleteBranch(contextMenu.branch.fullName);
+                  setContextMenu(null);
+                }}
+              >
+                Delete
+              </button>
+            </>
+          ) : (
+            <form
+              className="branch-rename-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onRenameBranch(contextMenu.branch.fullName, contextMenu.renameValue);
+                setContextMenu(null);
+              }}
+            >
+              <input
+                className="changes-filter"
+                value={contextMenu.renameValue}
+                onChange={(event) => setContextMenu((current) => current ? { ...current, renameValue: event.target.value } : current)}
+                autoFocus
+              />
+              <div className="branch-rename-form__actions">
+                <button className="ghost-button" type="submit" disabled={disabled || !contextMenu.renameValue.trim()}>
+                  Save
+                </button>
+                <button className="ghost-button" type="button" onClick={() => setContextMenu((current) => current ? { ...current, renameMode: false } : current)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

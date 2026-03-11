@@ -57,6 +57,18 @@ export type CommitGraphPage = {
   nextSkip: number;
 };
 
+export type BranchEntry = {
+  fullName: string;
+  name: string;
+  branchKind: "local" | "remote";
+  remoteName: string | null;
+  trackingName: string | null;
+  trackingState: string | null;
+  isCurrent: boolean;
+  commitHash: string;
+  subject: string;
+};
+
 export type CommitFileEntry = {
   path: string;
   status: string;
@@ -129,6 +141,22 @@ export const listCommitGraph = (repoPath: string, limit = 240, skip = 0) => {
 
 export const inspectCommitDetail = (repoPath: string, commitHash: string) => {
   return invoke<CommitDetail>("inspect_commit_detail", { repoPath, commitHash });
+};
+
+export const listBranches = (repoPath: string) => {
+  return invoke<BranchEntry[]>("list_branches", { repoPath });
+};
+
+export const switchBranch = (repoPath: string, fullName: string) => {
+  return invoke<string>("switch_branch", { repoPath, fullName });
+};
+
+export const renameBranch = (repoPath: string, currentName: string, nextName: string) => {
+  return invoke<string>("rename_branch", { repoPath, currentName, nextName });
+};
+
+export const deleteBranch = (repoPath: string, fullName: string) => {
+  return invoke<string>("delete_branch", { repoPath, fullName });
 };
 
 export const listFileHistory = (repoPath: string, relativePath: string, limit = 20) => {

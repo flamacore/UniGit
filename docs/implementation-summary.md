@@ -55,6 +55,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Push and force-pull outcomes now surface through a dedicated inline remote dialog with clearer failure reasons instead of relying only on the generic error banner.
 - The refresh control now performs a real fetch so ahead/behind state and remote refs can update from the server instead of only rereading local status.
 - A persistent verbose application log now records frontend action events plus backend Git command execution details.
+- Branch listing, switching, renaming, and deletion commands now exist for local and remote branches.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
@@ -114,6 +115,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 ### History UI and graph foundation
 
 - The previous stacked history list has been replaced by a dedicated middle graph viewport.
+- The graph area is now split with a resizable branch-management pane on the left and the commit graph on the right.
 - The graph now renders on a real canvas-backed surface instead of using lane markers inside list rows.
 - Commit nodes and lane tracks are colorized per lane.
 - Merge commits are visually distinct from regular commits.
@@ -131,6 +133,9 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Selecting a working-tree file now also loads recent file history in the inspector.
 - File history entries can open the commit inspector, export that file version, restore it, apply that commit's file patch, or reverse it.
 - The top bar now includes a real push button and an initial force-pull control.
+- The new branch pane lists local and remote branches, supports click selection, right-click branch actions, branch switching, inline rename for local branches, and deletion for local or remote branches.
+- The branch pane now supports fullscreen mode independently of the commit graph.
+- Branches in the pane are now grouped into a slash-segment tree with fold and unfold behavior, so names like `task/xyz` appear under their shared folder path.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made

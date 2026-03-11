@@ -14,9 +14,9 @@ use thiserror::Error;
 use tokio::process::Command;
 
 use super::models::{
-    AssetDetail, AssetSummary, CommitDetail, CommitFileEntry, CommitGraphPage,
-    CommitGraphRow, CommitSummary, FileChange, FileHistoryEntry, FilePreview,
-    RepositoryCounts, RepositorySnapshot,
+    AssetDetail, AssetSummary, BranchEntry, CommitDetail, CommitFileEntry,
+    CommitGraphPage, CommitGraphRow, CommitSummary, FileChange, FileHistoryEntry,
+    FilePreview, RepositoryCounts, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -119,6 +119,34 @@ pub async fn list_commit_graph(repo_path: String, limit: usize, skip: usize) -> 
 #[command]
 pub async fn inspect_commit_detail(repo_path: String, commit_hash: String) -> Result<CommitDetail, String> {
     inspect_commit_detail_inner(repo_path, commit_hash)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn list_branches(repo_path: String) -> Result<Vec<BranchEntry>, String> {
+    list_branches_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn switch_branch(repo_path: String, full_name: String) -> Result<String, String> {
+    switch_branch_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn rename_branch(repo_path: String, current_name: String, next_name: String) -> Result<String, String> {
+    rename_branch_inner(repo_path, current_name, next_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn delete_branch(repo_path: String, full_name: String) -> Result<String, String> {
+    delete_branch_inner(repo_path, full_name)
         .await
         .map_err(|error| error.to_string())
 }
@@ -280,6 +308,68 @@ async fn list_file_history_inner(repo_path: String, relative_path: String, limit
                 authored_at: parts.next()?.to_string(),
                 subject: parts.next()?.to_string(),
                 decorations: parts.next().unwrap_or_default().to_string(),
+            })
+        })
+        .collect())
+}
+
+async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
+    let path = validate_repository_path(&repo_path)?;
+    let output = run_git_owned(
+        path,
+        vec![
+            "for-each-ref".into(),
+            "--sort=-committerdate".into(),
+            "--format=%(refname)	%(refname:short)	%(objectname:short)	%(subject)	%(upstream:short)	%(upstream:trackshort)	%(HEAD)".into(),
+            "refs/heads".into(),
+            "refs/remotes".into(),
+        ],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let full_name = parts.next()?.to_string();
+            let name = parts.next()?.to_string();
+
+            if full_name.ends_with("/HEAD") {
+                return None;
+            }
+
+            let commit_hash = parts.next().unwrap_or_default().to_string();
+            let subject = parts.next().unwrap_or_default().to_string();
+            let tracking_name = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let tracking_state = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let is_current = parts.next().unwrap_or_default().trim() == "*";
+
+            let (branch_kind, remote_name) = if let Some(rest) = full_name.strip_prefix("refs/remotes/") {
+                let remote = rest.split('/').next().map(ToString::to_string);
+                ("remote".to_string(), remote)
+            } else {
+                ("local".to_string(), None)
+            };
+
+            Some(BranchEntry {
+                full_name,
+                name,
+                branch_kind,
+                remote_name,
+                tracking_name,
+                tracking_state,
+                is_current,
+                commit_hash,
+                subject,
             })
         })
         .collect())
@@ -809,6 +899,103 @@ async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bo
     args.extend(paths);
 
     run_git_owned(path, args).await.map(|_| ())
+}
+
+async fn switch_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = full_name.trim();
+
+    if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
+        run_git_owned(path, vec!["switch".into(), local_name.to_string()]).await?;
+        return Ok(format!("Switched to {local_name}."));
+    }
+
+    if let Some(remote_branch) = trimmed.strip_prefix("refs/remotes/") {
+        let mut segments = remote_branch.split('/');
+        let remote_name = segments.next().unwrap_or_default();
+        let branch_name = segments.collect::<Vec<_>>().join("/");
+
+        if remote_name.is_empty() || branch_name.is_empty() {
+            return Err(GitServiceError::GitCommandFailed("Remote branch is malformed.".to_string()));
+        }
+
+        let local_exists = !run_git_owned(path, vec!["branch".into(), "--list".into(), branch_name.clone()])
+            .await?
+            .trim()
+            .is_empty();
+
+        if local_exists {
+            run_git_owned(path, vec!["switch".into(), branch_name.clone()]).await?;
+        } else {
+            run_git_owned(
+                path,
+                vec![
+                    "switch".into(),
+                    "--track".into(),
+                    "-c".into(),
+                    branch_name.clone(),
+                    format!("{remote_name}/{branch_name}"),
+                ],
+            )
+            .await?;
+        }
+
+        return Ok(format!("Switched to {branch_name}."));
+    }
+
+    Err(GitServiceError::GitCommandFailed("Unsupported branch reference.".to_string()))
+}
+
+async fn rename_branch_inner(repo_path: String, current_name: String, next_name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let current_trimmed = current_name.trim();
+    let next_trimmed = next_name.trim();
+
+    if next_trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("New branch name cannot be empty.".to_string()));
+    }
+
+    let local_name = current_trimmed
+        .strip_prefix("refs/heads/")
+        .ok_or_else(|| GitServiceError::GitCommandFailed("Only local branches can be renamed right now.".to_string()))?;
+
+    run_git_owned(
+        path,
+        vec!["branch".into(), "-m".into(), local_name.to_string(), next_trimmed.to_string()],
+    )
+    .await?;
+
+    Ok(format!("Renamed {local_name} to {next_trimmed}."))
+}
+
+async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = full_name.trim();
+
+    if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
+        run_git_owned(path, vec!["branch".into(), "-D".into(), local_name.to_string()]).await?;
+        return Ok(format!("Deleted local branch {local_name}."));
+    }
+
+    if let Some(remote_branch) = trimmed.strip_prefix("refs/remotes/") {
+        let mut segments = remote_branch.split('/');
+        let remote_name = segments.next().unwrap_or_default();
+        let branch_name = segments.collect::<Vec<_>>().join("/");
+
+        if remote_name.is_empty() || branch_name.is_empty() {
+            return Err(GitServiceError::GitCommandFailed("Remote branch is malformed.".to_string()));
+        }
+
+        run_git_owned(
+            path,
+            vec!["push".into(), remote_name.to_string(), "--delete".into(), branch_name.clone()],
+        )
+        .await?;
+
+        return Ok(format!("Deleted remote branch {remote_name}/{branch_name}."));
+    }
+
+    Err(GitServiceError::GitCommandFailed("Unsupported branch reference.".to_string()))
 }
 
 async fn push_repository_inner(repo_path: String) -> GitResult<String> {
