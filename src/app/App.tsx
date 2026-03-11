@@ -23,6 +23,7 @@ import {
   RepositorySnapshot,
   createCommit,
   exportFileFromCommit,
+  fetchRepository,
   forcePullRepository,
   inspectCommitDetail,
   inspectFilePreview,
@@ -30,6 +31,7 @@ import {
   listFileHistory,
   listCommitGraph,
   logClientEvent,
+  pullRepository,
   pushRepository,
   restoreFileFromCommit,
   stageFiles,
@@ -207,13 +209,17 @@ const getChangeMarker = (change: FileChange) => {
   return { tone: "changed", label: "Changed" };
 };
 
-const describeRemoteFailure = (operation: "push" | "force-pull", message: string): RemoteDialogState => {
+const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetch", message: string): RemoteDialogState => {
   const normalized = message.toLowerCase();
 
   if (normalized.includes("has no upstream branch") || normalized.includes("no upstream branch")) {
     return {
       tone: "error",
-      title: operation === "push" ? "Push is missing an upstream" : "Force pull needs an upstream",
+      title: operation === "push"
+        ? "Push is missing an upstream"
+        : operation === "fetch"
+          ? "Fetch needs a configured remote"
+          : "Pull needs an upstream",
       summary: "The current branch is not tracking a remote branch yet.",
       detail: message,
     };
@@ -248,10 +254,22 @@ const describeRemoteFailure = (operation: "push" | "force-pull", message: string
 
   return {
     tone: "error",
-    title: operation === "push" ? "Push failed" : "Force pull failed",
-    summary: operation === "push"
-      ? "Git rejected the push or could not complete the remote operation."
-      : "Git could not complete the destructive sync operation.",
+    title:
+      operation === "push"
+        ? "Push failed"
+        : operation === "pull"
+          ? "Pull failed"
+          : operation === "fetch"
+            ? "Fetch failed"
+            : "Force pull failed",
+    summary:
+      operation === "push"
+        ? "Git rejected the push or could not complete the remote operation."
+        : operation === "pull"
+          ? "Git could not complete the normal sync operation."
+          : operation === "fetch"
+            ? "Git could not update remote refs during refresh."
+            : "Git could not complete the destructive sync operation.",
     detail: message,
   };
 };
@@ -459,7 +477,7 @@ export function App() {
     });
   }, []);
 
-  const refreshRepository = useCallback(async () => {
+  const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
       setSnapshot(null);
       setCommitGraph([]);
@@ -473,6 +491,17 @@ export function App() {
     setError(null);
 
     try {
+      if (options?.fetchRemote) {
+        try {
+          writeClientLog("git.fetch", `Fetching remote updates for ${selectedRepository}.`);
+          await fetchRepository(selectedRepository);
+        } catch (reason) {
+          const message = reason instanceof Error ? reason.message : "Fetch failed.";
+          setRemoteDialog(describeRemoteFailure("fetch", message));
+          writeClientLog("git.fetch.error", `Fetch failed for ${selectedRepository}.`, message);
+        }
+      }
+
       const [nextSnapshot, nextGraph] = await Promise.all([
         inspectRepository(selectedRepository),
         listCommitGraph(selectedRepository, 260, 0),
@@ -518,7 +547,7 @@ export function App() {
       setLoading(false);
       setGraphLoading(false);
     }
-  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath]);
+  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, writeClientLog]);
 
   const loadMoreGraph = useCallback(async () => {
     if (!selectedRepository || graphLoading || !graphHasMore) {
@@ -1088,9 +1117,38 @@ export function App() {
       await refreshRepository();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Push failed.";
-      setError(message);
+      setError(null);
       setRemoteDialog(describeRemoteFailure("push", message));
       writeClientLog("git.push.error", `Push failed for ${selectedRepository}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
+
+  const runPull = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    setRemoteDialog(null);
+
+    try {
+      writeClientLog("git.pull", `Pull requested for ${selectedRepository}.`);
+      const result = await pullRepository(selectedRepository);
+      setStatusMessage(result || "Pull completed.");
+      setRemoteDialog({
+        tone: "info",
+        title: "Pull completed",
+        summary: result || "Remote commits were integrated with a fast-forward pull.",
+      });
+      await refreshRepository();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Pull failed.";
+      setError(null);
+      setRemoteDialog(describeRemoteFailure("pull", message));
+      writeClientLog("git.pull.error", `Pull failed for ${selectedRepository}.`, message);
     } finally {
       setSubmitting(false);
     }
@@ -1109,6 +1167,7 @@ export function App() {
       writeClientLog("git.force-pull", `Force pull requested for ${selectedRepository}.`);
       const result = await forcePullRepository(selectedRepository);
       setStatusMessage(result);
+      setError(null);
       setRemoteDialog({
         tone: "info",
         title: "Force pull completed",
@@ -1117,7 +1176,7 @@ export function App() {
       await refreshRepository();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Force pull failed.";
-      setError(message);
+      setError(null);
       setRemoteDialog(describeRemoteFailure("force-pull", message));
       writeClientLog("git.force-pull.error", `Force pull failed for ${selectedRepository}.`, message);
     } finally {
@@ -1185,6 +1244,13 @@ export function App() {
             </div>
             <button
               className="ghost-button"
+              disabled={!selectedRepository || loading || submitting || !snapshot?.behind}
+              onClick={() => void runPull()}
+            >
+              Pull
+            </button>
+            <button
+              className="ghost-button"
               disabled={!selectedRepository || loading || submitting}
               onClick={() => void runPush()}
             >
@@ -1200,7 +1266,7 @@ export function App() {
             <button
               className="icon-button"
               disabled={!selectedRepository || loading || submitting}
-              onClick={() => void refreshRepository()}
+              onClick={() => void refreshRepository({ fetchRemote: true })}
             >
               <RefreshCw size={16} />
             </button>

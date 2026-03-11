@@ -145,6 +145,20 @@ pub async fn push_repository(repo_path: String) -> Result<String, String> {
 }
 
 #[command]
+pub async fn fetch_repository(repo_path: String) -> Result<String, String> {
+    fetch_repository_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn pull_repository(repo_path: String) -> Result<String, String> {
+    pull_repository_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn force_pull_repository(repo_path: String) -> Result<String, String> {
     force_pull_repository_inner(repo_path)
         .await
@@ -804,6 +818,30 @@ async fn push_repository_inner(repo_path: String) -> GitResult<String> {
 
     if trimmed.is_empty() {
         Ok("Push completed.".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+async fn fetch_repository_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let output = run_git_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        Ok("Fetch completed.".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+async fn pull_repository_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let output = run_git_owned(path, vec!["pull".into(), "--ff-only".into()]).await?;
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        Ok("Pull completed.".to_string())
     } else {
         Ok(trimmed.to_string())
     }

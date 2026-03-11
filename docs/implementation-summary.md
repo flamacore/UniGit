@@ -49,8 +49,10 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - File history inspection now exists for the selected working-tree file.
 - File-level patch application and reverse patch application now exist from file history entries.
 - Push now exists as a first-class top-bar remote action.
+- Normal pull now exists as a first-class top-bar remote action.
 - A first guarded force-pull action now exists with an inline consequence summary and safety ref creation.
 - Push and force-pull outcomes now surface through a dedicated inline remote dialog with clearer failure reasons instead of relying only on the generic error banner.
+- The refresh control now performs a real fetch so ahead/behind state and remote refs can update from the server instead of only rereading local status.
 - A persistent verbose application log now records frontend action events plus backend Git command execution details.
 - Stage files command exists.
 - Unstage files command exists.
