@@ -1,4 +1,11 @@
-use std::{fs, path::{Path, PathBuf}, process::Stdio, time::UNIX_EPOCH};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::{Mutex, OnceLock},
+    time::UNIX_EPOCH,
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
@@ -13,6 +20,9 @@ use super::models::{
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+const LOG_DETAIL_LIMIT: usize = 6_000;
+
+static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Error)]
 enum GitServiceError {
@@ -34,6 +44,12 @@ type GitResult<T> = Result<T, GitServiceError>;
 pub async fn inspect_repository(repo_path: String) -> Result<RepositorySnapshot, String> {
     inspect_repository_inner(repo_path)
         .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn log_client_event(scope: String, message: String, detail: Option<String>) -> Result<(), String> {
+    append_log("frontend", &scope, &message, detail.as_deref())
         .map_err(|error| error.to_string())
 }
 
@@ -871,6 +887,10 @@ where
 }
 
 async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), None);
+
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -886,15 +906,34 @@ async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String>
         })?;
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
         return Err(GitServiceError::GitCommandFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr,
         ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&stdout),
+    );
+
+    Ok(stdout)
 }
 
 async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<Vec<u8>> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), Some("binary stdout expected"));
+
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -910,15 +949,38 @@ async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<V
         })?;
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
         return Err(GitServiceError::GitCommandFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr,
         ));
     }
+
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&format!("{} binary bytes returned", output.stdout.len())),
+    );
 
     Ok(output.stdout)
 }
 
 async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Vec<u8>) -> GitResult<String> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.start",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&format!("stdin bytes={}", input.len())),
+    );
+
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_path)
@@ -946,12 +1008,70 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
         .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
         return Err(GitServiceError::GitCommandFailed(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr,
         ));
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&stdout),
+    );
+
+    Ok(stdout)
+}
+
+fn append_log(source: &str, scope: &str, message: &str, detail: Option<&str>) -> std::io::Result<()> {
+    let _guard = LOG_LOCK.get_or_init(|| Mutex::new(())).lock().expect("log mutex poisoned");
+    let log_path = resolve_log_path()?;
+
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+
+    writeln!(
+        file,
+        "[{}] [{}] [{}] {}",
+        chrono_like_timestamp(),
+        source,
+        scope,
+        message
+    )?;
+
+    if let Some(value) = detail.filter(|value| !value.trim().is_empty()) {
+        let truncated = truncate_for_log(value);
+        writeln!(file, "  {}", truncated.replace('\n', "\n  "))?;
+    }
+
+    Ok(())
+}
+
+fn resolve_log_path() -> std::io::Result<PathBuf> {
+    let base = dirs_next::data_local_dir().unwrap_or_else(std::env::temp_dir);
+    Ok(base.join("UniGit").join("logs").join("unigit.log"))
+}
+
+fn truncate_for_log(value: &str) -> String {
+    if value.len() <= LOG_DETAIL_LIMIT {
+        return value.to_string();
+    }
+
+    format!("{}\n...[truncated {} chars]", &value[..LOG_DETAIL_LIMIT], value.len() - LOG_DETAIL_LIMIT)
 }
 
 fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileChange>, RepositoryCounts) {

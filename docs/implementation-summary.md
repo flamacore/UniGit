@@ -31,6 +31,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Repository switching happens through top tabs.
 - The app uses a viewport-contained layout with internal pane scrolling.
 - Large-screen scaling for 4K-class displays is already handled.
+- User-facing status, error, and remote-operation notifications now auto-dismiss after a delay unless the pointer is hovering them.
 
 ### Repository management
 
@@ -50,10 +51,16 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Push now exists as a first-class top-bar remote action.
 - A first guarded force-pull action now exists with an inline consequence summary and safety ref creation.
 - Push and force-pull outcomes now surface through a dedicated inline remote dialog with clearer failure reasons instead of relying only on the generic error banner.
+- A persistent verbose application log now records frontend action events plus backend Git command execution details.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
 - All of these are invoked from the frontend through Tauri commands.
+
+### Logging
+
+- The app now writes a persistent log file to the local app data folder at `UniGit/logs/unigit.log`.
+- The log includes frontend action events, remote-operation outcomes, and verbose Git command start, success, and failure entries.
 
 ### Working tree UI
 

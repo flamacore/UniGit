@@ -29,6 +29,7 @@ import {
   inspectRepository,
   listFileHistory,
   listCommitGraph,
+  logClientEvent,
   pushRepository,
   restoreFileFromCommit,
   stageFiles,
@@ -424,6 +425,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
+  const [notificationsHovered, setNotificationsHovered] = useState(false);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -449,6 +451,12 @@ export function App() {
     });
     setGraphHasMore(page.hasMore);
     setGraphNextSkip(page.nextSkip);
+  }, []);
+
+  const writeClientLog = useCallback((scope: string, message: string, detail?: string) => {
+    void logClientEvent(scope, message, detail).catch(() => {
+      // Logging must never block UI actions.
+    });
   }, []);
 
   const refreshRepository = useCallback(async () => {
@@ -662,6 +670,35 @@ export function App() {
     void refreshRepository();
   }, [refreshRepository]);
 
+  useEffect(() => {
+    if (notificationsHovered) {
+      return;
+    }
+
+    const timers: number[] = [];
+
+    if (statusMessage) {
+      timers.push(window.setTimeout(() => setStatusMessage(null), 5000));
+    }
+
+    if (error) {
+      timers.push(window.setTimeout(() => setError(null), 9000));
+    }
+
+    if (remoteDialog) {
+      timers.push(
+        window.setTimeout(
+          () => setRemoteDialog(null),
+          remoteDialog.tone === "error" ? 12000 : 7000,
+        ),
+      );
+    }
+
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [error, notificationsHovered, remoteDialog, statusMessage]);
+
   const pickRepository = useCallback(async () => {
     let path: string | null = null;
 
@@ -680,8 +717,9 @@ export function App() {
     if (path) {
       addRepository(path);
       setStatusMessage(`Added ${path}`);
+      writeClientLog("repo.add", `Added repository ${path}`);
     }
-  }, [addRepository]);
+  }, [addRepository, writeClientLog]);
 
   const runFileOperation = useCallback(
     async (mode: "stage" | "unstage", paths: string[]) => {
@@ -693,6 +731,7 @@ export function App() {
       setError(null);
 
       try {
+        writeClientLog("git.stage", `Running ${mode} for ${paths.length} path(s).`, paths.join("\n"));
         if (mode === "stage") {
           await stageFiles(selectedRepository, paths);
           setStatusMessage(`Staged ${paths.length} file${paths.length > 1 ? "s" : ""}.`);
@@ -706,11 +745,16 @@ export function App() {
         await refreshRepository();
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : "Git operation failed.");
+        writeClientLog(
+          "git.stage.error",
+          `Failed to ${mode} ${paths.length} path(s).`,
+          reason instanceof Error ? reason.message : "Git operation failed.",
+        );
       } finally {
         setSubmitting(false);
       }
     },
-    [refreshRepository, selectedRepository],
+    [refreshRepository, selectedRepository, writeClientLog],
   );
 
   const commitChanges = useCallback(async () => {
@@ -722,16 +766,22 @@ export function App() {
     setError(null);
 
     try {
+      writeClientLog("git.commit", "Creating commit.", commitMessage.trim());
       await createCommit(selectedRepository, commitMessage.trim());
       setCommitMessage("");
       setStatusMessage("Committed staged changes.");
       await refreshRepository();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit failed.");
+      writeClientLog(
+        "git.commit.error",
+        "Commit failed.",
+        reason instanceof Error ? reason.message : "Commit failed.",
+      );
     } finally {
       setSubmitting(false);
     }
-  }, [commitMessage, refreshRepository, selectedRepository]);
+  }, [commitMessage, refreshRepository, selectedRepository, writeClientLog]);
 
   const exportCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -760,14 +810,20 @@ export function App() {
     setError(null);
 
     try {
+      writeClientLog("history.export", `Exporting ${relativePath} from ${commitHash}.`, destinationPath);
       await exportFileFromCommit(selectedRepository, commitHash, relativePath, destinationPath);
       setStatusMessage(`Exported ${relativePath} from ${commitHash.slice(0, 7)}.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit file export failed.");
+      writeClientLog(
+        "history.export.error",
+        `Export failed for ${relativePath} from ${commitHash}.`,
+        reason instanceof Error ? reason.message : "Commit file export failed.",
+      );
     } finally {
       setSubmitting(false);
     }
-  }, [selectedRepository]);
+  }, [selectedRepository, writeClientLog]);
 
   const restoreCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -778,16 +834,22 @@ export function App() {
     setError(null);
 
     try {
+      writeClientLog("history.restore", `Restoring ${relativePath} from ${commitHash}.`);
       await restoreFileFromCommit(selectedRepository, commitHash, relativePath);
       setStatusMessage(`Restored ${relativePath} from ${commitHash.slice(0, 7)}.`);
       setSelectedChangePath(relativePath);
       await refreshRepository();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit file restore failed.");
+      writeClientLog(
+        "history.restore.error",
+        `Restore failed for ${relativePath} from ${commitHash}.`,
+        reason instanceof Error ? reason.message : "Commit file restore failed.",
+      );
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository]);
+  }, [refreshRepository, selectedRepository, writeClientLog]);
 
   const applyFilePatchFromCommit = useCallback(async (commitHash: string, relativePath: string, reverse: boolean) => {
     if (!selectedRepository || !commitHash) {
@@ -798,6 +860,10 @@ export function App() {
     setError(null);
 
     try {
+      writeClientLog(
+        reverse ? "history.patch.reverse" : "history.patch.apply",
+        `${reverse ? "Reversing" : "Applying"} file patch for ${relativePath} from ${commitHash}.`,
+      );
       await applyCommitFilePatch(selectedRepository, commitHash, relativePath, reverse);
       setStatusMessage(
         `${reverse ? "Reverted" : "Applied"} ${relativePath} ${reverse ? "from" : "using"} ${commitHash.slice(0, 7)}.`,
@@ -806,10 +872,15 @@ export function App() {
       await refreshRepository();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Commit file patch failed.");
+      writeClientLog(
+        reverse ? "history.patch.reverse.error" : "history.patch.apply.error",
+        `${reverse ? "Reverse" : "Apply"} patch failed for ${relativePath} from ${commitHash}.`,
+        reason instanceof Error ? reason.message : "Commit file patch failed.",
+      );
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository]);
+  }, [refreshRepository, selectedRepository, writeClientLog]);
 
   const rawUnstagedChanges = useMemo(
     () =>
@@ -1006,6 +1077,7 @@ export function App() {
     setRemoteDialog(null);
 
     try {
+      writeClientLog("git.push", `Pushing repository ${selectedRepository}.`);
       const result = await pushRepository(selectedRepository);
       setStatusMessage(result || "Push completed.");
       setRemoteDialog({
@@ -1018,10 +1090,11 @@ export function App() {
       const message = reason instanceof Error ? reason.message : "Push failed.";
       setError(message);
       setRemoteDialog(describeRemoteFailure("push", message));
+      writeClientLog("git.push.error", `Push failed for ${selectedRepository}.`, message);
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository]);
+  }, [refreshRepository, selectedRepository, writeClientLog]);
 
   const runForcePull = useCallback(async () => {
     if (!selectedRepository) {
@@ -1033,6 +1106,7 @@ export function App() {
     setRemoteDialog(null);
 
     try {
+      writeClientLog("git.force-pull", `Force pull requested for ${selectedRepository}.`);
       const result = await forcePullRepository(selectedRepository);
       setStatusMessage(result);
       setRemoteDialog({
@@ -1045,10 +1119,11 @@ export function App() {
       const message = reason instanceof Error ? reason.message : "Force pull failed.";
       setError(message);
       setRemoteDialog(describeRemoteFailure("force-pull", message));
+      writeClientLog("git.force-pull.error", `Force pull failed for ${selectedRepository}.`, message);
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository]);
+  }, [refreshRepository, selectedRepository, writeClientLog]);
 
   return (
     <div className="shell">
@@ -1134,10 +1209,20 @@ export function App() {
 
         {powerSummary ? <div className="power-summary">{powerSummary}</div> : null}
         {remoteDialog ? (
-          <div className={clsx("banner", "remote-dialog", remoteDialog.tone === "error" && "remote-dialog--error")}>
+          <div
+            className={clsx("banner", "remote-dialog", remoteDialog.tone === "error" && "remote-dialog--error")}
+            onMouseEnter={() => setNotificationsHovered(true)}
+            onMouseLeave={() => setNotificationsHovered(false)}
+          >
             <div className="remote-dialog__header">
               <strong>{remoteDialog.title}</strong>
-              <button className="icon-button" onClick={() => setRemoteDialog(null)}>
+              <button
+                className="icon-button"
+                onClick={() => {
+                  writeClientLog("notification.dismiss", `Dismissed remote dialog: ${remoteDialog.title}`);
+                  setRemoteDialog(null);
+                }}
+              >
                 <X size={14} />
               </button>
             </div>
@@ -1149,8 +1234,24 @@ export function App() {
 
       <main className="workspace">
 
-        {error ? <div className="banner banner--error">{error}</div> : null}
-        {statusMessage ? <div className="banner">{statusMessage}</div> : null}
+        {error ? (
+          <div
+            className="banner banner--error"
+            onMouseEnter={() => setNotificationsHovered(true)}
+            onMouseLeave={() => setNotificationsHovered(false)}
+          >
+            {error}
+          </div>
+        ) : null}
+        {statusMessage ? (
+          <div
+            className="banner"
+            onMouseEnter={() => setNotificationsHovered(true)}
+            onMouseLeave={() => setNotificationsHovered(false)}
+          >
+            {statusMessage}
+          </div>
+        ) : null}
 
         <section className="content-grid">
           <section className="panel graph-panel graph-panel--embedded">

@@ -183,6 +183,10 @@ export const forcePullRepository = (repoPath: string) => {
   return invoke<string>("force_pull_repository", { repoPath });
 };
 
+export const logClientEvent = (scope: string, message: string, detail?: string) => {
+  return invoke<void>("log_client_event", { scope, message, detail });
+};
+
 export const stageFiles = (repoPath: string, paths: string[]) => {
   return invoke<void>("stage_files", { repoPath, paths });
 };
