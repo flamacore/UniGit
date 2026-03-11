@@ -1,1 +1,2 @@
-This file is used as a rubber duck for testing pull/push or other operational functionality
+This file is used as a rubber duck for testing pull/push or other operational functionality.
+Test push
