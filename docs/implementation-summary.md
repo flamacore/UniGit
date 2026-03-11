@@ -44,6 +44,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Commit history listing exists in Rust.
 - Commit graph paging exists and now returns lane-aware graph rows in pages instead of a single small list.
 - Commit detail inspection exists and returns commit metadata plus changed files for a selected commit.
+- Export-from-commit and restore-from-commit actions now exist for files listed in the selected commit inspector.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
@@ -109,6 +110,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Graph scrollbar styling has been themed to match the rest of the application.
 - Graph rows are now selectable.
 - Selecting a commit loads a commit inspector with metadata and a per-commit changed-file list.
+- Selected commit files can now be exported from that commit or restored into the working tree.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made
@@ -167,7 +169,7 @@ The app has also been run through Tauri dev during iteration.
 - Cross-lane merge connector refinement and deeper branch topology rendering
 - Rich history query engine beyond client-side filtering of loaded pages
 - File tree per commit beyond the changed-file list
-- File history, export-from-commit, restore-from-commit, revert-to-commit, and file-only patch actions
+- File history, revert-to-commit, and file-only patch actions
 - Branch-scoped graph views, ancestry focus, and path history overlays
 - Rendered PSD preview
 - Embedded GLTF/FBX viewer

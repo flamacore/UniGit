@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import {
   FolderPlus,
@@ -20,10 +20,12 @@ import {
   FilePreview,
   RepositorySnapshot,
   createCommit,
+  exportFileFromCommit,
   inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
   listCommitGraph,
+  restoreFileFromCommit,
   stageFiles,
   unstageFiles,
 } from "../features/repositories/api";
@@ -612,6 +614,62 @@ export function App() {
     }
   }, [commitMessage, refreshRepository, selectedRepository]);
 
+  const exportCommitFile = useCallback(async (relativePath: string) => {
+    if (!selectedRepository || !selectedCommitHash) {
+      return;
+    }
+
+    const defaultFileName = relativePath.split(/[\\/]/).pop() ?? "file";
+    let destinationPath: string | null = null;
+
+    if (isTauri()) {
+      const selected = await save({
+        defaultPath: defaultFileName,
+        title: `Export ${defaultFileName} from commit`,
+      });
+
+      destinationPath = typeof selected === "string" ? selected : null;
+    } else {
+      destinationPath = window.prompt("Export destination path", defaultFileName) ?? null;
+    }
+
+    if (!destinationPath) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      await exportFileFromCommit(selectedRepository, selectedCommitHash, relativePath, destinationPath);
+      setStatusMessage(`Exported ${relativePath} from ${selectedCommitHash.slice(0, 7)}.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Commit file export failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [selectedCommitHash, selectedRepository]);
+
+  const restoreCommitFile = useCallback(async (relativePath: string) => {
+    if (!selectedRepository || !selectedCommitHash) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      await restoreFileFromCommit(selectedRepository, selectedCommitHash, relativePath);
+      setStatusMessage(`Restored ${relativePath} from ${selectedCommitHash.slice(0, 7)}.`);
+      setSelectedChangePath(relativePath);
+      await refreshRepository();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Commit file restore failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedCommitHash, selectedRepository]);
+
   const rawUnstagedChanges = useMemo(
     () =>
       snapshot?.files.filter(
@@ -1093,9 +1151,25 @@ export function App() {
                             <span className="pill pill--default">{file.status}</span>
                             <strong title={file.path}>{file.path}</strong>
                           </div>
-                          <span className="preview-panel__meta">
-                            {file.additions ?? 0}+ / {file.deletions ?? 0}-
-                          </span>
+                          <div className="commit-file-row__actions">
+                            <span className="preview-panel__meta">
+                              {file.additions ?? 0}+ / {file.deletions ?? 0}-
+                            </span>
+                            <button
+                              className="ghost-button"
+                              disabled={submitting}
+                              onClick={() => void exportCommitFile(file.path)}
+                            >
+                              Export
+                            </button>
+                            <button
+                              className="ghost-button"
+                              disabled={submitting}
+                              onClick={() => void restoreCommitFile(file.path)}
+                            >
+                              Restore
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>

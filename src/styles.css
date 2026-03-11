@@ -593,6 +593,13 @@ h4 {
   gap: 10px;
 }
 
+.commit-file-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .commit-file-row {
   justify-content: space-between;
   padding: 8px 10px;

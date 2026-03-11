@@ -122,6 +122,32 @@ export const inspectCommitDetail = (repoPath: string, commitHash: string) => {
   return invoke<CommitDetail>("inspect_commit_detail", { repoPath, commitHash });
 };
 
+export const exportFileFromCommit = (
+  repoPath: string,
+  commitHash: string,
+  relativePath: string,
+  destinationPath: string,
+) => {
+  return invoke<void>("export_file_from_commit", {
+    repoPath,
+    commitHash,
+    relativePath,
+    destinationPath,
+  });
+};
+
+export const restoreFileFromCommit = (
+  repoPath: string,
+  commitHash: string,
+  relativePath: string,
+) => {
+  return invoke<void>("restore_file_from_commit", {
+    repoPath,
+    commitHash,
+    relativePath,
+  });
+};
+
 export const stageFiles = (repoPath: string, paths: string[]) => {
   return invoke<void>("stage_files", { repoPath, paths });
 };

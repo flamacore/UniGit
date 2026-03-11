@@ -38,6 +38,29 @@ pub async fn inspect_repository(repo_path: String) -> Result<RepositorySnapshot,
 }
 
 #[command]
+pub async fn export_file_from_commit(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+    destination_path: String,
+) -> Result<(), String> {
+    export_file_from_commit_inner(repo_path, commit_hash, relative_path, destination_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn restore_file_from_commit(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+) -> Result<(), String> {
+    restore_file_from_commit_inner(repo_path, commit_hash, relative_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn inspect_file_preview(repo_path: String, relative_path: String) -> Result<FilePreview, String> {
     inspect_file_preview_inner(repo_path, relative_path)
         .await
@@ -558,6 +581,61 @@ async fn inspect_commit_detail_inner(repo_path: String, commit_hash: String) -> 
     })
 }
 
+async fn export_file_from_commit_inner(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+    destination_path: String,
+) -> GitResult<()> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_hash = commit_hash.trim();
+    let destination = PathBuf::from(destination_path.trim());
+
+    if trimmed_hash.is_empty() || relative_path.trim().is_empty() || destination.as_os_str().is_empty() {
+        return Err(GitServiceError::InvalidFileSelection);
+    }
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+    }
+
+    let git_object = format!("{}:{}", trimmed_hash, relative_path);
+    let bytes = run_git_bytes_owned(path, vec!["show".into(), git_object]).await?;
+
+    fs::write(destination, bytes)
+        .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+
+    Ok(())
+}
+
+async fn restore_file_from_commit_inner(
+    repo_path: String,
+    commit_hash: String,
+    relative_path: String,
+) -> GitResult<()> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_hash = commit_hash.trim();
+    let trimmed_path = relative_path.trim();
+
+    if trimmed_hash.is_empty() || trimmed_path.is_empty() {
+        return Err(GitServiceError::InvalidFileSelection);
+    }
+
+    run_git_owned(
+        path,
+        vec![
+            "restore".into(),
+            format!("--source={trimmed_hash}"),
+            "--worktree".into(),
+            "--".into(),
+            trimmed_path.to_string(),
+        ],
+    )
+    .await
+    .map(|_| ())
+}
+
 async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bool) -> GitResult<()> {
     let path = validate_repository_path(&repo_path)?;
 
@@ -653,6 +731,30 @@ async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String>
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<Vec<u8>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    if !output.status.success() {
+        return Err(GitServiceError::GitCommandFailed(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+
+    Ok(output.stdout)
 }
 
 fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileChange>, RepositoryCounts) {
