@@ -254,6 +254,12 @@ h4 {
   font-size: 10px;
 }
 
+.power-summary {
+  color: var(--text-3);
+  font-size: 10px;
+  padding-left: 2px;
+}
+
 .workspace {
   display: grid;
   grid-template-rows: auto 1fr;
@@ -1027,6 +1033,16 @@ h4 {
 .ghost-button--active {
   background: rgba(121, 164, 255, 0.16);
   color: #cfe0ff;
+}
+
+.ghost-button--danger {
+  background: rgba(134, 33, 49, 0.24);
+  color: #ffb5c2;
+}
+
+.ghost-button--danger:disabled {
+  background: rgba(134, 33, 49, 0.12);
+  color: rgba(255, 181, 194, 0.58);
 }
 
 button:hover:enabled {

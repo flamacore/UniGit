@@ -47,6 +47,8 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Export-from-commit and restore-from-commit actions now exist for files listed in the selected commit inspector.
 - File history inspection now exists for the selected working-tree file.
 - File-level patch application and reverse patch application now exist from file history entries.
+- Push now exists as a first-class top-bar remote action.
+- A first guarded force-pull action now exists with an inline consequence summary and safety ref creation.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
@@ -115,6 +117,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Selected commit files can now be exported from that commit or restored into the working tree.
 - Selecting a working-tree file now also loads recent file history in the inspector.
 - File history entries can open the commit inspector, export that file version, restore it, apply that commit's file patch, or reverse it.
+- The top bar now includes a real push button and an initial force-pull control.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made

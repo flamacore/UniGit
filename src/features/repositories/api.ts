@@ -175,6 +175,14 @@ export const applyCommitFilePatch = (
   });
 };
 
+export const pushRepository = (repoPath: string) => {
+  return invoke<string>("push_repository", { repoPath });
+};
+
+export const forcePullRepository = (repoPath: string) => {
+  return invoke<string>("force_pull_repository", { repoPath });
+};
+
 export const stageFiles = (repoPath: string, paths: string[]) => {
   return invoke<void>("stage_files", { repoPath, paths });
 };

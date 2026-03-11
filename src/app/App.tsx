@@ -23,11 +23,13 @@ import {
   RepositorySnapshot,
   createCommit,
   exportFileFromCommit,
+  forcePullRepository,
   inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
   listFileHistory,
   listCommitGraph,
+  pushRepository,
   restoreFileFromCommit,
   stageFiles,
   unstageFiles,
@@ -807,6 +809,22 @@ export function App() {
     ? `Detached at ${snapshot.currentBranch}`
     : snapshot?.currentBranch ?? "No repository selected";
 
+  const powerSummary = useMemo(() => {
+    if (!snapshot) {
+      return null;
+    }
+
+    if (snapshot.behind > 0) {
+      return "Force pull resets tracked files to upstream and stores a safety ref first.";
+    }
+
+    if (snapshot.ahead > 0) {
+      return "Push publishes your local commits to the tracked remote branch.";
+    }
+
+    return null;
+  }, [snapshot]);
+
   const previewHeading = preview?.previewKind
     ? `${preview.previewKind[0].toUpperCase()}${preview.previewKind.slice(1)} preview`
     : "Preview";
@@ -861,6 +879,44 @@ export function App() {
   const lowerGridTemplateColumns = useMemo(() => {
     return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
+
+  const runPush = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const result = await pushRepository(selectedRepository);
+      setStatusMessage(result || "Push completed.");
+      await refreshRepository();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Push failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository]);
+
+  const runForcePull = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const result = await forcePullRepository(selectedRepository);
+      setStatusMessage(result);
+      await refreshRepository();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Force pull failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository]);
 
   return (
     <div className="shell">
@@ -921,6 +977,20 @@ export function App() {
               <span>{snapshot ? `${snapshot.ahead}/${snapshot.behind}` : "No repo"}</span>
             </div>
             <button
+              className="ghost-button"
+              disabled={!selectedRepository || loading || submitting}
+              onClick={() => void runPush()}
+            >
+              Push
+            </button>
+            <button
+              className="ghost-button ghost-button--danger"
+              disabled={!selectedRepository || loading || submitting || !snapshot?.behind}
+              onClick={() => void runForcePull()}
+            >
+              Force pull
+            </button>
+            <button
               className="icon-button"
               disabled={!selectedRepository || loading || submitting}
               onClick={() => void refreshRepository()}
@@ -929,6 +999,8 @@ export function App() {
             </button>
           </div>
         </div>
+
+        {powerSummary ? <div className="power-summary">{powerSummary}</div> : null}
       </header>
 
       <main className="workspace">

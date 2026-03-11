@@ -122,6 +122,20 @@ pub async fn unstage_files(repo_path: String, paths: Vec<String>) -> Result<(), 
 }
 
 #[command]
+pub async fn push_repository(repo_path: String) -> Result<String, String> {
+    push_repository_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn force_pull_repository(repo_path: String) -> Result<String, String> {
+    force_pull_repository_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn create_commit(repo_path: String, message: String) -> Result<(), String> {
     let path = validate_repository_path(&repo_path).map_err(|error| error.to_string())?;
     let trimmed = message.trim();
@@ -765,6 +779,40 @@ async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bo
     args.extend(paths);
 
     run_git_owned(path, args).await.map(|_| ())
+}
+
+async fn push_repository_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let output = run_git_owned(path, vec!["push".into()]).await?;
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        Ok("Push completed.".to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
+}
+
+async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let upstream = run_git_owned(
+        path,
+        vec!["rev-parse".into(), "--abbrev-ref".into(), "--symbolic-full-name".into(), "@{u}".into()],
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    if upstream.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("No upstream branch is configured for the current branch.".to_string()));
+    }
+
+    let safety_ref = format!("refs/unigit/safety/force-pull-{}", chrono_like_timestamp());
+    run_git_owned(path, vec!["update-ref".into(), safety_ref.clone(), "HEAD".into()]).await?;
+    run_git_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
+    run_git_owned(path, vec!["reset".into(), "--hard".into(), upstream.clone()]).await?;
+
+    Ok(format!("Force pull completed from {upstream}. Safety ref saved at {safety_ref}."))
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {
