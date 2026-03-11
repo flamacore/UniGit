@@ -2,7 +2,7 @@
 
 UniGit is a Windows-first desktop Git client aimed at high-speed Unity and game-development workflows.
 
-DISCLAIMER: Created with the help of AI, combining both human written code & AI written code. 
+DISCLAIMER: Created with the help of AI, combining both human written code & AI written code. Mostly Claude
 
 ## Current slice
 
