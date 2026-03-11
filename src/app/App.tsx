@@ -675,9 +675,8 @@ export function App() {
     <div className="shell">
       <header className="chrome panel">
         <div className="chrome__row">
-          <div className="brand-block">
-            <p className="eyebrow">UniGit</p>
-            <h1>Desktop</h1>
+          <div className="brand-block brand-block--compact">
+            <h1>UniGit</h1>
           </div>
 
           <div className="repo-tabs panel-scroll">
@@ -723,16 +722,12 @@ export function App() {
               <GitBranch size={14} />
               <span>{branchLabel}</span>
             </div>
-            {selectedRepository ? (
-              <span className="meta-inline" title={selectedRepository}>
-                {selectedRepository}
-              </span>
-            ) : null}
+            {selectedRepository ? <span className="meta-inline" title={selectedRepository}>{selectedRepository}</span> : null}
           </div>
 
           <div className="topbar__actions">
             <div className="sync-chip">
-              <span>{snapshot ? `${snapshot.ahead} ahead / ${snapshot.behind} behind` : "No repo"}</span>
+              <span>{snapshot ? `${snapshot.ahead}/${snapshot.behind}` : "No repo"}</span>
             </div>
             <button
               className="icon-button"

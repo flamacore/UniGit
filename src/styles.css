@@ -70,8 +70,8 @@ pre {
   display: grid;
   grid-template-rows: auto 1fr;
   height: 100vh;
-  gap: 12px;
-  padding: 16px;
+  gap: 8px;
+  padding: 10px;
   overflow: hidden;
 }
 
@@ -91,9 +91,9 @@ pre {
 }
 
 .chrome {
-  padding: 12px 14px;
+  padding: 7px 10px;
   display: grid;
-  gap: 10px;
+  gap: 4px;
 }
 
 .chrome__row,
@@ -133,7 +133,7 @@ pre {
 }
 
 h1 {
-  font-size: 18px;
+  font-size: 15px;
   line-height: 1.1;
   letter-spacing: -0.03em;
 }
@@ -145,7 +145,7 @@ h2 {
 }
 
 h3 {
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1.15;
   letter-spacing: -0.02em;
 }
@@ -158,11 +158,11 @@ h4 {
 .repo-tabs {
   display: flex;
   align-items: stretch;
-  gap: 8px;
+  gap: 6px;
   min-width: 0;
   flex: 1;
   overflow: auto hidden;
-  padding-bottom: 2px;
+  padding-bottom: 0;
   scrollbar-width: none;
 }
 
@@ -172,11 +172,11 @@ h4 {
 
 .repo-tab {
   position: relative;
-  min-width: 200px;
-  max-width: 260px;
-  padding: 10px 30px 10px 12px;
+  min-width: 170px;
+  max-width: 220px;
+  padding: 7px 26px 7px 10px;
   text-align: left;
-  border-radius: 14px;
+  border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: var(--bg-3);
   color: var(--text-1);
@@ -208,21 +208,21 @@ h4 {
 
 .repo-tab__label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .repo-tab__path {
   display: block;
-  margin-top: 2px;
+  margin-top: 1px;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .repo-tab__remove {
   position: absolute;
-  top: 9px;
-  right: 9px;
+  top: 7px;
+  right: 7px;
   color: var(--text-3);
 }
 
@@ -236,9 +236,9 @@ h4 {
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 3px 7px;
 }
 
 .branch-chip,
@@ -250,13 +250,14 @@ h4 {
 
 .meta-inline {
   color: var(--text-3);
-  max-width: 460px;
+  max-width: 320px;
+  font-size: 10px;
 }
 
 .workspace {
   display: grid;
   grid-template-rows: auto 1fr;
-  gap: 10px;
+  gap: 6px;
   min-height: 0;
   overflow: hidden;
 }
@@ -274,14 +275,14 @@ h4 {
 .content-grid {
   display: grid;
   grid-template-rows: minmax(260px, 0.9fr) minmax(280px, 1.2fr) auto;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
   overflow: hidden;
 }
 
 .lower-grid {
   display: grid;
-  gap: 12px;
+  gap: 8px;
   min-height: 0;
   overflow: hidden;
 }
@@ -306,7 +307,7 @@ h4 {
 .board,
 .inspector,
 .graph-panel {
-  padding: 14px;
+  padding: 10px;
 }
 
 .board--changes,
@@ -547,7 +548,7 @@ h4 {
 
 .history-filter {
   max-width: 180px;
-  padding: 8px 10px;
+  padding: 6px 9px;
 }
 
 .inspector,
@@ -653,7 +654,7 @@ h4 {
 .graph-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
   min-height: 0;
 }
 
@@ -673,12 +674,14 @@ h4 {
   height: 100vh;
   border-radius: 0;
   border: none;
-  padding: 20px;
+  padding: 10px;
   background: linear-gradient(180deg, rgba(5, 10, 18, 0.98), rgba(6, 11, 19, 0.98));
 }
 
 .graph-panel__header {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
 }
 
 .graph-toolbar,
@@ -695,29 +698,38 @@ h4 {
 
 .graph-toolbar {
   justify-content: flex-end;
+  flex: 1;
+  flex-wrap: nowrap;
+  gap: 6px;
 }
 
 .graph-control {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 12px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.04);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
 .graph-slider {
-  width: 108px;
+  width: 84px;
   accent-color: #79a4ff;
 }
 
 .graph-status-row {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: 10px;
   justify-content: space-between;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+
+.graph-status-row span {
+  white-space: nowrap;
 }
 
 .graph-viewport {
@@ -918,8 +930,8 @@ h4 {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 8px 12px;
-  border-radius: 11px;
+  padding: 6px 9px;
+  border-radius: 9px;
 }
 
 .primary-button {

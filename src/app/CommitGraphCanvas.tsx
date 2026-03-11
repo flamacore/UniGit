@@ -338,10 +338,7 @@ export function CommitGraphCanvas({
       className={clsx("panel graph-panel", isFullscreen && "graph-panel--fullscreen")}
     >
       <div className="board__header graph-panel__header">
-        <div>
-          <p className="eyebrow">Graph</p>
-          <h3>Commit graph canvas</h3>
-        </div>
+        <h3>Commit graph</h3>
         <div className="graph-toolbar">
           <label className="graph-control">
             <span>Scale {Math.round(laneScale * 100)}%</span>
@@ -387,7 +384,7 @@ export function CommitGraphCanvas({
         <span>{laneCount} active lanes</span>
         <span>{graphBlockWidth}px lane block</span>
         <span>{Math.round(rowHeight)}px rows</span>
-        <span>{hasMore ? "Paged history active" : "End of loaded history"}</span>
+        <span>{hasMore ? "Paged" : "Loaded"}</span>
       </div>
 
       <div
