@@ -132,6 +132,13 @@ type ChangeListItem = {
   };
 };
 
+type RemoteDialogState = {
+  tone: "error" | "info";
+  title: string;
+  summary: string;
+  detail?: string;
+};
+
 const formatRepoLabel = (path: string) => {
   const segments = path.split(/[/\\]/).filter(Boolean);
   return segments[segments.length - 1] ?? path;
@@ -197,6 +204,55 @@ const getChangeMarker = (change: FileChange) => {
   }
 
   return { tone: "changed", label: "Changed" };
+};
+
+const describeRemoteFailure = (operation: "push" | "force-pull", message: string): RemoteDialogState => {
+  const normalized = message.toLowerCase();
+
+  if (normalized.includes("has no upstream branch") || normalized.includes("no upstream branch")) {
+    return {
+      tone: "error",
+      title: operation === "push" ? "Push is missing an upstream" : "Force pull needs an upstream",
+      summary: "The current branch is not tracking a remote branch yet.",
+      detail: message,
+    };
+  }
+
+  if (normalized.includes("failed to push some refs") || normalized.includes("fetch first") || normalized.includes("non-fast-forward")) {
+    return {
+      tone: "error",
+      title: "Push was rejected by the remote",
+      summary: "The remote branch has commits you do not have locally. Pull or reconcile history before pushing.",
+      detail: message,
+    };
+  }
+
+  if (normalized.includes("permission denied") || normalized.includes("publickey") || normalized.includes("authentication failed")) {
+    return {
+      tone: "error",
+      title: "Remote authentication failed",
+      summary: "Git could not authenticate with the remote. Check your SSH key, agent, or remote permissions.",
+      detail: message,
+    };
+  }
+
+  if (normalized.includes("could not read from remote repository") || normalized.includes("repository not found")) {
+    return {
+      tone: "error",
+      title: "Remote repository could not be reached",
+      summary: "The remote URL may be wrong, unavailable, or not accessible with your current credentials.",
+      detail: message,
+    };
+  }
+
+  return {
+    tone: "error",
+    title: operation === "push" ? "Push failed" : "Force pull failed",
+    summary: operation === "push"
+      ? "Git rejected the push or could not complete the remote operation."
+      : "Git could not complete the destructive sync operation.",
+    detail: message,
+  };
 };
 
 const getSortValue = (change: FileChange, sortBy: ChangeSortKey) => {
@@ -367,6 +423,7 @@ export function App() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -946,13 +1003,21 @@ export function App() {
 
     setSubmitting(true);
     setError(null);
+    setRemoteDialog(null);
 
     try {
       const result = await pushRepository(selectedRepository);
       setStatusMessage(result || "Push completed.");
+      setRemoteDialog({
+        tone: "info",
+        title: "Push completed",
+        summary: result || "Local commits were pushed to the tracked remote branch.",
+      });
       await refreshRepository();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Push failed.");
+      const message = reason instanceof Error ? reason.message : "Push failed.";
+      setError(message);
+      setRemoteDialog(describeRemoteFailure("push", message));
     } finally {
       setSubmitting(false);
     }
@@ -965,13 +1030,21 @@ export function App() {
 
     setSubmitting(true);
     setError(null);
+    setRemoteDialog(null);
 
     try {
       const result = await forcePullRepository(selectedRepository);
       setStatusMessage(result);
+      setRemoteDialog({
+        tone: "info",
+        title: "Force pull completed",
+        summary: result,
+      });
       await refreshRepository();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Force pull failed.");
+      const message = reason instanceof Error ? reason.message : "Force pull failed.";
+      setError(message);
+      setRemoteDialog(describeRemoteFailure("force-pull", message));
     } finally {
       setSubmitting(false);
     }
@@ -1060,6 +1133,18 @@ export function App() {
         </div>
 
         {powerSummary ? <div className="power-summary">{powerSummary}</div> : null}
+        {remoteDialog ? (
+          <div className={clsx("banner", "remote-dialog", remoteDialog.tone === "error" && "remote-dialog--error")}>
+            <div className="remote-dialog__header">
+              <strong>{remoteDialog.title}</strong>
+              <button className="icon-button" onClick={() => setRemoteDialog(null)}>
+                <X size={14} />
+              </button>
+            </div>
+            <p>{remoteDialog.summary}</p>
+            {remoteDialog.detail ? <pre className="remote-dialog__detail">{remoteDialog.detail}</pre> : null}
+          </div>
+        ) : null}
       </header>
 
       <main className="workspace">

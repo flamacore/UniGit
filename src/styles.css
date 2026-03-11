@@ -278,6 +278,38 @@ h4 {
   background: rgba(114, 27, 45, 0.3);
 }
 
+.remote-dialog {
+  display: grid;
+  gap: 8px;
+  border-color: rgba(121, 164, 255, 0.22);
+  background: rgba(28, 49, 87, 0.28);
+}
+
+.remote-dialog--error {
+  border-color: rgba(255, 84, 111, 0.32);
+  background: rgba(114, 27, 45, 0.3);
+}
+
+.remote-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-dialog__detail {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(2, 7, 15, 0.5);
+  color: #d7e5ff;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .content-grid {
   display: grid;
   grid-template-rows: minmax(260px, 0.9fr) minmax(280px, 1.2fr) auto;
