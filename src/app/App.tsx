@@ -359,7 +359,7 @@ export function App() {
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [panelFractions, setPanelFractions] = useState({ left: 0.4, middle: 0.28, right: 0.32 });
+  const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
   const contentGridRef = useRef<HTMLElement | null>(null);
 
   const applyGraphPage = useCallback((page: CommitGraphPage, mode: "replace" | "append") => {
@@ -620,7 +620,7 @@ export function App() {
     ? `${preview.previewKind[0].toUpperCase()}${preview.previewKind.slice(1)} preview`
     : "Preview";
 
-  const resizePanels = useCallback((separator: "left" | "right", clientX: number) => {
+  const resizePanels = useCallback((clientX: number) => {
     const container = contentGridRef.current;
 
     if (!container) {
@@ -636,45 +636,26 @@ export function App() {
 
     setPanelFractions((current) => {
       const leftPx = current.left * totalWidth;
-      const middlePx = current.middle * totalWidth;
       const rightPx = current.right * totalWidth;
       const nextX = clientX - bounds.left;
       const minLeft = 320;
-      const minMiddle = 260;
       const minRight = 320;
-
-      if (separator === "left") {
-        const clampedLeft = Math.min(
-          Math.max(nextX, minLeft),
-          totalWidth - minMiddle - minRight,
-        );
-        const newMiddle = leftPx + middlePx - clampedLeft;
-
-        return {
-          left: clampedLeft / totalWidth,
-          middle: newMiddle / totalWidth,
-          right: rightPx / totalWidth,
-        };
-      }
-
-      const rightStart = Math.min(
-        Math.max(nextX, minLeft + minMiddle),
+      const clampedLeft = Math.min(
+        Math.max(nextX, minLeft),
         totalWidth - minRight,
       );
-      const newMiddle = rightStart - leftPx;
-      const newRight = totalWidth - rightStart;
+      const newRight = totalWidth - clampedLeft;
 
       return {
-        left: leftPx / totalWidth,
-        middle: newMiddle / totalWidth,
+        left: clampedLeft / totalWidth,
         right: newRight / totalWidth,
       };
     });
   }, []);
 
-  const startResize = useCallback((separator: "left" | "right") => {
+  const startResize = useCallback(() => {
     const handlePointerMove = (event: PointerEvent) => {
-      resizePanels(separator, event.clientX);
+      resizePanels(event.clientX);
     };
 
     const handlePointerUp = () => {
@@ -686,8 +667,8 @@ export function App() {
     window.addEventListener("pointerup", handlePointerUp);
   }, [resizePanels]);
 
-  const gridTemplateColumns = useMemo(() => {
-    return `${panelFractions.left}fr 12px ${panelFractions.middle}fr 12px ${panelFractions.right}fr`;
+  const lowerGridTemplateColumns = useMemo(() => {
+    return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
 
   return (
@@ -769,12 +750,24 @@ export function App() {
         {error ? <div className="banner banner--error">{error}</div> : null}
         {statusMessage ? <div className="banner">{statusMessage}</div> : null}
 
-        <section
-          ref={contentGridRef}
-          className="content-grid"
-          style={{ gridTemplateColumns }}
-        >
-          <div className="board panel">
+        <section className="content-grid">
+          <section className="panel graph-panel graph-panel--embedded">
+            <CommitGraphCanvas
+              rows={filteredHistory}
+              filter={historyFilter}
+              onFilterChange={setHistoryFilter}
+              onLoadMore={() => void loadMoreGraph()}
+              hasMore={graphHasMore}
+              loading={graphLoading}
+            />
+          </section>
+
+          <section
+            ref={contentGridRef}
+            className="lower-grid"
+            style={{ gridTemplateColumns: lowerGridTemplateColumns }}
+          >
+            <div className="board panel board--changes">
             <div className="board__header">
               <div>
                 <p className="eyebrow">Changes</p>
@@ -852,48 +845,13 @@ export function App() {
                 selectedPath={selectedChangePath}
               />
             </div>
-
-            <div className="commit-box">
-              <textarea
-                className="commit-box__input"
-                placeholder="Commit message"
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-              />
-              <button
-                className="primary-button"
-                disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
-                onClick={() => void commitChanges()}
-              >
-                <GitCommitHorizontal size={16} />
-                Commit staged
-              </button>
             </div>
-          </div>
 
           <div
             className="panel-resizer"
             role="separator"
             aria-orientation="vertical"
-            onPointerDown={() => startResize("left")}
-          >
-            <GripVertical size={14} />
-          </div>
-
-          <CommitGraphCanvas
-            rows={filteredHistory}
-            filter={historyFilter}
-            onFilterChange={setHistoryFilter}
-            onLoadMore={() => void loadMoreGraph()}
-            hasMore={graphHasMore}
-            loading={graphLoading}
-          />
-
-          <div
-            className="panel-resizer"
-            role="separator"
-            aria-orientation="vertical"
-            onPointerDown={() => startResize("right")}
+            onPointerDown={() => startResize()}
           >
             <GripVertical size={14} />
           </div>
@@ -1033,6 +991,26 @@ export function App() {
             ) : (
               <p className="muted">Pick a file to inspect its current Git state.</p>
             )}
+          </section>
+          </section>
+
+          <section className="panel commit-shell">
+            <div className="commit-box">
+              <textarea
+                className="commit-box__input"
+                placeholder="Commit message"
+                value={commitMessage}
+                onChange={(event) => setCommitMessage(event.target.value)}
+              />
+              <button
+                className="primary-button"
+                disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                onClick={() => void commitChanges()}
+              >
+                <GitCommitHorizontal size={16} />
+                Commit staged
+              </button>
+            </div>
           </section>
         </section>
       </main>

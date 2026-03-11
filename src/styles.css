@@ -72,8 +72,6 @@ pre {
   height: 100vh;
   gap: 12px;
   padding: 16px;
-  max-width: 2200px;
-  margin: 0 auto;
   overflow: hidden;
 }
 
@@ -275,7 +273,14 @@ h4 {
 
 .content-grid {
   display: grid;
-  grid-template-columns: minmax(420px, 1.16fr) minmax(320px, 0.76fr) minmax(360px, 0.94fr);
+  grid-template-rows: minmax(260px, 0.9fr) minmax(280px, 1.2fr) auto;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.lower-grid {
+  display: grid;
   gap: 12px;
   min-height: 0;
   overflow: hidden;
@@ -302,6 +307,12 @@ h4 {
 .inspector,
 .graph-panel {
   padding: 14px;
+}
+
+.board--changes,
+.commit-shell,
+.graph-panel--embedded {
+  min-height: 0;
 }
 
 .board {
@@ -515,6 +526,10 @@ h4 {
   flex-shrink: 0;
 }
 
+.commit-shell {
+  padding: 10px;
+}
+
 .commit-box__input,
 .history-filter {
   width: 100%;
@@ -640,6 +655,17 @@ h4 {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+}
+
+.graph-panel--embedded {
+  padding: 0;
+}
+
+.graph-panel--embedded .graph-panel {
+  border: none;
+  border-radius: inherit;
+  box-shadow: none;
+  height: 100%;
 }
 
 .graph-panel--fullscreen {
@@ -918,6 +944,7 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .content-grid,
+  .lower-grid,
   .lanes {
     grid-template-columns: 1fr;
     grid-template-rows: unset;
