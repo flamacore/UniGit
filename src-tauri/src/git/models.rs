@@ -128,6 +128,31 @@ pub struct BranchEntry {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct RepositoryRemote {
+    pub name: String,
+    pub fetch_url: Option<String>,
+    pub push_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryConfig {
+    pub repo_path: String,
+    pub repo_name: String,
+    pub current_branch: String,
+    pub detached_head: bool,
+    pub remotes: Vec<RepositoryRemote>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneResult {
+    pub repo_path: String,
+    pub repo_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub relative_path: String,
     pub file_name: String,

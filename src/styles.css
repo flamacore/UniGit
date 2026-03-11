@@ -310,6 +310,161 @@ h4 {
   line-height: 1.45;
 }
 
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(2, 6, 12, 0.62);
+  backdrop-filter: blur(12px);
+}
+
+.repo-manager-dialog {
+  width: min(1120px, 100%);
+  max-height: min(860px, 100%);
+  padding: 16px;
+  border-radius: 24px;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+}
+
+.repo-manager-dialog__header,
+.repo-manager-section__header,
+.repo-form-field,
+.repo-config-remotes,
+.repo-config-card,
+.repo-config-grid,
+.repo-manager-list,
+.repo-form-field__row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.repo-manager-dialog__header,
+.repo-manager-section__header,
+.repo-manager-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.repo-manager-dialog__body {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.95fr) minmax(280px, 1.05fr) minmax(280px, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.repo-manager-section {
+  min-height: 0;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.025);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repo-manager-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.repo-manager-row,
+.repo-remote-row {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.repo-manager-row--selected {
+  border-color: var(--line-strong);
+  background: rgba(39, 76, 148, 0.26);
+}
+
+.repo-manager-row__main {
+  min-width: 0;
+  flex: 1;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-1);
+  background: transparent;
+  border: none;
+}
+
+.repo-manager-row__main span,
+.repo-remote-row p,
+.repo-remote-row__meta,
+.repo-config-grid dt {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.repo-config-grid dd,
+.repo-config-grid dt,
+.repo-manager-row__main strong,
+.repo-manager-row__main span,
+.repo-remote-row strong,
+.repo-remote-row p,
+.repo-remote-row__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-config-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.repo-config-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.repo-form-field span {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.repo-form-field__row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.repo-form-field__row .changes-filter {
+  flex: 1;
+}
+
+.repo-clone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.repo-remote-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 1200px) {
+  .repo-manager-dialog__body {
+    grid-template-columns: 1fr;
+  }
+}
+
 .content-grid {
   display: grid;
   grid-template-rows: minmax(260px, 0.9fr) minmax(280px, 1.2fr) auto;

@@ -38,6 +38,10 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Local repositories can be added from a folder picker.
 - Repositories are persisted locally in browser storage on the frontend side.
 - Repositories can be selected and removed from the tab strip.
+- A repository manager dialog now exists for clone, open-existing, and per-repository settings.
+- The repository manager is also the enforced entry surface when no repositories are loaded.
+- Repository settings now surface current branch, repository path, and configured remotes.
+- Repository clone now exists through the app via a backend Git clone command.
 
 ### Git backend
 

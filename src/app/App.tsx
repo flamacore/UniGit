@@ -10,6 +10,7 @@ import {
   GripVertical,
   Minimize2,
   RefreshCw,
+  Settings2,
   Undo2,
   Upload,
   X,
@@ -19,13 +20,16 @@ import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
   applyCommitFilePatch,
   BranchEntry,
+  CloneResult,
   CommitDetail,
   CommitGraphPage,
   CommitGraphRow,
   FileChange,
   FileHistoryEntry,
   FilePreview,
+  RepositoryConfig,
   RepositorySnapshot,
+  cloneRepository,
   createCommit,
   deleteBranch,
   exportFileFromCommit,
@@ -34,6 +38,7 @@ import {
   inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
+  inspectRepositoryConfig,
   listBranches,
   listFileHistory,
   listCommitGraph,
@@ -525,6 +530,12 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
+  const [repoManagerOpen, setRepoManagerOpen] = useState(false);
+  const [repoConfig, setRepoConfig] = useState<RepositoryConfig | null>(null);
+  const [repoConfigLoading, setRepoConfigLoading] = useState(false);
+  const [repoConfigError, setRepoConfigError] = useState<string | null>(null);
+  const [cloneUrl, setCloneUrl] = useState("");
+  const [cloneDestination, setCloneDestination] = useState("");
   const [notificationsHovered, setNotificationsHovered] = useState(false);
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -795,6 +806,46 @@ export function App() {
     void refreshRepository();
   }, [refreshRepository]);
 
+  const showRepoManager = repoManagerOpen || repositories.length === 0;
+
+  useEffect(() => {
+    if (!showRepoManager || !selectedRepository) {
+      setRepoConfig(null);
+      setRepoConfigError(null);
+      setRepoConfigLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadRepoConfig = async () => {
+      setRepoConfigLoading(true);
+      setRepoConfigError(null);
+
+      try {
+        const nextConfig = await inspectRepositoryConfig(selectedRepository);
+        if (!cancelled) {
+          setRepoConfig(nextConfig);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setRepoConfig(null);
+          setRepoConfigError(reason instanceof Error ? reason.message : "Repository settings failed to load.");
+        }
+      } finally {
+        if (!cancelled) {
+          setRepoConfigLoading(false);
+        }
+      }
+    };
+
+    void loadRepoConfig();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepository, showRepoManager]);
+
   useEffect(() => {
     if (notificationsHovered) {
       return;
@@ -845,6 +896,51 @@ export function App() {
       writeClientLog("repo.add", `Added repository ${path}`);
     }
   }, [addRepository, writeClientLog]);
+
+  const pickCloneDestination = useCallback(async () => {
+    if (isTauri()) {
+      const selected = await save({
+        title: "Choose clone destination",
+      });
+
+      if (typeof selected === "string") {
+        setCloneDestination(selected);
+      }
+      return;
+    }
+
+    const value = window.prompt("Clone destination path", cloneDestination) ?? null;
+    if (value) {
+      setCloneDestination(value);
+    }
+  }, [cloneDestination]);
+
+  const runCloneRepository = useCallback(async () => {
+    if (!cloneUrl.trim() || !cloneDestination.trim()) {
+      setError("Clone URL and destination path are required.");
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("repo.clone", `Cloning ${cloneUrl.trim()} into ${cloneDestination.trim()}.`);
+      const result: CloneResult = await cloneRepository(cloneUrl.trim(), cloneDestination.trim());
+      addRepository(result.repoPath);
+      setCloneUrl("");
+      setCloneDestination("");
+      setRepoManagerOpen(false);
+      setStatusMessage(`Cloned ${result.repoName}.`);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Clone failed.";
+      setError(message);
+      writeClientLog("repo.clone.error", `Clone failed for ${cloneUrl.trim()}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [addRepository, cloneDestination, cloneUrl, refreshRepository, writeClientLog]);
 
   const runFileOperation = useCallback(
     async (mode: "stage" | "unstage", paths: string[]) => {
@@ -1429,8 +1525,8 @@ export function App() {
 
           <div className="repo-tabs panel-scroll">
             {repositories.length === 0 ? (
-              <button className="repo-tab repo-tab--empty" onClick={() => void pickRepository()}>
-                Add repository
+              <button className="repo-tab repo-tab--empty" onClick={() => setRepoManagerOpen(true)}>
+                Open repository manager
               </button>
             ) : null}
 
@@ -1458,6 +1554,10 @@ export function App() {
               );
             })}
           </div>
+
+          <button className="icon-button" onClick={() => setRepoManagerOpen(true)}>
+            <Settings2 size={16} />
+          </button>
 
           <button className="icon-button icon-button--strong" onClick={() => void pickRepository()}>
             <FolderPlus size={16} />
@@ -1997,6 +2097,28 @@ export function App() {
           </section>
         </section>
       </main>
+
+      {showRepoManager ? (
+        <RepoManagerDialog
+          repositories={repositories}
+          selectedRepository={selectedRepository}
+          onSelectRepository={selectRepository}
+          onAddExistingRepository={() => void pickRepository()}
+          onRemoveRepository={removeRepository}
+          onClose={() => setRepoManagerOpen(false)}
+          canClose={repositories.length > 0}
+          cloneUrl={cloneUrl}
+          onCloneUrlChange={setCloneUrl}
+          cloneDestination={cloneDestination}
+          onCloneDestinationChange={setCloneDestination}
+          onPickCloneDestination={() => void pickCloneDestination()}
+          onClone={() => void runCloneRepository()}
+          cloneDisabled={submitting || !cloneUrl.trim() || !cloneDestination.trim()}
+          repoConfig={repoConfig}
+          repoConfigLoading={repoConfigLoading}
+          repoConfigError={repoConfigError}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2033,6 +2155,26 @@ type BranchPaneProps = {
   onRenameBranch: (currentName: string, nextName: string) => void;
   onDeleteBranch: (fullName: string) => void;
   disabled: boolean;
+};
+
+type RepoManagerDialogProps = {
+  repositories: string[];
+  selectedRepository: string | null;
+  onSelectRepository: (path: string | null) => void;
+  onAddExistingRepository: () => void;
+  onRemoveRepository: (path: string) => void;
+  onClose: () => void;
+  canClose: boolean;
+  cloneUrl: string;
+  onCloneUrlChange: (value: string) => void;
+  cloneDestination: string;
+  onCloneDestinationChange: (value: string) => void;
+  onPickCloneDestination: () => void;
+  onClone: () => void;
+  cloneDisabled: boolean;
+  repoConfig: RepositoryConfig | null;
+  repoConfigLoading: boolean;
+  repoConfigError: string | null;
 };
 
 type BranchContextMenuState = {
@@ -2186,6 +2328,153 @@ function DropLane({
         {!items.length ? <p className="muted">No files here.</p> : null}
       </div>
     </section>
+  );
+}
+
+function RepoManagerDialog({
+  repositories,
+  selectedRepository,
+  onSelectRepository,
+  onAddExistingRepository,
+  onRemoveRepository,
+  onClose,
+  canClose,
+  cloneUrl,
+  onCloneUrlChange,
+  cloneDestination,
+  onCloneDestinationChange,
+  onPickCloneDestination,
+  onClone,
+  cloneDisabled,
+  repoConfig,
+  repoConfigLoading,
+  repoConfigError,
+}: RepoManagerDialogProps) {
+  return (
+    <div className="dialog-backdrop">
+      <section className="panel repo-manager-dialog">
+        <div className="repo-manager-dialog__header">
+          <div>
+            <p className="eyebrow">Repositories</p>
+            <h2>Repository manager</h2>
+          </div>
+          {canClose ? (
+            <button className="icon-button" onClick={onClose}>
+              <X size={14} />
+            </button>
+          ) : null}
+        </div>
+
+        <div className="repo-manager-dialog__body">
+          <section className="repo-manager-section">
+            <div className="repo-manager-section__header">
+              <h3>Loaded repositories</h3>
+              <button className="ghost-button" onClick={onAddExistingRepository}>
+                <FolderPlus size={15} />
+                Open existing
+              </button>
+            </div>
+
+            <div className="repo-manager-list panel-scroll">
+              {repositories.length ? repositories.map((repo) => (
+                <div key={repo} className={clsx("repo-manager-row", selectedRepository === repo && "repo-manager-row--selected")}>
+                  <button className="repo-manager-row__main" onClick={() => onSelectRepository(repo)}>
+                    <strong>{formatRepoLabel(repo)}</strong>
+                    <span>{repo}</span>
+                  </button>
+                  <button className="ghost-button ghost-button--danger" onClick={() => onRemoveRepository(repo)}>
+                    Remove
+                  </button>
+                </div>
+              )) : <p className="muted">No repositories loaded yet. Clone one or open an existing local checkout.</p>}
+            </div>
+          </section>
+
+          <section className="repo-manager-section">
+            <div className="repo-manager-section__header">
+              <h3>Clone repository</h3>
+            </div>
+
+            <div className="repo-clone-form">
+              <label className="repo-form-field">
+                <span>Remote URL</span>
+                <input
+                  className="changes-filter"
+                  placeholder="git@github.com:owner/repo.git or https://..."
+                  value={cloneUrl}
+                  onChange={(event) => onCloneUrlChange(event.target.value)}
+                />
+              </label>
+
+              <label className="repo-form-field">
+                <span>Destination path</span>
+                <div className="repo-form-field__row">
+                  <input
+                    className="changes-filter"
+                    placeholder="C:/Code/MyRepo"
+                    value={cloneDestination}
+                    onChange={(event) => onCloneDestinationChange(event.target.value)}
+                  />
+                  <button className="ghost-button" onClick={onPickCloneDestination}>
+                    Browse
+                  </button>
+                </div>
+              </label>
+
+              <button className="primary-button" disabled={cloneDisabled} onClick={onClone}>
+                Clone repository
+              </button>
+            </div>
+          </section>
+
+          <section className="repo-manager-section">
+            <div className="repo-manager-section__header">
+              <h3>Repository settings</h3>
+            </div>
+
+            {repoConfigLoading ? <p className="muted">Loading repository settings...</p> : null}
+            {repoConfigError ? <p className="muted">{repoConfigError}</p> : null}
+
+            {!repoConfigLoading && !repoConfigError && repoConfig ? (
+              <div className="repo-config-card">
+                <dl className="repo-config-grid">
+                  <div>
+                    <dt>Name</dt>
+                    <dd>{repoConfig.repoName}</dd>
+                  </div>
+                  <div>
+                    <dt>Path</dt>
+                    <dd>{repoConfig.repoPath}</dd>
+                  </div>
+                  <div>
+                    <dt>Branch</dt>
+                    <dd>{repoConfig.detachedHead ? `Detached at ${repoConfig.currentBranch}` : repoConfig.currentBranch}</dd>
+                  </div>
+                </dl>
+
+                <div className="repo-config-remotes">
+                  <div className="preview-panel__header">
+                    <strong>Remotes</strong>
+                    <span className="preview-panel__meta">{repoConfig.remotes.length}</span>
+                  </div>
+                  {repoConfig.remotes.length ? repoConfig.remotes.map((remote) => (
+                    <div key={remote.name} className="repo-remote-row">
+                      <strong>{remote.name}</strong>
+                      <p>{remote.fetchUrl ?? remote.pushUrl ?? "No remote URL"}</p>
+                      {remote.pushUrl && remote.pushUrl !== remote.fetchUrl ? <span className="repo-remote-row__meta">Push: {remote.pushUrl}</span> : null}
+                    </div>
+                  )) : <p className="muted">No remotes configured.</p>}
+                </div>
+              </div>
+            ) : null}
+
+            {!repoConfigLoading && !repoConfigError && !repoConfig ? (
+              <p className="muted">Select a loaded repository to inspect its settings.</p>
+            ) : null}
+          </section>
+        </div>
+      </section>
+    </div>
   );
 }
 

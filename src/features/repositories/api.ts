@@ -34,6 +34,25 @@ export type RepositorySnapshot = {
   counts: RepositoryCounts;
 };
 
+export type RepositoryRemote = {
+  name: string;
+  fetchUrl: string | null;
+  pushUrl: string | null;
+};
+
+export type RepositoryConfig = {
+  repoPath: string;
+  repoName: string;
+  currentBranch: string;
+  detachedHead: boolean;
+  remotes: RepositoryRemote[];
+};
+
+export type CloneResult = {
+  repoPath: string;
+  repoName: string;
+};
+
 export type CommitSummary = {
   hash: string;
   shortHash: string;
@@ -129,6 +148,14 @@ export type AssetDetail = {
 
 export const inspectRepository = (repoPath: string) => {
   return invoke<RepositorySnapshot>("inspect_repository", { repoPath });
+};
+
+export const inspectRepositoryConfig = (repoPath: string) => {
+  return invoke<RepositoryConfig>("inspect_repository_config", { repoPath });
+};
+
+export const cloneRepository = (remoteUrl: string, destinationPath: string) => {
+  return invoke<CloneResult>("clone_repository", { remoteUrl, destinationPath });
 };
 
 export const listCommitHistory = (repoPath: string, limit = 40) => {

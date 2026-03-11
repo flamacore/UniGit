@@ -15,8 +15,9 @@ use tokio::process::Command;
 
 use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CommitDetail, CommitFileEntry,
-    CommitGraphPage, CommitGraphRow, CommitSummary, FileChange, FileHistoryEntry,
-    FilePreview, RepositoryCounts, RepositorySnapshot,
+    CloneResult, CommitGraphPage, CommitGraphRow, CommitSummary, FileChange,
+    FileHistoryEntry, FilePreview, RepositoryConfig, RepositoryCounts,
+    RepositoryRemote, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -43,6 +44,20 @@ type GitResult<T> = Result<T, GitServiceError>;
 #[command]
 pub async fn inspect_repository(repo_path: String) -> Result<RepositorySnapshot, String> {
     inspect_repository_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn inspect_repository_config(repo_path: String) -> Result<RepositoryConfig, String> {
+    inspect_repository_config_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn clone_repository(remote_url: String, destination_path: String) -> Result<CloneResult, String> {
+    clone_repository_inner(remote_url, destination_path)
         .await
         .map_err(|error| error.to_string())
 }
@@ -229,6 +244,81 @@ async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnap
         last_refreshed_at: chrono_like_timestamp(),
         files,
         counts,
+    })
+}
+
+async fn inspect_repository_config_inner(repo_path: String) -> GitResult<RepositoryConfig> {
+    let path = validate_repository_path(&repo_path)?;
+    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1"])
+        .await?;
+    let (current_branch, detached_head, _, _, _, _) = parse_status_output(&branch_output);
+
+    let remote_output = run_git_owned(path, vec!["remote".into(), "-v".into()]).await?;
+    let mut remotes: Vec<RepositoryRemote> = Vec::new();
+
+    for line in remote_output.lines().filter(|line| !line.trim().is_empty()) {
+        let mut parts = line.split_whitespace();
+        let Some(name) = parts.next() else { continue; };
+        let Some(url) = parts.next() else { continue; };
+        let Some(kind) = parts.next() else { continue; };
+
+        let remote = if let Some(existing) = remotes.iter_mut().find(|remote| remote.name == name) {
+            existing
+        } else {
+            remotes.push(RepositoryRemote {
+                name: name.to_string(),
+                fetch_url: None,
+                push_url: None,
+            });
+            remotes.last_mut().expect("remote entry inserted")
+        };
+
+        match kind {
+            "(fetch)" => remote.fetch_url = Some(url.to_string()),
+            "(push)" => remote.push_url = Some(url.to_string()),
+            _ => {}
+        }
+    }
+
+    Ok(RepositoryConfig {
+        repo_path: repo_path.clone(),
+        repo_name: path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Repository")
+            .to_string(),
+        current_branch,
+        detached_head,
+        remotes,
+    })
+}
+
+async fn clone_repository_inner(remote_url: String, destination_path: String) -> GitResult<CloneResult> {
+    let trimmed_url = remote_url.trim();
+    let trimmed_destination = destination_path.trim();
+
+    if trimmed_url.is_empty() || trimmed_destination.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Clone URL and destination path are required.".to_string()));
+    }
+
+    let destination = PathBuf::from(trimmed_destination);
+    let parent = destination.parent().ok_or_else(|| {
+        GitServiceError::GitCommandFailed("Destination path must include a parent directory.".to_string())
+    })?;
+
+    if !parent.exists() {
+        return Err(GitServiceError::GitCommandFailed("Destination parent directory does not exist.".to_string()));
+    }
+
+    run_git_global_owned(vec!["clone".into(), trimmed_url.to_string(), trimmed_destination.to_string()]).await?;
+
+    Ok(CloneResult {
+        repo_path: trimmed_destination.to_string(),
+        repo_name: destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Repository")
+            .to_string(),
     })
 }
 
@@ -1134,6 +1224,33 @@ where
 {
     let owned_args = args.into_iter().map(|value| value.as_ref().to_string()).collect();
     run_git_owned(repo_path, owned_args).await
+}
+
+async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
+    let command_preview = args.join(" ");
+    let _ = append_log("backend", "git.command.start", &format!("git {command_preview}"), None);
+
+    let output = Command::new("git")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log("backend", "git.command.error", &format!("git {command_preview}"), Some(&stderr));
+        return Err(GitServiceError::GitCommandFailed(stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = append_log("backend", "git.command.success", &format!("git {command_preview}"), Some(&stdout));
+    Ok(stdout)
 }
 
 async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String> {
