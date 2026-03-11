@@ -57,6 +57,28 @@ export type CommitGraphPage = {
   nextSkip: number;
 };
 
+export type CommitFileEntry = {
+  path: string;
+  status: string;
+  additions: number | null;
+  deletions: number | null;
+};
+
+export type CommitDetail = {
+  hash: string;
+  shortHash: string;
+  parentHashes: string[];
+  authorName: string;
+  authorEmail: string;
+  authoredAt: string;
+  committerName: string;
+  committedAt: string;
+  subject: string;
+  body: string;
+  decorations: string;
+  files: CommitFileEntry[];
+};
+
 export type FilePreview = {
   relativePath: string;
   fileName: string;
@@ -94,6 +116,10 @@ export const listCommitHistory = (repoPath: string, limit = 40) => {
 
 export const listCommitGraph = (repoPath: string, limit = 240, skip = 0) => {
   return invoke<CommitGraphPage>("list_commit_graph", { repoPath, limit, skip });
+};
+
+export const inspectCommitDetail = (repoPath: string, commitHash: string) => {
+  return invoke<CommitDetail>("inspect_commit_detail", { repoPath, commitHash });
 };
 
 export const stageFiles = (repoPath: string, paths: string[]) => {

@@ -77,6 +77,32 @@ pub struct CommitGraphPage {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CommitFileEntry {
+    pub path: String,
+    pub status: String,
+    pub additions: Option<usize>,
+    pub deletions: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetail {
+    pub hash: String,
+    pub short_hash: String,
+    pub parent_hashes: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub authored_at: String,
+    pub committer_name: String,
+    pub committed_at: String,
+    pub subject: String,
+    pub body: String,
+    pub decorations: String,
+    pub files: Vec<CommitFileEntry>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FilePreview {
     pub relative_path: String,
     pub file_name: String,

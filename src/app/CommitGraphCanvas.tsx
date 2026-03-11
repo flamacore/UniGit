@@ -76,6 +76,8 @@ type CommitGraphCanvasProps = {
   onLoadMore: () => void;
   hasMore: boolean;
   loading: boolean;
+  selectedCommitHash: string | null;
+  onSelectCommit: (commitHash: string) => void;
 };
 
 export function CommitGraphCanvas({
@@ -85,6 +87,8 @@ export function CommitGraphCanvas({
   onLoadMore,
   hasMore,
   loading,
+  selectedCommitHash,
+  onSelectCommit,
 }: CommitGraphCanvasProps) {
   const rootRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -426,8 +430,9 @@ export function CommitGraphCanvas({
               return (
                 <div
                   key={row.hash}
-                  className="graph-row"
+                  className={clsx("graph-row", selectedCommitHash === row.hash && "graph-row--selected")}
                   style={{ height: rowHeight } as CSSProperties}
+                  onClick={() => onSelectCommit(row.hash)}
                 >
                   <div className="graph-row__main">
                     {uniqueRefs.length ? (

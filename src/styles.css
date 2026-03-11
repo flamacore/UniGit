@@ -579,10 +579,38 @@ h4 {
 .preview-details,
 .asset-summary,
 .diff-stack,
-.preview-panel {
+.preview-panel,
+.commit-file-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.commit-file-row,
+.commit-file-row__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.commit-file-row {
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.commit-file-row__main {
+  min-width: 0;
+  flex: 1;
+}
+
+.commit-file-row__main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .preview-frame {
@@ -800,6 +828,12 @@ h4 {
   min-width: max-content;
   width: fit-content;
   padding: 0;
+  cursor: pointer;
+}
+
+.graph-row--selected {
+  background: rgba(121, 164, 255, 0.1);
+  border-radius: 10px;
 }
 
 .graph-row__main {

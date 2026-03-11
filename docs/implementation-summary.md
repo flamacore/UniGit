@@ -10,6 +10,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 - Phase 1 foundation is effectively in place.
 - Phase 2 now has a first real graph foundation: paged commit-graph data, lane metadata, and a canvas-driven graph viewport.
+- Phase 2 history inspection has started through graph commit selection and commit detail retrieval.
 - Phase 3 remains active through the preview and inspection pipeline foundation.
 
 ## Stack and architecture
@@ -42,6 +43,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Repository inspection command exists in Rust.
 - Commit history listing exists in Rust.
 - Commit graph paging exists and now returns lane-aware graph rows in pages instead of a single small list.
+- Commit detail inspection exists and returns commit metadata plus changed files for a selected commit.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
@@ -105,6 +107,8 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The graph viewport now includes live controls for lane scaling and lane-block width cropping.
 - The graph rows are rendered through a translated virtualized row container instead of individually positioned overlays.
 - Graph scrollbar styling has been themed to match the rest of the application.
+- Graph rows are now selectable.
+- Selecting a commit loads a commit inspector with metadata and a per-commit changed-file list.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made
@@ -124,9 +128,9 @@ These were explicitly corrected during iteration:
 ### Frontend
 
 - `src/app/App.tsx`
-  - Main shell, repo tabs, list controls, lanes, graph panel integration, diff-first inspector ordering
+  - Main shell, repo tabs, list controls, graph integration, selection inspector for both working-tree files and selected commits, diff-first inspector ordering
 - `src/app/CommitGraphCanvas.tsx`
-  - Canvas-backed commit graph viewport, row windowing, inline graph rows, scale and lane-width controls, fullscreen toggle, and graph paging integration
+  - Canvas-backed commit graph viewport, inline graph rows, commit selection, scale and lane-width controls, fullscreen toggle, and graph paging integration
 - `src/styles.css`
   - Entire UI system, density, layout, scrolling behavior, change markers, diff highlighting, graph viewport styling
 - `src/features/repositories/api.ts`
@@ -141,9 +145,9 @@ These were explicitly corrected during iteration:
 - `src-tauri/src/main.rs`
   - Tauri command registration
 - `src-tauri/src/git/service.rs`
-  - Git CLI orchestration, repository inspection, paged commit graph extraction, commit/stage/unstage, preview data, diff extraction, asset metadata parsing
+  - Git CLI orchestration, repository inspection, paged commit graph extraction, commit detail retrieval, commit/stage/unstage, preview data, diff extraction, asset metadata parsing
 - `src-tauri/src/git/models.rs`
-  - Shared Rust-side response models including paged graph responses
+  - Shared Rust-side response models including paged graph and commit detail responses
 - `src-tauri/Cargo.toml`
   - Rust dependencies
 - `src-tauri/tauri.conf.json`
@@ -162,7 +166,8 @@ The app has also been run through Tauri dev during iteration.
 
 - Cross-lane merge connector refinement and deeper branch topology rendering
 - Rich history query engine beyond client-side filtering of loaded pages
-- Commit detail inspection from graph selection
+- File tree per commit beyond the changed-file list
+- File history, export-from-commit, restore-from-commit, revert-to-commit, and file-only patch actions
 - Branch-scoped graph views, ancestry focus, and path history overlays
 - Rendered PSD preview
 - Embedded GLTF/FBX viewer
@@ -179,7 +184,7 @@ Next focus should be the real commit graph phase.
 That means:
 
 1. Improve merge connector routing and branch continuity in the graph canvas.
-2. Add commit selection and a commit detail or inspection surface.
+2. Extend the new commit inspector into full file-level history actions, starting with restore and export from selected commits.
 3. Extend backend graph paging to support branch, author, and path-oriented queries.
 4. Add stronger graph navigation for gigantic repositories, including jump, focus, and branch-scoped views.
 

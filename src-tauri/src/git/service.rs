@@ -7,8 +7,9 @@ use thiserror::Error;
 use tokio::process::Command;
 
 use super::models::{
-    AssetDetail, AssetSummary, CommitGraphPage, CommitGraphRow, CommitSummary, FileChange,
-    FilePreview, RepositoryCounts, RepositorySnapshot,
+    AssetDetail, AssetSummary, CommitDetail, CommitFileEntry, CommitGraphPage,
+    CommitGraphRow, CommitSummary, FileChange, FilePreview, RepositoryCounts,
+    RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -53,6 +54,13 @@ pub async fn list_commit_history(repo_path: String, limit: usize) -> Result<Vec<
 #[command]
 pub async fn list_commit_graph(repo_path: String, limit: usize, skip: usize) -> Result<CommitGraphPage, String> {
     list_commit_graph_inner(repo_path, limit, skip)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn inspect_commit_detail(repo_path: String, commit_hash: String) -> Result<CommitDetail, String> {
+    inspect_commit_detail_inner(repo_path, commit_hash)
         .await
         .map_err(|error| error.to_string())
 }
@@ -432,6 +440,121 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         unstaged_diff,
         asset_summary,
         support_hint,
+    })
+}
+
+async fn inspect_commit_detail_inner(repo_path: String, commit_hash: String) -> GitResult<CommitDetail> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_hash = commit_hash.trim();
+
+    if trimmed_hash.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Commit hash cannot be empty.".to_string()));
+    }
+
+    let metadata_format = "%H%x1f%h%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%cI%x1f%s%x1f%b%x1f%D";
+    let metadata_output = run_git(
+        path,
+        [
+            "show",
+            "--no-patch",
+            "--date=iso-strict",
+            &format!("--format={metadata_format}"),
+            trimmed_hash,
+        ],
+    )
+    .await?;
+
+    let metadata_line = metadata_output.lines().next().unwrap_or_default();
+    let mut parts = metadata_line.split('\u{1f}');
+    let hash = parts.next().unwrap_or_default().to_string();
+    let short_hash = parts.next().unwrap_or_default().to_string();
+    let parent_hashes = parts
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let author_name = parts.next().unwrap_or_default().to_string();
+    let author_email = parts.next().unwrap_or_default().to_string();
+    let authored_at = parts.next().unwrap_or_default().to_string();
+    let committer_name = parts.next().unwrap_or_default().to_string();
+    let committed_at = parts.next().unwrap_or_default().to_string();
+    let subject = parts.next().unwrap_or_default().to_string();
+    let body = parts.next().unwrap_or_default().trim().to_string();
+    let decorations = parts.next().unwrap_or_default().to_string();
+
+    let status_output = run_git_owned(
+        path,
+        vec![
+            "show".into(),
+            "--format=".into(),
+            "--first-parent".into(),
+            "--find-renames".into(),
+            "--name-status".into(),
+            trimmed_hash.to_string(),
+        ],
+    )
+    .await?;
+
+    let numstat_output = run_git_owned(
+        path,
+        vec![
+            "show".into(),
+            "--format=".into(),
+            "--first-parent".into(),
+            "--find-renames".into(),
+            "--numstat".into(),
+            trimmed_hash.to_string(),
+        ],
+    )
+    .await?;
+
+    let mut stat_map = std::collections::HashMap::<String, (Option<usize>, Option<usize>)>::new();
+
+    for line in numstat_output.lines().filter(|line| !line.trim().is_empty()) {
+        let segments = line.split('\t').collect::<Vec<_>>();
+
+        if segments.len() < 3 {
+            continue;
+        }
+
+        let path = segments.last().unwrap_or(&"").to_string();
+        let additions = if segments[0] == "-" { None } else { segments[0].parse().ok() };
+        let deletions = if segments[1] == "-" { None } else { segments[1].parse().ok() };
+        stat_map.insert(path, (additions, deletions));
+    }
+
+    let files = status_output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let segments = line.split('\t').collect::<Vec<_>>();
+            let status = segments.first().copied().unwrap_or("M").to_string();
+            let path = segments.last().copied().unwrap_or_default().to_string();
+            let (additions, deletions) = stat_map.remove(&path).unwrap_or((None, None));
+
+            CommitFileEntry {
+                path,
+                status,
+                additions,
+                deletions,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(CommitDetail {
+        hash,
+        short_hash,
+        parent_hashes,
+        author_name,
+        author_email,
+        authored_at,
+        committer_name,
+        committed_at,
+        subject,
+        body,
+        decorations,
+        files,
     })
 }
 

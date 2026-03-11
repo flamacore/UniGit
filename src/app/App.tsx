@@ -13,12 +13,14 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
+  CommitDetail,
   CommitGraphPage,
   CommitGraphRow,
   FileChange,
   FilePreview,
   RepositorySnapshot,
   createCommit,
+  inspectCommitDetail,
   inspectFilePreview,
   inspectRepository,
   listCommitGraph,
@@ -348,6 +350,10 @@ export function App() {
   const [historyFilter, setHistoryFilter] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [selectedChangePath, setSelectedChangePath] = useState<string | null>(null);
+  const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
+  const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
+  const [commitDetailLoading, setCommitDetailLoading] = useState(false);
+  const [commitDetailError, setCommitDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -406,6 +412,15 @@ export function App() {
           setSelectedChangePath(null);
         }
       }
+
+      if (selectedCommitHash) {
+        const stillExists = nextGraph.rows.some((commit) => commit.hash === selectedCommitHash);
+
+        if (!stillExists) {
+          setSelectedCommitHash(null);
+          setCommitDetail(null);
+        }
+      }
     } catch (reason) {
       const message =
         reason instanceof Error ? reason.message : "Failed to read repository.";
@@ -418,7 +433,7 @@ export function App() {
       setLoading(false);
       setGraphLoading(false);
     }
-  }, [applyGraphPage, selectedChangePath, selectedRepository]);
+  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository]);
 
   const loadMoreGraph = useCallback(async () => {
     if (!selectedRepository || graphLoading || !graphHasMore) {
@@ -480,6 +495,47 @@ export function App() {
       cancelled = true;
     };
   }, [selectedChangePath, selectedRepository]);
+
+  useEffect(() => {
+    if (!selectedRepository || !selectedCommitHash) {
+      setCommitDetail(null);
+      setCommitDetailError(null);
+      setCommitDetailLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadCommitDetail = async () => {
+      setCommitDetailLoading(true);
+      setCommitDetailError(null);
+
+      try {
+        const nextCommitDetail = await inspectCommitDetail(selectedRepository, selectedCommitHash);
+
+        if (!cancelled) {
+          setCommitDetail(nextCommitDetail);
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setCommitDetail(null);
+          setCommitDetailError(
+            reason instanceof Error ? reason.message : "Commit detail loading failed.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setCommitDetailLoading(false);
+        }
+      }
+    };
+
+    void loadCommitDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCommitHash, selectedRepository]);
 
   useEffect(() => {
     void refreshRepository();
@@ -592,6 +648,11 @@ export function App() {
   const selectedChange = useMemo(
     () => snapshot?.files.find((file) => file.path === selectedChangePath) ?? null,
     [selectedChangePath, snapshot?.files],
+  );
+
+  const selectedCommit = useMemo(
+    () => commitGraph.find((commit) => commit.hash === selectedCommitHash) ?? null,
+    [commitGraph, selectedCommitHash],
   );
 
   const filteredHistory = useMemo(() => {
@@ -754,6 +815,11 @@ export function App() {
               onLoadMore={() => void loadMoreGraph()}
               hasMore={graphHasMore}
               loading={graphLoading}
+              selectedCommitHash={selectedCommitHash}
+              onSelectCommit={(commitHash) => {
+                setSelectedCommitHash(commitHash);
+                setSelectedChangePath(null);
+              }}
             />
           </section>
 
@@ -855,8 +921,8 @@ export function App() {
             <div className="board__header">
               <div>
                 <p className="eyebrow">Selection</p>
-                <h3 className="title-truncate" title={selectedChange?.path ?? undefined}>
-                  {selectedChange?.path ?? "Nothing selected"}
+                <h3 className="title-truncate" title={selectedChange?.path ?? selectedCommit?.subject ?? undefined}>
+                  {selectedChange?.path ?? selectedCommit?.subject ?? "Nothing selected"}
                 </h3>
               </div>
             </div>
@@ -982,6 +1048,59 @@ export function App() {
                     </dl>
                   ) : null}
                 </div>
+              </div>
+            ) : selectedCommitHash ? (
+              <div className="selection-card panel-scroll">
+                {commitDetailLoading ? <p className="muted">Loading commit details...</p> : null}
+                {commitDetailError ? <p className="muted">{commitDetailError}</p> : null}
+
+                {!commitDetailLoading && !commitDetailError && commitDetail ? (
+                  <>
+                    <span className="pill pill--accent">Commit {commitDetail.shortHash}</span>
+                    <dl>
+                      <div>
+                        <dt>Author</dt>
+                        <dd>{commitDetail.authorName}</dd>
+                      </div>
+                      <div>
+                        <dt>Email</dt>
+                        <dd>{commitDetail.authorEmail}</dd>
+                      </div>
+                      <div>
+                        <dt>Authored</dt>
+                        <dd>{formatRelativeTime(commitDetail.authoredAt)}</dd>
+                      </div>
+                      <div>
+                        <dt>Parents</dt>
+                        <dd>{commitDetail.parentHashes.length || 0}</dd>
+                      </div>
+                    </dl>
+
+                    {commitDetail.body ? (
+                      <div className="preview-frame preview-frame--placeholder">
+                        <p>{commitDetail.body}</p>
+                      </div>
+                    ) : null}
+
+                    <div className="commit-file-list">
+                      <div className="preview-panel__header">
+                        <strong>Files in commit</strong>
+                        <span className="preview-panel__meta">{commitDetail.files.length}</span>
+                      </div>
+                      {commitDetail.files.map((file) => (
+                        <div key={`${commitDetail.hash}-${file.path}`} className="commit-file-row">
+                          <div className="commit-file-row__main">
+                            <span className="pill pill--default">{file.status}</span>
+                            <strong title={file.path}>{file.path}</strong>
+                          </div>
+                          <span className="preview-panel__meta">
+                            {file.additions ?? 0}+ / {file.deletions ?? 0}-
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
               </div>
             ) : (
               <p className="muted">Pick a file to inspect its current Git state.</p>
