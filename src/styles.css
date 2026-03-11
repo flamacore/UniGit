@@ -874,6 +874,7 @@ h4 {
   color: var(--text-1);
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
 }
 
@@ -894,6 +895,7 @@ h4 {
   border: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(255, 255, 255, 0.02);
   color: var(--text-2);
+  justify-content: flex-start;
 }
 
 .branch-tree-toggle {
@@ -918,9 +920,15 @@ h4 {
 .branch-row strong,
 .branch-row p,
 .branch-row__meta {
+  width: 100%;
+  text-align: left;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.branch-row__top {
+  width: 100%;
 }
 
 .branch-row p,

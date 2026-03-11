@@ -452,7 +452,8 @@ const buildBranchTree = (entries: BranchEntry[], scope: string): BranchTreeNode[
   };
 
   for (const branch of entries) {
-    const segments = branch.name.split("/").filter(Boolean);
+    const branchSegments = branch.name.split("/").filter(Boolean);
+    const segments = branchSegments.length <= 1 ? ["root", ...branchSegments] : branchSegments;
     let currentChildren = roots;
     let currentMap = rootMap;
     let path = scope;
@@ -2202,7 +2203,7 @@ function BranchPane({
 }: BranchPaneProps) {
   const rootRef = useRef<HTMLElement | null>(null);
   const [contextMenu, setContextMenu] = useState<BranchContextMenuState | null>(null);
-  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => new Set(["local", "remote"]));
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => new Set(["local", "remote", "local/root", "remote/root"]));
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const localTree = useMemo(() => buildBranchTree(localBranches, "local"), [localBranches]);
