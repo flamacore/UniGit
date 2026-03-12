@@ -297,12 +297,25 @@ h4 {
   gap: 10px;
 }
 
+.remote-dialog__detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remote-dialog__detail-label {
+  color: #ffd7de;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .remote-dialog__detail {
   margin: 0;
   padding: 10px 12px;
   border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(2, 7, 15, 0.5);
+  border: 1px solid rgba(255, 120, 140, 0.18);
+  background: rgba(27, 8, 14, 0.52);
   color: #d7e5ff;
   white-space: pre-wrap;
   word-break: break-word;

@@ -158,6 +158,10 @@ type RemoteDialogState = {
   detail?: string;
 };
 
+const getRawGitMessage = (message: string) => {
+  return message.replace(/^Git command failed:\s*/i, "").trim();
+};
+
 const formatRepoLabel = (path: string) => {
   const segments = path.split(/[/\\]/).filter(Boolean);
   return segments[segments.length - 1] ?? path;
@@ -226,7 +230,21 @@ const getChangeMarker = (change: FileChange) => {
 };
 
 const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetch", message: string): RemoteDialogState => {
-  const normalized = message.toLowerCase();
+  const detail = getRawGitMessage(message);
+  const normalized = detail.toLowerCase();
+
+  if (
+    normalized.includes("your local changes to the following files would be overwritten by merge") ||
+    normalized.includes("please commit your changes or stash them before you merge") ||
+    normalized.includes("would be overwritten by merge")
+  ) {
+    return {
+      tone: "error",
+      title: "Pull blocked by local changes",
+      summary: "Git refused to apply incoming changes because local working-tree changes would be overwritten. Commit, stash, discard, or use Force pull if you intend to replace local state.",
+      detail,
+    };
+  }
 
   if (normalized.includes("has no upstream branch") || normalized.includes("no upstream branch")) {
     return {
@@ -237,7 +255,7 @@ const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetc
           ? "Fetch needs a configured remote"
           : "Pull needs an upstream",
       summary: "The current branch is not tracking a remote branch yet.",
-      detail: message,
+      detail,
     };
   }
 
@@ -246,7 +264,7 @@ const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetc
       tone: "error",
       title: "Push was rejected by the remote",
       summary: "The remote branch has commits you do not have locally. Pull or reconcile history before pushing.",
-      detail: message,
+      detail,
     };
   }
 
@@ -255,7 +273,7 @@ const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetc
       tone: "error",
       title: "Remote authentication failed",
       summary: "Git could not authenticate with the remote. Check your SSH key, agent, or remote permissions.",
-      detail: message,
+      detail,
     };
   }
 
@@ -264,7 +282,7 @@ const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetc
       tone: "error",
       title: "Remote repository could not be reached",
       summary: "The remote URL may be wrong, unavailable, or not accessible with your current credentials.",
-      detail: message,
+      detail,
     };
   }
 
@@ -286,7 +304,7 @@ const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" | "fetc
           : operation === "fetch"
             ? "Git could not update remote refs during refresh."
             : "Git could not complete the destructive sync operation.",
-    detail: message,
+      detail,
   };
 };
 
@@ -1681,7 +1699,12 @@ export function App() {
               </button>
             </div>
             <p>{remoteDialog.summary}</p>
-            {remoteDialog.detail ? <pre className="remote-dialog__detail">{remoteDialog.detail}</pre> : null}
+            {remoteDialog.detail ? (
+              <div className="remote-dialog__detail-block">
+                <span className="remote-dialog__detail-label">Git said</span>
+                <pre className="remote-dialog__detail">{remoteDialog.detail}</pre>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </header>
