@@ -158,6 +158,26 @@ export const cloneRepository = (remoteUrl: string, destinationPath: string) => {
   return invoke<CloneResult>("clone_repository", { remoteUrl, destinationPath });
 };
 
+export const saveRepositoryRemote = (
+  repoPath: string,
+  originalName: string | null,
+  name: string,
+  fetchUrl: string,
+  pushUrl?: string,
+) => {
+  return invoke<RepositoryRemote>("save_repository_remote", {
+    repoPath,
+    originalName,
+    name,
+    fetchUrl,
+    pushUrl,
+  });
+};
+
+export const deleteRepositoryRemote = (repoPath: string, name: string) => {
+  return invoke<string>("delete_repository_remote", { repoPath, name });
+};
+
 export const listCommitHistory = (repoPath: string, limit = 40) => {
   return invoke<CommitSummary[]>("list_commit_history", { repoPath, limit });
 };

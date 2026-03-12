@@ -41,6 +41,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - A repository manager dialog now exists for clone, open-existing, and per-repository settings.
 - The repository manager is also the enforced entry surface when no repositories are loaded.
 - Repository settings now surface current branch, repository path, and configured remotes.
+- Repository settings are now editable for remotes, including add, edit, rename, and remove operations.
 - Repository clone now exists through the app via a backend Git clone command.
 
 ### Git backend

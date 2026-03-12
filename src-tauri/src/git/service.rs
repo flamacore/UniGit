@@ -63,6 +63,26 @@ pub async fn clone_repository(remote_url: String, destination_path: String) -> R
 }
 
 #[command]
+pub async fn save_repository_remote(
+    repo_path: String,
+    original_name: Option<String>,
+    name: String,
+    fetch_url: String,
+    push_url: Option<String>,
+) -> Result<RepositoryRemote, String> {
+    save_repository_remote_inner(repo_path, original_name, name, fetch_url, push_url)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn delete_repository_remote(repo_path: String, name: String) -> Result<String, String> {
+    delete_repository_remote_inner(repo_path, name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn log_client_event(scope: String, message: String, detail: Option<String>) -> Result<(), String> {
     append_log("frontend", &scope, &message, detail.as_deref())
         .map_err(|error| error.to_string())
@@ -320,6 +340,76 @@ async fn clone_repository_inner(remote_url: String, destination_path: String) ->
             .unwrap_or("Repository")
             .to_string(),
     })
+}
+
+async fn save_repository_remote_inner(
+    repo_path: String,
+    original_name: Option<String>,
+    name: String,
+    fetch_url: String,
+    push_url: Option<String>,
+) -> GitResult<RepositoryRemote> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_name = name.trim();
+    let trimmed_fetch = fetch_url.trim();
+    let trimmed_original = original_name.as_deref().map(str::trim).filter(|value| !value.is_empty());
+    let trimmed_push = push_url.as_deref().map(str::trim).filter(|value| !value.is_empty());
+
+    if trimmed_name.is_empty() || trimmed_fetch.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Remote name and fetch URL are required.".to_string()));
+    }
+
+    if let Some(existing_name) = trimmed_original {
+        if existing_name != trimmed_name {
+          run_git_owned(
+              path,
+              vec!["remote".into(), "rename".into(), existing_name.to_string(), trimmed_name.to_string()],
+          )
+          .await?;
+        }
+
+        run_git_owned(
+            path,
+            vec!["remote".into(), "set-url".into(), trimmed_name.to_string(), trimmed_fetch.to_string()],
+        )
+        .await?;
+    } else {
+        run_git_owned(
+            path,
+            vec!["remote".into(), "add".into(), trimmed_name.to_string(), trimmed_fetch.to_string()],
+        )
+        .await?;
+    }
+
+    let effective_push = trimmed_push.unwrap_or(trimmed_fetch);
+    run_git_owned(
+        path,
+        vec!["remote".into(), "set-url".into(), "--push".into(), trimmed_name.to_string(), effective_push.to_string()],
+    )
+    .await?;
+
+    Ok(RepositoryRemote {
+        name: trimmed_name.to_string(),
+        fetch_url: Some(trimmed_fetch.to_string()),
+        push_url: Some(effective_push.to_string()),
+    })
+}
+
+async fn delete_repository_remote_inner(repo_path: String, name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed_name = name.trim();
+
+    if trimmed_name.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Remote name is required.".to_string()));
+    }
+
+    run_git_owned(
+        path,
+        vec!["remote".into(), "remove".into(), trimmed_name.to_string()],
+    )
+    .await?;
+
+    Ok(format!("Removed remote {trimmed_name}."))
 }
 
 async fn list_commit_history_inner(repo_path: String, limit: usize) -> GitResult<Vec<CommitSummary>> {

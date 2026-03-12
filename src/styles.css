@@ -459,6 +459,14 @@ h4 {
   gap: 4px;
 }
 
+.repo-config-remotes__actions,
+.repo-remote-row__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 @media (max-width: 1200px) {
   .repo-manager-dialog__body {
     grid-template-columns: 1fr;

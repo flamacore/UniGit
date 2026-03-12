@@ -31,6 +31,7 @@ import {
   RepositorySnapshot,
   cloneRepository,
   createCommit,
+  deleteRepositoryRemote,
   deleteBranch,
   exportFileFromCommit,
   fetchRepository,
@@ -47,6 +48,7 @@ import {
   pushRepository,
   renameBranch,
   restoreFileFromCommit,
+  saveRepositoryRemote,
   stageFiles,
   switchBranch,
   unstageFiles,
@@ -941,6 +943,57 @@ export function App() {
       setSubmitting(false);
     }
   }, [addRepository, cloneDestination, cloneUrl, refreshRepository, writeClientLog]);
+
+  const runSaveRepositoryRemote = useCallback(async (
+    originalName: string | null,
+    name: string,
+    fetchUrl: string,
+    pushUrl: string,
+  ) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("repo.remote.save", `Saving remote ${originalName ?? name}.`, `${name}\n${fetchUrl}\n${pushUrl}`);
+      await saveRepositoryRemote(selectedRepository, originalName, name, fetchUrl, pushUrl || undefined);
+      setStatusMessage(`Saved remote ${name}.`);
+      const nextConfig = await inspectRepositoryConfig(selectedRepository);
+      setRepoConfig(nextConfig);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Saving remote failed.";
+      setError(message);
+      writeClientLog("repo.remote.save.error", `Saving remote failed for ${originalName ?? name}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [selectedRepository, writeClientLog]);
+
+  const runDeleteRepositoryRemote = useCallback(async (name: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("repo.remote.delete", `Removing remote ${name}.`);
+      const result = await deleteRepositoryRemote(selectedRepository, name);
+      setStatusMessage(result);
+      const nextConfig = await inspectRepositoryConfig(selectedRepository);
+      setRepoConfig(nextConfig);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Removing remote failed.";
+      setError(message);
+      writeClientLog("repo.remote.delete.error", `Removing remote failed for ${name}.`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [selectedRepository, writeClientLog]);
 
   const runFileOperation = useCallback(
     async (mode: "stage" | "unstage", paths: string[]) => {
@@ -2117,6 +2170,11 @@ export function App() {
           repoConfig={repoConfig}
           repoConfigLoading={repoConfigLoading}
           repoConfigError={repoConfigError}
+          onSaveRemote={(originalName, name, fetchUrl, pushUrl) =>
+            void runSaveRepositoryRemote(originalName, name, fetchUrl, pushUrl)
+          }
+          onDeleteRemote={(name) => void runDeleteRepositoryRemote(name)}
+          settingsDisabled={submitting}
         />
       ) : null}
     </div>
@@ -2175,6 +2233,9 @@ type RepoManagerDialogProps = {
   repoConfig: RepositoryConfig | null;
   repoConfigLoading: boolean;
   repoConfigError: string | null;
+  onSaveRemote: (originalName: string | null, name: string, fetchUrl: string, pushUrl: string) => void;
+  onDeleteRemote: (name: string) => void;
+  settingsDisabled: boolean;
 };
 
 type BranchContextMenuState = {
@@ -2349,7 +2410,28 @@ function RepoManagerDialog({
   repoConfig,
   repoConfigLoading,
   repoConfigError,
+  onSaveRemote,
+  onDeleteRemote,
+  settingsDisabled,
 }: RepoManagerDialogProps) {
+  const [draftRemotes, setDraftRemotes] = useState<Array<{ originalName: string | null; name: string; fetchUrl: string; pushUrl: string }>>([]);
+
+  useEffect(() => {
+    if (!repoConfig) {
+      setDraftRemotes([]);
+      return;
+    }
+
+    setDraftRemotes(
+      repoConfig.remotes.map((remote) => ({
+        originalName: remote.name,
+        name: remote.name,
+        fetchUrl: remote.fetchUrl ?? "",
+        pushUrl: remote.pushUrl ?? remote.fetchUrl ?? "",
+      })),
+    );
+  }, [repoConfig]);
+
   return (
     <div className="dialog-backdrop">
       <section className="panel repo-manager-dialog">
@@ -2455,15 +2537,67 @@ function RepoManagerDialog({
                 <div className="repo-config-remotes">
                   <div className="preview-panel__header">
                     <strong>Remotes</strong>
-                    <span className="preview-panel__meta">{repoConfig.remotes.length}</span>
-                  </div>
-                  {repoConfig.remotes.length ? repoConfig.remotes.map((remote) => (
-                    <div key={remote.name} className="repo-remote-row">
-                      <strong>{remote.name}</strong>
-                      <p>{remote.fetchUrl ?? remote.pushUrl ?? "No remote URL"}</p>
-                      {remote.pushUrl && remote.pushUrl !== remote.fetchUrl ? <span className="repo-remote-row__meta">Push: {remote.pushUrl}</span> : null}
+                    <div className="repo-config-remotes__actions">
+                      <span className="preview-panel__meta">{draftRemotes.length}</span>
+                      <button
+                        className="ghost-button"
+                        disabled={settingsDisabled}
+                        onClick={() => setDraftRemotes((current) => [...current, { originalName: null, name: "", fetchUrl: "", pushUrl: "" }])}
+                      >
+                        Add remote
+                      </button>
                     </div>
-                  )) : <p className="muted">No remotes configured.</p>}
+                  </div>
+                  {draftRemotes.length ? draftRemotes.map((remote, index) => (
+                    <div key={`${remote.originalName ?? "new"}-${index}`} className="repo-remote-row">
+                      <label className="repo-form-field">
+                        <span>Name</span>
+                        <input
+                          className="changes-filter"
+                          value={remote.name}
+                          onChange={(event) => setDraftRemotes((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, name: event.target.value } : entry))}
+                        />
+                      </label>
+                      <label className="repo-form-field">
+                        <span>Fetch URL</span>
+                        <input
+                          className="changes-filter"
+                          value={remote.fetchUrl}
+                          onChange={(event) => setDraftRemotes((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, fetchUrl: event.target.value } : entry))}
+                        />
+                      </label>
+                      <label className="repo-form-field">
+                        <span>Push URL</span>
+                        <input
+                          className="changes-filter"
+                          value={remote.pushUrl}
+                          onChange={(event) => setDraftRemotes((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, pushUrl: event.target.value } : entry))}
+                        />
+                      </label>
+                      <div className="repo-remote-row__actions">
+                        <button
+                          className="ghost-button"
+                          disabled={settingsDisabled || !remote.name.trim() || !remote.fetchUrl.trim()}
+                          onClick={() => onSaveRemote(remote.originalName, remote.name.trim(), remote.fetchUrl.trim(), remote.pushUrl.trim())}
+                        >
+                          Save remote
+                        </button>
+                        <button
+                          className="ghost-button ghost-button--danger"
+                          disabled={settingsDisabled || !remote.originalName}
+                          onClick={() => {
+                            if (remote.originalName) {
+                              onDeleteRemote(remote.originalName);
+                            } else {
+                              setDraftRemotes((current) => current.filter((_, entryIndex) => entryIndex !== index));
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  )) : <p className="muted">No remotes configured yet. Add one here.</p>}
                 </div>
               </div>
             ) : null}
