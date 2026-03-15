@@ -931,6 +931,7 @@ h4 {
 
 .file-history-row {
   justify-content: space-between;
+  min-width: 0;
   padding: 8px 10px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -944,6 +945,7 @@ h4 {
 
 .file-history-row__text {
   min-width: 0;
+  flex: 1;
 }
 
 .file-history-row__text strong,

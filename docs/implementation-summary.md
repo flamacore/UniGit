@@ -76,7 +76,9 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 - The staged lane now supports Unstage selected bulk actions.
 - Change rows now support a right-click context menu for stage or unstage, discard, add to `.gitignore`, and local-only ignore actions.
+- Lane headers now also expose selected-item discard and local-only ignore actions without requiring right-click.
 - Local-only ignore now exists as an app-level hidden-changes system with a restore list, separate from Git remotes and repository state.
+- Locally ignored items automatically reappear if they become conflicted.
 - A Unity `.meta` pairing switch now exists so normal `.meta` companions collapse under the primary file and inherit its actions.
 - Conflicted `.meta` files remain visible as separate items even when pairing is enabled.
 - Commit box exists.
@@ -85,6 +87,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Change rows now also use lightly status-tinted card backgrounds that mirror the marker tone.
 - `.meta` files are treated specially.
 - When Unity pairing is enabled, non-conflicted `.meta` companions render as narrow attached child rows under the primary file and actions apply to both together.
+- When Unity pairing is enabled, `.meta`-only changes also collapse into the paired primary-file presentation instead of rendering as full standalone meta cards.
 - `.meta` entries are still rendered separately with reduced emphasis when pairing is disabled or when the `.meta` file alone is conflicted.
 - Sort direction can be toggled.
 - `.meta` files are treated specially.

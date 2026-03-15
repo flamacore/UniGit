@@ -469,33 +469,33 @@ const buildChangeList = (
   for (const [pairKey, group] of groups.entries()) {
     const primary = group.primary;
     const meta = group.meta;
-    const paired = pairMetaFiles && primary && meta && !meta.conflicted;
+    const paired = pairMetaFiles && meta && !meta.conflicted;
 
-    if (paired && primary && meta) {
-      const members = [primary, meta];
+    if (paired && meta) {
+      const anchor = primary ?? meta;
+      const members = [primary, meta].filter((change): change is FileChange => Boolean(change));
       const hiddenKey = `pair:${pairKey}`;
 
       if (
-        hiddenKeys.has(hiddenKey)
-        || hiddenKeys.has(`file:${primary.path}`)
-        || hiddenKeys.has(`file:${meta.path}`)
+        (!members.some((change) => change.conflicted) && hiddenKeys.has(hiddenKey))
+        || (!anchor.conflicted && members.some((change) => hiddenKeys.has(`file:${change.path}`)))
         || !members.some((change) => fileBelongsToLane(change, lane))
         || (query && !members.some((change) => matchesChangeQuery(change, query)))
       ) {
         continue;
       }
 
-      const parts = splitPathForDisplay(primary.path);
+      const parts = splitPathForDisplay(getPairKey(anchor.path));
       builtEntries.push({
-        anchor: primary,
+        anchor,
         item: {
-          change: buildSyntheticChange(primary, [meta]),
+          change: buildSyntheticChange(anchor, members.filter((change) => change.path !== anchor.path)),
           isMeta: false,
           fileName: parts.fileName,
           parentPath: parts.parentPath,
-          selectionKey: primary.path,
+          selectionKey: anchor.path,
           hiddenKey,
-          actionPaths: [primary.path, meta.path],
+          actionPaths: members.map((change) => change.path),
           pairedMeta: {
             path: meta.path,
             marker: getChangeMarker(meta),
@@ -512,7 +512,7 @@ const buildChangeList = (
         continue;
       }
 
-      if (hiddenKeys.has(`file:${change.path}`) || hiddenKeys.has(`pair:${getPairKey(change.path)}`)) {
+      if (!change.conflicted && (hiddenKeys.has(`file:${change.path}`) || hiddenKeys.has(`pair:${getPairKey(change.path)}`))) {
         continue;
       }
 
@@ -2082,17 +2082,15 @@ export function App() {
               </button>
             ) : null}
 
-            {changeContextMenu.lane === "unstaged" ? (
-              <button
-                className="ghost-button"
-                onClick={() => {
-                  hideLocally(resolveHiddenKeysForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
-                  setChangeContextMenu(null);
-                }}
-              >
-                Ignore locally
-              </button>
-            ) : null}
+            <button
+              className="ghost-button"
+              onClick={() => {
+                hideLocally(resolveHiddenKeysForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                setChangeContextMenu(null);
+              }}
+            >
+              Ignore locally
+            </button>
           </div>
         ) : null}
 
@@ -2247,6 +2245,19 @@ export function App() {
                     Array.from(new Set(unstagedChanges.flatMap((item) => item.actionPaths))),
                   )
                 }
+                extraActions={[
+                  {
+                    label: "Discard selected",
+                    disabled: submitting || selectedUnstagedPaths.length === 0,
+                    onClick: () => void runDiscardChangePaths(resolveActionPathsForSelection(selectedUnstagedPaths)),
+                    danger: true,
+                  },
+                  {
+                    label: "Ignore locally",
+                    disabled: selectedUnstagedPaths.length === 0,
+                    onClick: () => hideLocally(resolveHiddenKeysForSelection(selectedUnstagedPaths)),
+                  },
+                ]}
               />
               <DropLane
                 title="Staged"
@@ -2269,6 +2280,19 @@ export function App() {
                 bulkActionLabel="Unstage selected"
                 bulkActionDisabled={submitting || selectedStagedPaths.length === 0}
                 onBulkAction={() => void runFileOperation("unstage", resolveActionPathsForSelection(selectedStagedPaths))}
+                extraActions={[
+                  {
+                    label: "Discard selected",
+                    disabled: submitting || selectedStagedPaths.length === 0,
+                    onClick: () => void runDiscardChangePaths(resolveActionPathsForSelection(selectedStagedPaths)),
+                    danger: true,
+                  },
+                  {
+                    label: "Ignore locally",
+                    disabled: selectedStagedPaths.length === 0,
+                    onClick: () => hideLocally(resolveHiddenKeysForSelection(selectedStagedPaths)),
+                  },
+                ]}
               />
             </div>
             </div>
@@ -2624,6 +2648,12 @@ type DropLaneProps = {
   bulkSecondaryLabel?: string;
   bulkSecondaryDisabled?: boolean;
   onBulkSecondaryAction?: () => void;
+  extraActions?: Array<{
+    label: string;
+    disabled?: boolean;
+    onClick: () => void;
+    danger?: boolean;
+  }>;
 };
 
 type BranchPaneProps = {
@@ -2704,6 +2734,7 @@ function DropLane({
   bulkSecondaryLabel,
   bulkSecondaryDisabled,
   onBulkSecondaryAction,
+  extraActions,
 }: DropLaneProps) {
   const orderedPaths = items.map((item) => item.selectionKey);
 
@@ -2741,7 +2772,7 @@ function DropLane({
           </div>
         </div>
 
-        {bulkActionLabel || bulkSecondaryLabel ? (
+        {bulkActionLabel || bulkSecondaryLabel || extraActions?.length ? (
           <div className="lane__actions">
             {bulkActionLabel && onBulkAction ? (
               <button
@@ -2761,6 +2792,16 @@ function DropLane({
                 {bulkSecondaryLabel}
               </button>
             ) : null}
+            {extraActions?.map((action) => (
+              <button
+                key={action.label}
+                className={clsx("ghost-button", action.danger && "ghost-button--danger")}
+                disabled={action.disabled}
+                onClick={action.onClick}
+              >
+                {action.label}
+              </button>
+            ))}
           </div>
         ) : null}
       </header>
@@ -2800,7 +2841,7 @@ function DropLane({
                   aria-label={item.marker.label}
                 />
                 <div className="change-card__text">
-                  <strong title={item.change.path}>{item.fileName}</strong>
+                  <strong title={item.parentPath ? `${item.parentPath}/${item.fileName}` : item.fileName}>{item.fileName}</strong>
                   {showPaths && item.parentPath ? (
                     <p title={item.parentPath}>{item.parentPath}</p>
                   ) : null}
