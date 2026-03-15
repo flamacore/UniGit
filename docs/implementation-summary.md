@@ -56,7 +56,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Push now exists as a first-class top-bar remote action.
 - Normal pull now exists as a first-class top-bar remote action.
 - Normal pull now auto-detects divergence and falls back to a merge-based pull instead of failing on diverged local and remote history.
-- A first guarded force-pull action now exists with an inline consequence summary and safety ref creation.
+- Force pull now discards local state only for upstream-overlapping paths while keeping unrelated local-only changes, with no safety-ref creation.
 - Push and force-pull outcomes now surface through a dedicated inline remote dialog with clearer failure reasons instead of relying only on the generic error banner.
 - Remote failure dialogs now surface the raw Git stderr explicitly inside the box, and pull failures caused by overwrite-risk local changes are classified with a more specific explanation.
 - The refresh control now performs a real fetch so ahead/behind state and remote refs can update from the server instead of only rereading local status.

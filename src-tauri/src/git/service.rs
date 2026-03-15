@@ -1241,12 +1241,35 @@ async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
         return Err(GitServiceError::GitCommandFailed("No upstream branch is configured for the current branch.".to_string()));
     }
 
-    let safety_ref = format!("refs/unigit/safety/force-pull-{}", chrono_like_timestamp());
-    run_git_owned(path, vec!["update-ref".into(), safety_ref.clone(), "HEAD".into()]).await?;
     run_git_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
-    run_git_owned(path, vec!["reset".into(), "--hard".into(), upstream.clone()]).await?;
+    let overlapping_paths = list_upstream_touched_paths(path, &upstream).await?;
 
-    Ok(format!("Force pull completed from {upstream}. Safety ref saved at {safety_ref}."))
+    if !overlapping_paths.is_empty() {
+        let mut restore_args = vec![
+            "restore".into(),
+            "--source=HEAD".into(),
+            "--staged".into(),
+            "--worktree".into(),
+            "--".into(),
+        ];
+        restore_args.extend(overlapping_paths.iter().cloned());
+        run_git_owned(path, restore_args).await?;
+
+        let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
+        clean_args.extend(overlapping_paths.iter().cloned());
+        run_git_owned(path, clean_args).await?;
+    }
+
+    run_git_owned(
+        path,
+        vec!["merge".into(), "--no-edit".into(), "-X".into(), "theirs".into(), upstream.clone()],
+    )
+    .await?;
+
+    Ok(format!(
+        "Force pull completed from {upstream}. Discarded local state for {} upstream-touched path(s) and kept unrelated local-only changes.",
+        overlapping_paths.len()
+    ))
 }
 
 async fn resolve_upstream_divergence(repo_path: &Path) -> GitResult<(usize, usize)> {
@@ -1259,6 +1282,37 @@ async fn resolve_upstream_divergence(repo_path: &Path) -> GitResult<(usize, usiz
     let ahead = parts.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
     let behind = parts.next().and_then(|value| value.parse::<usize>().ok()).unwrap_or(0);
     Ok((ahead, behind))
+}
+
+async fn list_upstream_touched_paths(repo_path: &Path, upstream: &str) -> GitResult<Vec<String>> {
+    let merge_base = run_git_owned(
+        repo_path,
+        vec!["merge-base".into(), "HEAD".into(), upstream.to_string()],
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    if merge_base.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let output = run_git_owned(
+        repo_path,
+        vec![
+            "diff".into(),
+            "--name-only".into(),
+            format!("{merge_base}..{upstream}"),
+        ],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {

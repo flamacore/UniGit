@@ -1321,7 +1321,7 @@ export function App() {
     }
 
     if (snapshot.behind > 0) {
-      return "Force pull resets tracked files to upstream and stores a safety ref first.";
+      return "Force pull discards local state only for files touched upstream and keeps unrelated local-only changes.";
     }
 
     if (snapshot.ahead > 0) {
