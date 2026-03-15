@@ -538,6 +538,12 @@ h4 {
   overflow: hidden;
 }
 
+.changes-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .changes-toolbar {
   display: flex;
   align-items: center;

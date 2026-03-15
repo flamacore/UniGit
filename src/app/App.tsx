@@ -2150,7 +2150,17 @@ export function App() {
                 <p className="eyebrow">Changes</p>
                 <h3>Working tree</h3>
               </div>
-              <p className="board__hint">Drag, click, commit. Nothing extra.</p>
+              <div className="changes-header-actions">
+                <p className="board__hint">Drag, click, commit. Nothing extra.</p>
+                <button
+                  className="icon-button"
+                  disabled={!selectedRepository || loading || submitting}
+                  onClick={() => void refreshRepository()}
+                  title="Refresh changes"
+                >
+                  <RefreshCw size={14} />
+                </button>
+              </div>
             </div>
 
             <div className="changes-toolbar">
