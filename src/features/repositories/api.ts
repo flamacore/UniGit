@@ -278,6 +278,14 @@ export const unstageFiles = (repoPath: string, paths: string[]) => {
   return invoke<void>("unstage_files", { repoPath, paths });
 };
 
+export const discardPaths = (repoPath: string, paths: string[]) => {
+  return invoke<void>("discard_paths", { repoPath, paths });
+};
+
+export const addPathsToGitignore = (repoPath: string, paths: string[]) => {
+  return invoke<void>("add_paths_to_gitignore", { repoPath, paths });
+};
+
 export const createCommit = (repoPath: string, message: string) => {
   return invoke<void>("create_commit", { repoPath, message });
 };

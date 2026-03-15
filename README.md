@@ -33,3 +33,4 @@ npm run tauri:dev
 - Commit graph renderer with richer filtering
 - Local ignore management backed by repository-local exclude rules
 - More destructive power commands with undo and safety refs
+asdf

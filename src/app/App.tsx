@@ -18,6 +18,7 @@ import {
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import {
+  addPathsToGitignore,
   applyCommitFilePatch,
   BranchEntry,
   CloneResult,
@@ -31,6 +32,7 @@ import {
   RepositorySnapshot,
   cloneRepository,
   createCommit,
+  discardPaths,
   deleteRepositoryRemote,
   deleteBranch,
   exportFileFromCommit,
@@ -145,11 +147,24 @@ type ChangeListItem = {
   isMeta: boolean;
   fileName: string;
   parentPath: string;
+  selectionKey: string;
+  hiddenKey: string;
+  actionPaths: string[];
+  pairedMeta: {
+    path: string;
+    marker: {
+      tone: string;
+      label: string;
+    };
+    statusText: string;
+  } | null;
   marker: {
     tone: string;
     label: string;
   };
 };
+
+type LocalIgnoreMap = Record<string, string[]>;
 
 type RemoteDialogState = {
   tone: "error" | "info";
@@ -160,6 +175,34 @@ type RemoteDialogState = {
 
 const getRawGitMessage = (message: string) => {
   return message.replace(/^Git command failed:\s*/i, "").trim();
+};
+
+const LOCAL_IGNORE_STORAGE_KEY = "unigit.localIgnore";
+
+const loadLocalIgnoreMap = (): LocalIgnoreMap => {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(LOCAL_IGNORE_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as LocalIgnoreMap;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const persistLocalIgnoreMap = (value: LocalIgnoreMap) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(LOCAL_IGNORE_STORAGE_KEY, JSON.stringify(value));
 };
 
 const formatRepoLabel = (path: string) => {
@@ -348,13 +391,66 @@ const matchesChangeQuery = (change: FileChange, query: string) => {
   return candidate.includes(query);
 };
 
+const fileBelongsToLane = (change: FileChange, lane: "staged" | "unstaged") => {
+  return lane === "staged"
+    ? change.staged
+    : change.unstaged || change.untracked || change.conflicted;
+};
+
+const buildSyntheticChange = (anchor: FileChange, related: FileChange[]) => {
+  const all = [anchor, ...related];
+  const anyStaged = all.some((change) => change.staged);
+  const anyUnstaged = all.some((change) => change.unstaged);
+  const anyConflicted = all.some((change) => change.conflicted);
+  const anyUntracked = all.some((change) => change.untracked);
+  const anyIgnored = all.some((change) => change.ignored);
+  const anyStagedModified = all.some((change) => change.stagedModified);
+
+  return {
+    ...anchor,
+    staged: anyStaged,
+    unstaged: anyUnstaged,
+    conflicted: anyConflicted,
+    untracked: anyUntracked,
+    ignored: anyIgnored,
+    stagedModified: anyStagedModified,
+    displayStatus: anyConflicted
+      ? "Conflict"
+      : anyStaged && (anyUnstaged || anyUntracked)
+        ? "Mixed"
+        : anyStaged
+          ? "Staged"
+          : anyUntracked
+            ? "Untracked"
+            : anchor.displayStatus,
+  } satisfies FileChange;
+};
+
+const getCombinedMarker = (changes: FileChange[]) => {
+  const markers = changes.map(getChangeMarker);
+  const priority = {
+    conflict: 7,
+    removed: 6,
+    moved: 5,
+    restaged: 4,
+    new: 3,
+    added: 2,
+    changed: 1,
+  } as const;
+
+  return markers.sort((left, right) => (priority[right.tone as keyof typeof priority] ?? 0) - (priority[left.tone as keyof typeof priority] ?? 0))[0] ?? { tone: "changed", label: "Changed" };
+};
+
 const buildChangeList = (
-  files: FileChange[],
+  allFiles: FileChange[],
+  lane: "staged" | "unstaged",
   options: ChangeListOptions,
+  pairMetaFiles: boolean,
+  hiddenKeys: Set<string>,
 ): ChangeListItem[] => {
   const groups = new Map<string, { primary?: FileChange; meta?: FileChange }>();
 
-  for (const change of files) {
+  for (const change of allFiles) {
     const key = getPairKey(change.path);
     const group = groups.get(key) ?? {};
 
@@ -368,65 +464,94 @@ const buildChangeList = (
   }
 
   const query = options.query.trim().toLowerCase();
+  const builtEntries: Array<{ anchor: FileChange; item: ChangeListItem }> = [];
 
-  const orderedGroups = Array.from(groups.entries())
-    .filter(([, group]) => {
-      const primaryMatch = group.primary
-        ? matchesChangeQuery(group.primary, query)
-        : false;
-      const metaMatch = group.meta ? matchesChangeQuery(group.meta, query) : false;
+  for (const [pairKey, group] of groups.entries()) {
+    const primary = group.primary;
+    const meta = group.meta;
+    const paired = pairMetaFiles && primary && meta && !meta.conflicted;
 
-      return primaryMatch || metaMatch;
-    })
-    .sort(([, left], [, right]) => {
-      const leftAnchor = left.primary ?? left.meta;
-      const rightAnchor = right.primary ?? right.meta;
+    if (paired && primary && meta) {
+      const members = [primary, meta];
+      const hiddenKey = `pair:${pairKey}`;
 
-      if (!leftAnchor || !rightAnchor) {
-        return 0;
+      if (
+        hiddenKeys.has(hiddenKey)
+        || hiddenKeys.has(`file:${primary.path}`)
+        || hiddenKeys.has(`file:${meta.path}`)
+        || !members.some((change) => fileBelongsToLane(change, lane))
+        || (query && !members.some((change) => matchesChangeQuery(change, query)))
+      ) {
+        continue;
       }
 
-      const leftValue = getSortValue(leftAnchor, options.sortBy);
-      const rightValue = getSortValue(rightAnchor, options.sortBy);
+      const parts = splitPathForDisplay(primary.path);
+      builtEntries.push({
+        anchor: primary,
+        item: {
+          change: buildSyntheticChange(primary, [meta]),
+          isMeta: false,
+          fileName: parts.fileName,
+          parentPath: parts.parentPath,
+          selectionKey: primary.path,
+          hiddenKey,
+          actionPaths: [primary.path, meta.path],
+          pairedMeta: {
+            path: meta.path,
+            marker: getChangeMarker(meta),
+            statusText: meta.displayStatus,
+          },
+          marker: getCombinedMarker(members),
+        },
+      });
+      continue;
+    }
+
+    for (const change of [primary, meta].filter((entry): entry is FileChange => Boolean(entry))) {
+      if (!fileBelongsToLane(change, lane)) {
+        continue;
+      }
+
+      if (hiddenKeys.has(`file:${change.path}`) || hiddenKeys.has(`pair:${getPairKey(change.path)}`)) {
+        continue;
+      }
+
+      if (query && !matchesChangeQuery(change, query)) {
+        continue;
+      }
+
+      const parts = splitPathForDisplay(change.path);
+      builtEntries.push({
+        anchor: change,
+        item: {
+          change,
+          isMeta: isMetaFile(change.path),
+          fileName: parts.fileName,
+          parentPath: parts.parentPath,
+          selectionKey: change.path,
+          hiddenKey: `file:${change.path}`,
+          actionPaths: [change.path],
+          pairedMeta: null,
+          marker: getChangeMarker(change),
+        },
+      });
+    }
+  }
+
+  return builtEntries
+    .sort((left, right) => {
+      const leftValue = getSortValue(left.anchor, options.sortBy);
+      const rightValue = getSortValue(right.anchor, options.sortBy);
       const baseComparison = leftValue.localeCompare(rightValue);
 
       if (baseComparison !== 0) {
         return options.sortDirection === "asc" ? baseComparison : -baseComparison;
       }
 
-      const leftPath = getPairKey(leftAnchor.path);
-      const rightPath = getPairKey(rightAnchor.path);
-      const tiebreak = leftPath.localeCompare(rightPath);
+      const tiebreak = getPairKey(left.anchor.path).localeCompare(getPairKey(right.anchor.path));
       return options.sortDirection === "asc" ? tiebreak : -tiebreak;
-    });
-
-  return orderedGroups.flatMap(([, group]) => {
-    const items: ChangeListItem[] = [];
-
-    if (group.primary) {
-      const parts = splitPathForDisplay(group.primary.path);
-      items.push({
-        change: group.primary,
-        isMeta: false,
-        fileName: parts.fileName,
-        parentPath: parts.parentPath,
-        marker: getChangeMarker(group.primary),
-      });
-    }
-
-    if (group.meta) {
-      const parts = splitPathForDisplay(group.meta.path);
-      items.push({
-        change: group.meta,
-        isMeta: true,
-        fileName: parts.fileName,
-        parentPath: parts.parentPath,
-        marker: getChangeMarker(group.meta),
-      });
-    }
-
-    return items;
-  });
+    })
+    .map((entry) => entry.item);
 };
 
 const getStatusTone = (change: FileChange) => {
@@ -564,6 +689,10 @@ export function App() {
   const [fileHistoryLoading, setFileHistoryLoading] = useState(false);
   const [fileHistoryError, setFileHistoryError] = useState<string | null>(null);
   const [changeQuery, setChangeQuery] = useState("");
+  const [pairMetaFiles, setPairMetaFiles] = useState(true);
+  const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
+  const [localIgnoreMap, setLocalIgnoreMap] = useState<LocalIgnoreMap>(() => loadLocalIgnoreMap());
+  const [changeContextMenu, setChangeContextMenu] = useState<ChangeContextMenuState | null>(null);
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -826,6 +955,10 @@ export function App() {
     void refreshRepository();
   }, [refreshRepository]);
 
+  useEffect(() => {
+    persistLocalIgnoreMap(localIgnoreMap);
+  }, [localIgnoreMap]);
+
   const showRepoManager = repoManagerOpen || repositories.length === 0;
 
   useEffect(() => {
@@ -895,6 +1028,19 @@ export function App() {
     };
   }, [error, notificationsHovered, remoteDialog, statusMessage]);
 
+  useEffect(() => {
+    if (!changeContextMenu) {
+      return;
+    }
+
+    const handlePointerDown = () => {
+      setChangeContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [changeContextMenu]);
+
   const pickRepository = useCallback(async () => {
     let path: string | null = null;
 
@@ -961,6 +1107,80 @@ export function App() {
       setSubmitting(false);
     }
   }, [addRepository, cloneDestination, cloneUrl, refreshRepository, writeClientLog]);
+
+  const runDiscardChangePaths = useCallback(async (paths: string[]) => {
+    if (!selectedRepository || paths.length === 0) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.discard", `Discarding ${paths.length} change path(s).`, paths.join("\n"));
+      await discardPaths(selectedRepository, paths);
+      setStatusMessage(`Discarded ${paths.length} path${paths.length > 1 ? "s" : ""}.`);
+      setSelectedChangePath(null);
+      setSelectedChangePaths([]);
+      await refreshRepository();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Discard failed.";
+      setError(message);
+      writeClientLog("git.discard.error", `Discard failed for ${paths.length} path(s).`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
+
+  const runAddToGitignore = useCallback(async (paths: string[]) => {
+    if (!selectedRepository || paths.length === 0) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.gitignore.add", `Appending ${paths.length} path(s) to .gitignore.`, paths.join("\n"));
+      await addPathsToGitignore(selectedRepository, paths);
+      setStatusMessage(`Added ${paths.length} path${paths.length > 1 ? "s" : ""} to .gitignore.`);
+      await refreshRepository();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Updating .gitignore failed.";
+      setError(message);
+      writeClientLog("git.gitignore.add.error", `Updating .gitignore failed for ${paths.length} path(s).`, message);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, writeClientLog]);
+
+  const hideLocally = useCallback((hiddenKeys: string[]) => {
+    if (!selectedRepository || hiddenKeys.length === 0) {
+      return;
+    }
+
+    setLocalIgnoreMap((current) => {
+      const nextKeys = Array.from(new Set([...(current[selectedRepository] ?? []), ...hiddenKeys]));
+      return {
+        ...current,
+        [selectedRepository]: nextKeys,
+      };
+    });
+    setSelectedChangePath(null);
+    setSelectedChangePaths([]);
+    setStatusMessage(`Hidden ${hiddenKeys.length} item${hiddenKeys.length > 1 ? "s" : ""} locally.`);
+  }, [selectedRepository]);
+
+  const restoreHiddenLocalKey = useCallback((hiddenKey: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setLocalIgnoreMap((current) => ({
+      ...current,
+      [selectedRepository]: (current[selectedRepository] ?? []).filter((entry) => entry !== hiddenKey),
+    }));
+  }, [selectedRepository]);
 
   const runSaveRepositoryRemote = useCallback(async (
     originalName: string | null,
@@ -1174,18 +1394,13 @@ export function App() {
     }
   }, [refreshRepository, selectedRepository, writeClientLog]);
 
-  const rawUnstagedChanges = useMemo(
-    () =>
-      snapshot?.files.filter(
-        (file) => file.unstaged || file.untracked || file.conflicted,
-      ) ?? [],
-    [snapshot?.files],
-  );
+  const hiddenLocalKeys = useMemo(() => {
+    if (!selectedRepository) {
+      return new Set<string>();
+    }
 
-  const rawStagedChanges = useMemo(
-    () => snapshot?.files.filter((file) => file.staged) ?? [],
-    [snapshot?.files],
-  );
+    return new Set(localIgnoreMap[selectedRepository] ?? []);
+  }, [localIgnoreMap, selectedRepository]);
 
   const changeListOptions = useMemo<ChangeListOptions>(
     () => ({
@@ -1198,14 +1413,81 @@ export function App() {
   );
 
   const unstagedChanges = useMemo(
-    () => buildChangeList(rawUnstagedChanges, changeListOptions),
-    [changeListOptions, rawUnstagedChanges],
+    () => buildChangeList(snapshot?.files ?? [], "unstaged", changeListOptions, pairMetaFiles, hiddenLocalKeys),
+    [changeListOptions, hiddenLocalKeys, pairMetaFiles, snapshot?.files],
   );
 
   const stagedChanges = useMemo(
-    () => buildChangeList(rawStagedChanges, changeListOptions),
-    [changeListOptions, rawStagedChanges],
+    () => buildChangeList(snapshot?.files ?? [], "staged", changeListOptions, pairMetaFiles, hiddenLocalKeys),
+    [changeListOptions, hiddenLocalKeys, pairMetaFiles, snapshot?.files],
   );
+
+  const allVisibleChangeItems = useMemo(
+    () => [...unstagedChanges, ...stagedChanges],
+    [stagedChanges, unstagedChanges],
+  );
+
+  const visibleChangeItemMap = useMemo(
+    () => new Map(allVisibleChangeItems.map((item) => [item.selectionKey, item])),
+    [allVisibleChangeItems],
+  );
+
+  const resolveActionPathsForSelection = useCallback((selectionKeys: string[]) => {
+    return Array.from(
+      new Set(
+        selectionKeys.flatMap((selectionKey) => visibleChangeItemMap.get(selectionKey)?.actionPaths ?? []),
+      ),
+    );
+  }, [visibleChangeItemMap]);
+
+  const resolveHiddenKeysForSelection = useCallback((selectionKeys: string[]) => {
+    return Array.from(
+      new Set(
+        selectionKeys.flatMap((selectionKey) => {
+          const item = visibleChangeItemMap.get(selectionKey);
+          return item ? [item.hiddenKey] : [];
+        }),
+      ),
+    );
+  }, [visibleChangeItemMap]);
+
+  useEffect(() => {
+    setSelectedChangePaths((current) => {
+      const next = current.filter((selectionKey) => visibleChangeItemMap.has(selectionKey));
+      return next.length === current.length && next.every((value, index) => value === current[index])
+        ? current
+        : next;
+    });
+
+    if (selectedChangePath && !visibleChangeItemMap.has(selectedChangePath)) {
+      setSelectedChangePath(null);
+    }
+  }, [selectedChangePath, visibleChangeItemMap]);
+
+  const resolveContextSelectionKeys = useCallback((item: ChangeListItem) => {
+    if (selectedChangePaths.includes(item.selectionKey)) {
+      return selectedChangePaths;
+    }
+
+    return [item.selectionKey];
+  }, [selectedChangePaths]);
+
+  const openChangeContextMenu = useCallback((item: ChangeListItem, lane: "staged" | "unstaged", event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+
+    if (!selectedChangePaths.includes(item.selectionKey)) {
+      setSelectedChangePaths([item.selectionKey]);
+      setSelectedChangePath(item.selectionKey);
+      setSelectionAnchorPath(item.selectionKey);
+    }
+
+    setChangeContextMenu({
+      item,
+      lane,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, [selectedChangePaths]);
 
   const selectedChange = useMemo(
     () => snapshot?.files.find((file) => file.path === selectedChangePath) ?? null,
@@ -1257,9 +1539,25 @@ export function App() {
   );
 
   const selectedUnstagedPaths = useMemo(() => {
-    const lanePaths = new Set(unstagedChanges.map((item) => item.change.path));
+    const lanePaths = new Set(unstagedChanges.map((item) => item.selectionKey));
     return selectedChangePaths.filter((path) => lanePaths.has(path));
   }, [selectedChangePaths, unstagedChanges]);
+
+  const selectedStagedPaths = useMemo(() => {
+    const lanePaths = new Set(stagedChanges.map((item) => item.selectionKey));
+    return selectedChangePaths.filter((path) => lanePaths.has(path));
+  }, [selectedChangePaths, stagedChanges]);
+
+  const hiddenLocalEntries = useMemo(() => {
+    if (!selectedRepository) {
+      return [];
+    }
+
+    return (localIgnoreMap[selectedRepository] ?? []).map((key) => ({
+      key,
+      label: key.replace(/^pair:|^file:/, ""),
+    }));
+  }, [localIgnoreMap, selectedRepository]);
 
   const selectedBranch = useMemo(
     () => branches.find((branch) => branch.fullName === selectedBranchFullName) ?? null,
@@ -1730,6 +2028,74 @@ export function App() {
           </div>
         ) : null}
 
+        {changeContextMenu ? (
+          <div
+            className="change-context-menu"
+            style={{ left: changeContextMenu.x, top: changeContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            {changeContextMenu.lane === "unstaged" ? (
+              <button
+                className="ghost-button"
+                disabled={submitting}
+                onClick={() => {
+                  void runFileOperation("stage", resolveActionPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                  setChangeContextMenu(null);
+                }}
+              >
+                {resolveContextSelectionKeys(changeContextMenu.item).length > 1 ? "Stage selected" : "Stage"}
+              </button>
+            ) : (
+              <button
+                className="ghost-button"
+                disabled={submitting}
+                onClick={() => {
+                  void runFileOperation("unstage", resolveActionPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                  setChangeContextMenu(null);
+                }}
+              >
+                {resolveContextSelectionKeys(changeContextMenu.item).length > 1 ? "Unstage selected" : "Unstage"}
+              </button>
+            )}
+
+            <button
+              className="ghost-button"
+              disabled={submitting}
+              onClick={() => {
+                void runDiscardChangePaths(resolveActionPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                setChangeContextMenu(null);
+              }}
+            >
+              {resolveContextSelectionKeys(changeContextMenu.item).length > 1 ? "Discard selected" : "Discard"}
+            </button>
+
+            {changeContextMenu.lane === "unstaged" ? (
+              <button
+                className="ghost-button"
+                disabled={submitting}
+                onClick={() => {
+                  void runAddToGitignore(resolveActionPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                  setChangeContextMenu(null);
+                }}
+              >
+                Add to .gitignore
+              </button>
+            ) : null}
+
+            {changeContextMenu.lane === "unstaged" ? (
+              <button
+                className="ghost-button"
+                onClick={() => {
+                  hideLocally(resolveHiddenKeysForSelection(resolveContextSelectionKeys(changeContextMenu.item)));
+                  setChangeContextMenu(null);
+                }}
+              >
+                Ignore locally
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
         <section className="content-grid">
           <section className="panel graph-shell graph-panel--embedded">
             <div
@@ -1820,7 +2186,36 @@ export function App() {
               >
                 {showPaths ? "Hide paths" : "Show paths"}
               </button>
+              <button
+                className={clsx("ghost-button", pairMetaFiles && "ghost-button--active")}
+                onClick={() => setPairMetaFiles((value) => !value)}
+              >
+                {pairMetaFiles ? "Unity meta paired" : "Unity meta separate"}
+              </button>
+              <button
+                className={clsx("ghost-button", showHiddenLocalMenu && "ghost-button--active")}
+                onClick={() => setShowHiddenLocalMenu((value) => !value)}
+              >
+                Hidden local {hiddenLocalEntries.length ? `(${hiddenLocalEntries.length})` : ""}
+              </button>
             </div>
+
+            {showHiddenLocalMenu ? (
+              <div className="local-ignore-panel">
+                <div className="preview-panel__header">
+                  <strong>Locally hidden</strong>
+                  <span className="preview-panel__meta">{hiddenLocalEntries.length}</span>
+                </div>
+                {hiddenLocalEntries.length ? hiddenLocalEntries.map((entry) => (
+                  <div key={entry.key} className="local-ignore-row">
+                    <span title={entry.label}>{entry.label}</span>
+                    <button className="ghost-button" onClick={() => restoreHiddenLocalKey(entry.key)}>
+                      Restore
+                    </button>
+                  </div>
+                )) : <p className="muted">No locally hidden changes.</p>}
+              </div>
+            ) : null}
 
             <div className="lanes">
               <DropLane
@@ -1830,7 +2225,8 @@ export function App() {
                 actionLabel="Stage"
                 dropAction="unstage"
                 disabled={submitting}
-                onAction={(path) => void runFileOperation("stage", [path])}
+                onAction={(selectionKey) => void runFileOperation("stage", resolveActionPathsForSelection([selectionKey]))}
+                onOpenContextMenu={openChangeContextMenu}
                 onDropFiles={(paths, origin) => {
                   if (origin === "staged") {
                     void runFileOperation("unstage", paths);
@@ -1842,13 +2238,13 @@ export function App() {
                 primarySelectedPath={selectedChangePath}
                 bulkActionLabel="Stage selected"
                 bulkActionDisabled={submitting || selectedUnstagedPaths.length === 0}
-                onBulkAction={() => void runFileOperation("stage", selectedUnstagedPaths)}
+                onBulkAction={() => void runFileOperation("stage", resolveActionPathsForSelection(selectedUnstagedPaths))}
                 bulkSecondaryLabel="Stage all"
                 bulkSecondaryDisabled={submitting || unstagedChanges.length === 0}
                 onBulkSecondaryAction={() =>
                   void runFileOperation(
                     "stage",
-                    unstagedChanges.map((item) => item.change.path),
+                    Array.from(new Set(unstagedChanges.flatMap((item) => item.actionPaths))),
                   )
                 }
               />
@@ -1859,7 +2255,8 @@ export function App() {
                 actionLabel="Unstage"
                 dropAction="stage"
                 disabled={submitting}
-                onAction={(path) => void runFileOperation("unstage", [path])}
+                onAction={(selectionKey) => void runFileOperation("unstage", resolveActionPathsForSelection([selectionKey]))}
+                onOpenContextMenu={openChangeContextMenu}
                 onDropFiles={(paths, origin) => {
                   if (origin === "unstaged") {
                     void runFileOperation("stage", paths);
@@ -1869,6 +2266,9 @@ export function App() {
                 onSelect={handleSelectChange}
                 selectedPaths={selectedChangePaths}
                 primarySelectedPath={selectedChangePath}
+                bulkActionLabel="Unstage selected"
+                bulkActionDisabled={submitting || selectedStagedPaths.length === 0}
+                onBulkAction={() => void runFileOperation("unstage", resolveActionPathsForSelection(selectedStagedPaths))}
               />
             </div>
             </div>
@@ -2215,6 +2615,7 @@ type DropLaneProps = {
   onDropFiles: (paths: string[], origin: "staged" | "unstaged") => void;
   showPaths: boolean;
   onSelect: (path: string, event: MouseEvent<HTMLElement>, orderedPaths: string[]) => void;
+  onOpenContextMenu: (item: ChangeListItem, lane: "staged" | "unstaged", event: MouseEvent<HTMLElement>) => void;
   selectedPaths: string[];
   primarySelectedPath: string | null;
   bulkActionLabel?: string;
@@ -2276,6 +2677,13 @@ type BranchTreeNode = {
   children: BranchTreeNode[];
 };
 
+type ChangeContextMenuState = {
+  item: ChangeListItem;
+  lane: "staged" | "unstaged";
+  x: number;
+  y: number;
+};
+
 function DropLane({
   title,
   icon,
@@ -2287,6 +2695,7 @@ function DropLane({
   onDropFiles,
   showPaths,
   onSelect,
+  onOpenContextMenu,
   selectedPaths,
   primarySelectedPath,
   bulkActionLabel,
@@ -2296,7 +2705,7 @@ function DropLane({
   bulkSecondaryDisabled,
   onBulkSecondaryAction,
 }: DropLaneProps) {
-  const orderedPaths = items.map((item) => item.change.path);
+  const orderedPaths = items.map((item) => item.selectionKey);
 
   return (
     <section
@@ -2360,18 +2769,19 @@ function DropLane({
         {items.map((item) => {
           return (
             <article
-              key={`${title}-${item.change.path}`}
+              key={`${title}-${item.selectionKey}`}
               className={clsx(
                 "change-card",
-                selectedPaths.includes(item.change.path) && "change-card--selected",
-                primarySelectedPath === item.change.path && "change-card--focused",
+                `change-card--${item.marker.tone}`,
+                selectedPaths.includes(item.selectionKey) && "change-card--selected",
+                primarySelectedPath === item.selectionKey && "change-card--focused",
                 item.isMeta && "change-card--meta",
               )}
               draggable={!disabled}
               onDragStart={(event) => {
-                const draggedPaths = selectedPaths.includes(item.change.path)
-                  ? orderedPaths.filter((path) => selectedPaths.includes(path))
-                  : [item.change.path];
+                const draggedPaths = selectedPaths.includes(item.selectionKey)
+                  ? Array.from(new Set(items.filter((entry) => selectedPaths.includes(entry.selectionKey)).flatMap((entry) => entry.actionPaths)))
+                  : item.actionPaths;
                 event.dataTransfer.setData(
                   "application/x-unigit-change",
                   JSON.stringify({
@@ -2380,7 +2790,8 @@ function DropLane({
                   }),
                 );
               }}
-              onClick={(event) => onSelect(item.change.path, event, orderedPaths)}
+              onClick={(event) => onSelect(item.selectionKey, event, orderedPaths)}
+              onContextMenu={(event) => onOpenContextMenu(item, dropAction === "stage" ? "unstaged" : "staged", event)}
             >
               <div className="change-card__main">
                 <span
@@ -2393,6 +2804,15 @@ function DropLane({
                   {showPaths && item.parentPath ? (
                     <p title={item.parentPath}>{item.parentPath}</p>
                   ) : null}
+                  {item.pairedMeta ? (
+                    <div className="change-card__meta-child">
+                      <span className={clsx("change-marker", `change-marker--${item.pairedMeta.marker.tone}`)} />
+                      <span className="change-card__meta-child-name" title={item.pairedMeta.path}>
+                        {splitPathForDisplay(item.pairedMeta.path).fileName}
+                      </span>
+                      <span className="change-card__meta-child-status">{item.pairedMeta.statusText}</span>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <button
@@ -2400,7 +2820,7 @@ function DropLane({
                 disabled={disabled}
                 onClick={(event) => {
                   event.stopPropagation();
-                  onAction(item.change.path);
+                  onAction(item.selectionKey);
                 }}
               >
                 {actionLabel}

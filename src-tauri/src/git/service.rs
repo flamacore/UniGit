@@ -201,6 +201,20 @@ pub async fn unstage_files(repo_path: String, paths: Vec<String>) -> Result<(), 
 }
 
 #[command]
+pub async fn discard_paths(repo_path: String, paths: Vec<String>) -> Result<(), String> {
+    discard_paths_inner(repo_path, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn add_paths_to_gitignore(repo_path: String, paths: Vec<String>) -> Result<(), String> {
+    add_paths_to_gitignore_inner(repo_path, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn push_repository(repo_path: String) -> Result<String, String> {
     push_repository_inner(repo_path)
         .await
@@ -1081,6 +1095,93 @@ async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bo
     run_git_owned(path, args).await.map(|_| ())
 }
 
+async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult<()> {
+    let path = validate_repository_path(&repo_path)?;
+    let normalized_paths = sanitize_path_list(paths);
+
+    if normalized_paths.is_empty() {
+        return Ok(());
+    }
+
+    let untracked_output = run_git_owned(
+        path,
+        {
+            let mut args = vec!["ls-files".into(), "--others".into(), "--exclude-standard".into(), "--".into()];
+            args.extend(normalized_paths.iter().cloned());
+            args
+        },
+    )
+    .await?;
+
+    let untracked_paths = untracked_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>();
+
+    let tracked_paths = normalized_paths
+        .iter()
+        .filter(|path_value| !untracked_paths.contains(path_value.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if !tracked_paths.is_empty() {
+        let mut restore_args = vec![
+            "restore".into(),
+            "--source=HEAD".into(),
+            "--staged".into(),
+            "--worktree".into(),
+            "--".into(),
+        ];
+        restore_args.extend(tracked_paths);
+        run_git_owned(path, restore_args).await?;
+    }
+
+    if !untracked_paths.is_empty() {
+        let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
+        clean_args.extend(untracked_paths.into_iter());
+        run_git_owned(path, clean_args).await?;
+    }
+
+    Ok(())
+}
+
+async fn add_paths_to_gitignore_inner(repo_path: String, paths: Vec<String>) -> GitResult<()> {
+    let path = validate_repository_path(&repo_path)?;
+    let normalized_paths = sanitize_path_list(paths);
+
+    if normalized_paths.is_empty() {
+        return Ok(());
+    }
+
+    let gitignore_path = path.join(".gitignore");
+    let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let mut lines = existing.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let mut existing_set = lines
+        .iter()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+
+    for path_value in normalized_paths {
+        if !existing_set.contains(path_value.as_str()) {
+            existing_set.insert(path_value.clone());
+            lines.push(path_value);
+        }
+    }
+
+    let mut next = lines.join("\n");
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+
+    fs::write(gitignore_path, next)
+        .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+
+    Ok(())
+}
+
 async fn switch_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
     let trimmed = full_name.trim();
@@ -1313,6 +1414,19 @@ async fn list_upstream_touched_paths(repo_path: &Path, upstream: &str) -> GitRes
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect())
+}
+
+fn sanitize_path_list(paths: Vec<String>) -> Vec<String> {
+    let mut unique = std::collections::BTreeSet::new();
+
+    for path in paths {
+        let trimmed = path.trim().replace('\\', "/");
+        if !trimmed.is_empty() {
+            unique.insert(trimmed);
+        }
+    }
+
+    unique.into_iter().collect()
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {

@@ -74,23 +74,18 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 ### Working tree UI
 
-- Two-lane changes view exists: unstaged and staged.
-- Drag-and-drop between lanes exists.
-- One-click stage and unstage buttons exist.
-- Shift-click and Ctrl/Cmd-click multi-select now exist in the change lanes.
-- The unstaged lane now supports Stage selected and Stage all bulk actions.
+- The staged lane now supports Unstage selected bulk actions.
+- Change rows now support a right-click context menu for stage or unstage, discard, add to `.gitignore`, and local-only ignore actions.
+- Local-only ignore now exists as an app-level hidden-changes system with a restore list, separate from Git remotes and repository state.
+- A Unity `.meta` pairing switch now exists so normal `.meta` companions collapse under the primary file and inherit its actions.
+- Conflicted `.meta` files remain visible as separate items even when pairing is enabled.
 - Commit box exists.
 - Files changed after staging are detected and surfaced in status logic.
 
-### Change list behavior
-
-- Change rows now use a left-side colored marker instead of plain text status labels.
-- Marker semantics currently include changed, changed-after-staging, removed, moved or renamed, added or untracked, and conflict.
-- File entries no longer rely on hard truncation alone.
-- Paths can wrap responsively when shown.
-- There are controls to filter the list.
-- There are controls to show or hide paths.
-- There are controls to sort by name, folder, extension, or status.
+- Change rows now also use lightly status-tinted card backgrounds that mirror the marker tone.
+- `.meta` files are treated specially.
+- When Unity pairing is enabled, non-conflicted `.meta` companions render as narrow attached child rows under the primary file and actions apply to both together.
+- `.meta` entries are still rendered separately with reduced emphasis when pairing is disabled or when the `.meta` file alone is conflicted.
 - Sort direction can be toggled.
 - `.meta` files are treated specially.
 - If a file and its `.meta` partner both exist in the same lane, the `.meta` file is always listed directly under the source file regardless of sorting or filtering.
