@@ -469,11 +469,11 @@ const buildChangeList = (
   for (const [pairKey, group] of groups.entries()) {
     const primary = group.primary;
     const meta = group.meta;
-    const paired = pairMetaFiles && meta && !meta.conflicted;
+    const paired = pairMetaFiles && primary && meta && !meta.conflicted;
 
-    if (paired && meta) {
-      const anchor = primary ?? meta;
-      const members = [primary, meta].filter((change): change is FileChange => Boolean(change));
+    if (paired && primary && meta) {
+      const anchor = primary;
+      const members = [primary, meta];
       const hiddenKey = `pair:${pairKey}`;
 
       if (
@@ -2832,7 +2832,7 @@ function DropLane({
                 );
               }}
               onClick={(event) => onSelect(item.selectionKey, event, orderedPaths)}
-              onContextMenu={(event) => onOpenContextMenu(item, dropAction === "stage" ? "unstaged" : "staged", event)}
+              onContextMenu={(event) => onOpenContextMenu(item, dropAction === "stage" ? "staged" : "unstaged", event)}
             >
               <div className="change-card__main">
                 <span
@@ -2849,7 +2849,7 @@ function DropLane({
                     <div className="change-card__meta-child">
                       <span className={clsx("change-marker", `change-marker--${item.pairedMeta.marker.tone}`)} />
                       <span className="change-card__meta-child-name" title={item.pairedMeta.path}>
-                        {splitPathForDisplay(item.pairedMeta.path).fileName}
+                        Has paired meta file
                       </span>
                       <span className="change-card__meta-child-status">{item.pairedMeta.statusText}</span>
                     </div>
