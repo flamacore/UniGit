@@ -941,15 +941,19 @@ h4 {
 .file-history-row__main {
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .file-history-row__text {
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 .file-history-row__text strong,
 .file-history-row__text p {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
