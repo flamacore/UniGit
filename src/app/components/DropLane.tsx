@@ -143,7 +143,7 @@ export function DropLane({
                   "application/x-unigit-change",
                   JSON.stringify({
                     paths: draggedPaths,
-                    origin: dropAction === "stage" ? "unstaged" : "staged",
+                    origin: dropAction === "stage" ? "staged" : "unstaged",
                   }),
                 );
               }}

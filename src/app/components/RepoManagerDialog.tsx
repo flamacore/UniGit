@@ -76,7 +76,7 @@ export function RepoManagerDialog({
             <h2>Repository manager</h2>
           </div>
           {canClose ? (
-            <button className="icon-button" onClick={onClose}>
+            <button className="icon-button" onClick={onClose} aria-label="Close repository manager" title="Close repository manager">
               <X size={14} />
             </button>
           ) : null}

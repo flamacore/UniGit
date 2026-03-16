@@ -1,7 +1,7 @@
 export const formatRelativeTime = (iso: string) => {
   const date = new Date(iso);
-  const diff = Date.now() - date.getTime();
-  const minutes = Math.round(diff / 60000);
+  const diff = Math.max(0, Date.now() - date.getTime());
+  const minutes = Math.floor(diff / 60000);
 
   if (Number.isNaN(minutes)) {
     return iso;
@@ -15,13 +15,13 @@ export const formatRelativeTime = (iso: string) => {
     return `${minutes}m ago`;
   }
 
-  const hours = Math.round(minutes / 60);
+  const hours = Math.floor(minutes / 60);
 
   if (hours < 24) {
     return `${hours}h ago`;
   }
 
-  const days = Math.round(hours / 24);
+  const days = Math.floor(hours / 24);
   return `${days}d ago`;
 };
 
