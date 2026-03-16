@@ -259,7 +259,7 @@ pub async fn create_commit(repo_path: String, message: String) -> Result<(), Str
 
 async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnapshot> {
     let path = validate_repository_path(&repo_path)?;
-    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1"])
+    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "--untracked-files=all"])
         .await?;
 
     let (current_branch, detached_head, ahead, behind, files, counts) = parse_status_output(&branch_output);
@@ -283,7 +283,7 @@ async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnap
 
 async fn inspect_repository_config_inner(repo_path: String) -> GitResult<RepositoryConfig> {
     let path = validate_repository_path(&repo_path)?;
-    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1"])
+    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "--untracked-files=all"])
         .await?;
     let (current_branch, detached_head, _, _, _, _) = parse_status_output(&branch_output);
 

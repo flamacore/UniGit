@@ -166,6 +166,11 @@ type ChangeListItem = {
 
 type LocalIgnoreMap = Record<string, string[]>;
 
+type HiddenLocalEntry = {
+  key: string;
+  label: string;
+};
+
 type RemoteDialogState = {
   tone: "error" | "info";
   title: string;
@@ -693,6 +698,9 @@ export function App() {
   const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
   const [localIgnoreMap, setLocalIgnoreMap] = useState<LocalIgnoreMap>(() => loadLocalIgnoreMap());
   const [changeContextMenu, setChangeContextMenu] = useState<ChangeContextMenuState | null>(null);
+  const [selectedHiddenLocalKeys, setSelectedHiddenLocalKeys] = useState<string[]>([]);
+  const [hiddenLocalAnchorKey, setHiddenLocalAnchorKey] = useState<string | null>(null);
+  const [hiddenLocalContextMenu, setHiddenLocalContextMenu] = useState<HiddenLocalContextMenuState | null>(null);
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -1041,6 +1049,19 @@ export function App() {
     return () => window.removeEventListener("pointerdown", handlePointerDown);
   }, [changeContextMenu]);
 
+  useEffect(() => {
+    if (!hiddenLocalContextMenu) {
+      return;
+    }
+
+    const handlePointerDown = () => {
+      setHiddenLocalContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [hiddenLocalContextMenu]);
+
   const pickRepository = useCallback(async () => {
     let path: string | null = null;
 
@@ -1171,15 +1192,18 @@ export function App() {
     setStatusMessage(`Hidden ${hiddenKeys.length} item${hiddenKeys.length > 1 ? "s" : ""} locally.`);
   }, [selectedRepository]);
 
-  const restoreHiddenLocalKey = useCallback((hiddenKey: string) => {
-    if (!selectedRepository) {
+  const restoreHiddenLocalKeys = useCallback((hiddenKeys: string[]) => {
+    if (!selectedRepository || hiddenKeys.length === 0) {
       return;
     }
 
+    const hiddenSet = new Set(hiddenKeys);
     setLocalIgnoreMap((current) => ({
       ...current,
-      [selectedRepository]: (current[selectedRepository] ?? []).filter((entry) => entry !== hiddenKey),
+      [selectedRepository]: (current[selectedRepository] ?? []).filter((entry) => !hiddenSet.has(entry)),
     }));
+    setSelectedHiddenLocalKeys((current) => current.filter((entry) => !hiddenSet.has(entry)));
+    setStatusMessage(`Restored ${hiddenKeys.length} locally hidden item${hiddenKeys.length > 1 ? "s" : ""}.`);
   }, [selectedRepository]);
 
   const runSaveRepositoryRemote = useCallback(async (
@@ -1290,6 +1314,52 @@ export function App() {
         "Commit failed.",
         reason instanceof Error ? reason.message : "Commit failed.",
       );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [commitMessage, refreshRepository, selectedRepository, writeClientLog]);
+
+  const commitAndPushChanges = useCallback(async () => {
+    if (!selectedRepository || !commitMessage.trim()) {
+      return;
+    }
+
+    const message = commitMessage.trim();
+    let committed = false;
+
+    setSubmitting(true);
+    setError(null);
+    setRemoteDialog(null);
+
+    try {
+      writeClientLog("git.commit", "Creating commit before push.", message);
+      await createCommit(selectedRepository, message);
+      committed = true;
+      setCommitMessage("");
+
+      writeClientLog("git.push", `Pushing repository ${selectedRepository} after commit.`);
+      const pushResult = await pushRepository(selectedRepository);
+
+      setStatusMessage(pushResult || "Committed staged changes and pushed them.");
+      setRemoteDialog({
+        tone: "info",
+        title: "Commit and push completed",
+        summary: pushResult || "Staged changes were committed and pushed to the tracked remote branch.",
+      });
+      await refreshRepository();
+    } catch (reason) {
+      const failure = reason instanceof Error ? reason.message : "Commit and push failed.";
+
+      if (committed) {
+        setError(null);
+        setStatusMessage("Committed staged changes locally. Push failed.");
+        setRemoteDialog(describeRemoteFailure("push", failure));
+        writeClientLog("git.push.error", `Push after commit failed for ${selectedRepository}.`, failure);
+        await refreshRepository();
+      } else {
+        setError(failure);
+        writeClientLog("git.commit.error", "Commit before push failed.", failure);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1558,6 +1628,59 @@ export function App() {
       label: key.replace(/^pair:|^file:/, ""),
     }));
   }, [localIgnoreMap, selectedRepository]);
+
+  useEffect(() => {
+    const visibleKeys = new Set(hiddenLocalEntries.map((entry) => entry.key));
+    setSelectedHiddenLocalKeys((current) => current.filter((key) => visibleKeys.has(key)));
+
+    if (hiddenLocalAnchorKey && !visibleKeys.has(hiddenLocalAnchorKey)) {
+      setHiddenLocalAnchorKey(null);
+    }
+  }, [hiddenLocalAnchorKey, hiddenLocalEntries]);
+
+  const handleSelectHiddenLocal = useCallback((key: string, event: MouseEvent<HTMLElement>, orderedKeys: string[]) => {
+    const isToggle = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey && hiddenLocalAnchorKey;
+
+    if (isRange && hiddenLocalAnchorKey) {
+      const startIndex = orderedKeys.indexOf(hiddenLocalAnchorKey);
+      const endIndex = orderedKeys.indexOf(key);
+
+      if (startIndex !== -1 && endIndex !== -1) {
+        const [from, to] = startIndex < endIndex ? [startIndex, endIndex] : [endIndex, startIndex];
+        setSelectedHiddenLocalKeys(orderedKeys.slice(from, to + 1));
+        return;
+      }
+    }
+
+    if (isToggle) {
+      setSelectedHiddenLocalKeys((current) => current.includes(key) ? current.filter((entry) => entry !== key) : [...current, key]);
+      setHiddenLocalAnchorKey(key);
+      return;
+    }
+
+    setSelectedHiddenLocalKeys([key]);
+    setHiddenLocalAnchorKey(key);
+  }, [hiddenLocalAnchorKey]);
+
+  const resolveHiddenLocalSelection = useCallback((entry: HiddenLocalEntry) => {
+    return selectedHiddenLocalKeys.includes(entry.key) ? selectedHiddenLocalKeys : [entry.key];
+  }, [selectedHiddenLocalKeys]);
+
+  const openHiddenLocalContextMenu = useCallback((entry: HiddenLocalEntry, event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+
+    if (!selectedHiddenLocalKeys.includes(entry.key)) {
+      setSelectedHiddenLocalKeys([entry.key]);
+      setHiddenLocalAnchorKey(entry.key);
+    }
+
+    setHiddenLocalContextMenu({
+      entry,
+      x: event.clientX,
+      y: event.clientY,
+    });
+  }, [selectedHiddenLocalKeys]);
 
   const selectedBranch = useMemo(
     () => branches.find((branch) => branch.fullName === selectedBranchFullName) ?? null,
@@ -2094,6 +2217,24 @@ export function App() {
           </div>
         ) : null}
 
+        {hiddenLocalContextMenu ? (
+          <div
+            className="change-context-menu"
+            style={{ left: hiddenLocalContextMenu.x, top: hiddenLocalContextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <button
+              className="ghost-button"
+              onClick={() => {
+                restoreHiddenLocalKeys(resolveHiddenLocalSelection(hiddenLocalContextMenu.entry));
+                setHiddenLocalContextMenu(null);
+              }}
+            >
+              {resolveHiddenLocalSelection(hiddenLocalContextMenu.entry).length > 1 ? "Restore selected" : "Restore"}
+            </button>
+          </div>
+        ) : null}
+
         <section className="content-grid">
           <section className="panel graph-shell graph-panel--embedded">
             <div
@@ -2212,16 +2353,35 @@ export function App() {
               <div className="local-ignore-panel">
                 <div className="preview-panel__header">
                   <strong>Locally hidden</strong>
-                  <span className="preview-panel__meta">{hiddenLocalEntries.length}</span>
-                </div>
-                {hiddenLocalEntries.length ? hiddenLocalEntries.map((entry) => (
-                  <div key={entry.key} className="local-ignore-row">
-                    <span title={entry.label}>{entry.label}</span>
-                    <button className="ghost-button" onClick={() => restoreHiddenLocalKey(entry.key)}>
-                      Restore
+                  <div className="local-ignore-panel__actions">
+                    <span className="preview-panel__meta">{hiddenLocalEntries.length}</span>
+                    <button
+                      className="ghost-button"
+                      disabled={selectedHiddenLocalKeys.length === 0}
+                      onClick={() => restoreHiddenLocalKeys(selectedHiddenLocalKeys)}
+                    >
+                      Restore selected
                     </button>
                   </div>
-                )) : <p className="muted">No locally hidden changes.</p>}
+                </div>
+                <div className="local-ignore-list">
+                  {hiddenLocalEntries.length ? hiddenLocalEntries.map((entry) => (
+                    <div
+                      key={entry.key}
+                      className={clsx("local-ignore-row", selectedHiddenLocalKeys.includes(entry.key) && "local-ignore-row--selected")}
+                      onClick={(event) => handleSelectHiddenLocal(entry.key, event, hiddenLocalEntries.map((item) => item.key))}
+                      onContextMenu={(event) => openHiddenLocalContextMenu(entry, event)}
+                    >
+                      <span title={entry.label}>{entry.label}</span>
+                      <button className="ghost-button" onClick={(event) => {
+                        event.stopPropagation();
+                        restoreHiddenLocalKeys([entry.key]);
+                      }}>
+                        Restore
+                      </button>
+                    </div>
+                  )) : <p className="muted">No locally hidden changes.</p>}
+                </div>
               </div>
             ) : null}
 
@@ -2595,14 +2755,24 @@ export function App() {
                 value={commitMessage}
                 onChange={(event) => setCommitMessage(event.target.value)}
               />
-              <button
-                className="primary-button"
-                disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
-                onClick={() => void commitChanges()}
-              >
-                <GitCommitHorizontal size={16} />
-                Commit staged
-              </button>
+              <div className="commit-box__actions">
+                <button
+                  className="ghost-button"
+                  disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                  onClick={() => void commitAndPushChanges()}
+                >
+                  <GitCommitHorizontal size={16} />
+                  Commit & Push
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                  onClick={() => void commitChanges()}
+                >
+                  <GitCommitHorizontal size={16} />
+                  Commit staged
+                </button>
+              </div>
             </div>
           </section>
         </section>
@@ -2720,6 +2890,12 @@ type BranchTreeNode = {
 type ChangeContextMenuState = {
   item: ChangeListItem;
   lane: "staged" | "unstaged";
+  x: number;
+  y: number;
+};
+
+type HiddenLocalContextMenuState = {
+  entry: HiddenLocalEntry;
   x: number;
   y: number;
 };

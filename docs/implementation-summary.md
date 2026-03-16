@@ -47,6 +47,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 ### Git backend
 
 - Repository inspection command exists in Rust.
+- Repository inspection now requests full untracked-file enumeration so untracked folders are not collapsed into single directory placeholder entries.
 - Commit history listing exists in Rust.
 - Commit graph paging exists and now returns lane-aware graph rows in pages instead of a single small list.
 - Commit detail inspection exists and returns commit metadata plus changed files for a selected commit.
@@ -65,6 +66,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
+- A combined Commit & Push action now exists beside the normal commit action.
 - All of these are invoked from the frontend through Tauri commands.
 
 ### Logging
@@ -79,6 +81,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - Lane headers now also expose selected-item discard and local-only ignore actions without requiring right-click.
 - Local-only ignore now exists as an app-level hidden-changes system with a restore list, separate from Git remotes and repository state.
 - Locally ignored items automatically reappear if they become conflicted.
+- The hidden-local drawer now supports multi-select, restore-selected, and right-click restore actions.
 - A Unity `.meta` pairing switch now exists so normal `.meta` companions collapse under the primary file and inherit its actions.
 - Conflicted `.meta` files remain visible as separate items even when pairing is enabled.
 - Commit box exists.

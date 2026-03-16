@@ -565,15 +565,45 @@ h4 {
 }
 
 .local-ignore-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  max-height: 240px;
+  overflow: hidden;
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.03);
 }
 
+.local-ignore-list {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 162, 255, 0.18) transparent;
+}
+
 .local-ignore-row {
   align-items: center;
   justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.local-ignore-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-ignore-row--selected {
+  border: 1px solid var(--line-strong);
+  background: rgba(39, 76, 148, 0.18);
 }
 
 .local-ignore-row span {
@@ -581,6 +611,20 @@ h4 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.local-ignore-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.local-ignore-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.local-ignore-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(120, 162, 255, 0.18);
 }
 
 .changes-filter,
@@ -851,6 +895,14 @@ h4 {
   align-items: flex-end;
   gap: 10px;
   flex-shrink: 0;
+}
+
+.commit-box__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
 }
 
 .commit-shell {
