@@ -373,6 +373,24 @@ h4 {
   min-height: 0;
 }
 
+.hidden-local-dialog {
+  width: min(880px, 100%);
+  max-height: min(760px, 100%);
+  padding: 16px;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hidden-local-dialog__header,
+.hidden-local-dialog__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
 .repo-manager-section {
   min-height: 0;
   padding: 12px;
@@ -564,21 +582,9 @@ h4 {
   flex-direction: column;
 }
 
-.local-ignore-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-  max-height: 240px;
-  overflow: hidden;
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(255, 255, 255, 0.03);
-}
-
 .local-ignore-list {
   min-height: 0;
+  flex: 1;
   overflow: auto;
   display: flex;
   flex-direction: column;
