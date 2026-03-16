@@ -28,6 +28,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 - Tauri desktop shell is configured and builds successfully.
 - React frontend is structured around a compact top chrome instead of a persistent left sidebar.
+- The app shell has begun being decomposed out of a monolithic `App.tsx` into dedicated app components, utilities, and hooks under `src/app/`.
 - Repository switching happens through top tabs.
 - The app uses a viewport-contained layout with internal pane scrolling.
 - Large-screen scaling for 4K-class displays is already handled.
