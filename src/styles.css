@@ -273,9 +273,81 @@ h4 {
   color: var(--text-2);
 }
 
+.banner,
+.error-banner__copy,
+.error-banner__actions,
+.error-detail-dialog,
+.error-detail-dialog__header,
+.error-detail-dialog__actions {
+  display: flex;
+  gap: 10px;
+}
+
+.error-banner__copy,
+.error-detail-dialog {
+  flex-direction: column;
+}
+
+.error-banner__actions,
+.error-detail-dialog__header,
+.error-detail-dialog__actions {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.banner {
+  align-items: center;
+  min-width: 0;
+}
+
+.error-banner__copy {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.error-banner__copy strong,
+.error-banner__copy span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-banner__copy strong,
+.error-banner__copy span {
+  white-space: nowrap;
+}
+
+.error-banner__actions {
+  flex: 0 0 auto;
+}
+
+.error-banner__actions .ghost-button,
+.error-banner__actions .icon-button {
+  white-space: nowrap;
+}
+
 .banner--error {
   border-color: rgba(255, 84, 111, 0.32);
   background: rgba(114, 27, 45, 0.3);
+}
+
+.error-detail-dialog {
+  width: min(920px, 100%);
+  max-height: min(760px, 100%);
+  padding: 16px;
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+.error-detail-dialog__actions {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+}
+
+.error-detail-dialog__path {
+  word-break: break-all;
 }
 
 .remote-dialog {

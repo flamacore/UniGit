@@ -9,5 +9,5 @@ pub use service::{
 	list_file_history, clone_repository, delete_repository_remote, fetch_repository,
 	force_pull_repository, pull_repository, push_repository, rename_branch,
 	restore_file_from_commit, save_repository_remote, stage_files, switch_branch,
-	unstage_files, log_client_event,
+	unstage_files, log_client_event, get_log_file_path, clear_git_index_lock,
 };

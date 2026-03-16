@@ -270,6 +270,14 @@ export const logClientEvent = (scope: string, message: string, detail?: string) 
   return invoke<void>("log_client_event", { scope, message, detail });
 };
 
+export const getLogFilePath = () => {
+  return invoke<string>("get_log_file_path");
+};
+
+export const clearGitIndexLock = (repoPath: string) => {
+  return invoke<string>("clear_git_index_lock", { repoPath });
+};
+
 export const stageFiles = (repoPath: string, paths: string[]) => {
   return invoke<void>("stage_files", { repoPath, paths });
 };

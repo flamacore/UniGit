@@ -89,6 +89,19 @@ pub async fn log_client_event(scope: String, message: String, detail: Option<Str
 }
 
 #[command]
+pub async fn get_log_file_path() -> Result<String, String> {
+    resolve_log_path()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn clear_git_index_lock(repo_path: String) -> Result<String, String> {
+    clear_git_index_lock_inner(repo_path)
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn export_file_from_commit(
     repo_path: String,
     commit_hash: String,
@@ -1684,6 +1697,44 @@ fn append_log(source: &str, scope: &str, message: &str, detail: Option<&str>) ->
     }
 
     Ok(())
+}
+
+fn clear_git_index_lock_inner(repo_path: String) -> GitResult<String> {
+    let repo_root = PathBuf::from(repo_path.trim());
+
+    if repo_root.as_os_str().is_empty() || !repo_root.is_dir() {
+        return Err(GitServiceError::InvalidRepository);
+    }
+
+    let lock_path = repo_root.join(".git").join("index.lock");
+
+    if !lock_path.exists() {
+        return Ok("No index.lock file was present.".to_string());
+    }
+
+    if !lock_path.is_file() {
+        return Err(GitServiceError::GitCommandFailed(format!(
+            "Expected a file at '{}' but found something else.",
+            lock_path.display()
+        )));
+    }
+
+    fs::remove_file(&lock_path).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to remove '{}': {}",
+            lock_path.display(),
+            error
+        ))
+    })?;
+
+    let _ = append_log(
+        "backend",
+        "git.index-lock.clear",
+        &format!("Removed stale lock file at {}", lock_path.display()),
+        Some(&format!("Repository: {}", repo_root.display())),
+    );
+
+    Ok(format!("Removed stale git index lock at {}.", lock_path.display()))
 }
 
 fn resolve_log_path() -> std::io::Result<PathBuf> {

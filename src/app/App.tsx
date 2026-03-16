@@ -15,10 +15,12 @@ import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } fr
 import { BranchPane } from "./components/BranchPane";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { DropLane } from "./components/DropLane";
+import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
 import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
+  AppErrorState,
   ChangeSortKey,
   RemoteDialogState,
 } from "./types";
@@ -43,6 +45,7 @@ import {
   RepositoryConfig,
   RepositorySnapshot,
   cloneRepository,
+  clearGitIndexLock,
   createCommit,
   discardPaths,
   deleteRepositoryRemote,
@@ -54,6 +57,7 @@ import {
   inspectFilePreview,
   inspectRepository,
   inspectRepositoryConfig,
+  getLogFilePath,
   listBranches,
   listFileHistory,
   listCommitGraph,
@@ -95,7 +99,9 @@ export function App() {
   const [commitDetailError, setCommitDetailError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AppErrorState | null>(null);
+  const [errorDialogOpen, setErrorDialogOpen] = useState(false);
+  const [errorRecoveryBusy, setErrorRecoveryBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
@@ -121,6 +127,7 @@ export function App() {
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
+  const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
   const {
     changeContextMenu,
@@ -180,6 +187,93 @@ export function App() {
       // Logging must never block UI actions.
     });
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadLogFilePath = async () => {
+      try {
+        const path = await getLogFilePath();
+        if (!cancelled) {
+          setLogFilePath(path);
+        }
+      } catch {
+        if (!cancelled) {
+          setLogFilePath(null);
+        }
+      }
+    };
+
+    void loadLogFilePath();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!error) {
+      setErrorDialogOpen(false);
+    }
+  }, [error]);
+
+  const reportAppError = useCallback((options: {
+    scope: string;
+    title: string;
+    fallback: string;
+    reason?: unknown;
+    context?: string;
+    detail?: string;
+  }) => {
+    const summary = options.reason instanceof Error
+      ? options.reason.message || options.fallback
+      : typeof options.reason === "string" && options.reason.trim()
+        ? options.reason
+        : options.fallback;
+    const rawDetail = options.reason instanceof Error
+      ? options.reason.stack?.trim() || options.reason.message || options.fallback
+      : typeof options.reason === "string" && options.reason.trim()
+        ? options.reason
+        : options.fallback;
+    const normalizedSummary = summary.toLowerCase();
+    const normalizedDetail = rawDetail.toLowerCase();
+    const canClearIndexLock = Boolean(
+      selectedRepository
+      && normalizedSummary.includes("index.lock")
+      && normalizedSummary.includes("file exists")
+      && (normalizedDetail.includes("another git process seems to be running") || normalizedDetail.includes("remove the file manually")),
+    );
+    const occurredAt = new Date().toISOString();
+    const fullDetail = [
+      `Time: ${occurredAt}`,
+      selectedRepository ? `Repository: ${selectedRepository}` : null,
+      options.context ? `Action: ${options.context}` : null,
+      options.detail ? `Context:\n${options.detail}` : null,
+      `Summary: ${summary}`,
+      `Error detail:\n${rawDetail}`,
+      logFilePath ? `Log file:\n${logFilePath}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    setError({
+      title: options.title,
+      summary,
+      detail: fullDetail,
+      occurredAt,
+      logPath: logFilePath,
+      repoPath: selectedRepository,
+      recoveryAction: canClearIndexLock ? {
+        kind: "clear-index-lock",
+        label: "Remove lock file",
+        description: "Attempt the safe fix by removing the stale .git/index.lock file for this repository.",
+      } : null,
+    });
+
+    writeClientLog(options.scope, options.title, fullDetail);
+  }, [logFilePath, selectedRepository, writeClientLog]);
 
   const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
@@ -252,9 +346,13 @@ export function App() {
         }
       }
     } catch (reason) {
-      const message =
-        reason instanceof Error ? reason.message : "Failed to read repository.";
-      setError(message);
+      reportAppError({
+        scope: "repo.refresh.error",
+        title: "Repository refresh failed",
+        fallback: "Failed to read repository.",
+        reason,
+        context: "Refresh repository state and commit graph.",
+      });
       setSnapshot(null);
       setCommitGraph([]);
       setGraphHasMore(false);
@@ -264,6 +362,32 @@ export function App() {
       setGraphLoading(false);
     }
   }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, writeClientLog]);
+
+  const runErrorRecoveryAction = useCallback(async () => {
+    if (!error?.recoveryAction || error.recoveryAction.kind !== "clear-index-lock" || !error.repoPath) {
+      return;
+    }
+
+    setErrorRecoveryBusy(true);
+
+    try {
+      const result = await clearGitIndexLock(error.repoPath);
+      setStatusMessage(result);
+      writeClientLog("git.index-lock.clear", result, error.repoPath);
+      setError(null);
+      await refreshRepository();
+    } catch (reason) {
+      reportAppError({
+        scope: "git.index-lock.clear.error",
+        title: "Remove lock file failed",
+        fallback: "Automatic lock file cleanup failed.",
+        reason,
+        context: `Remove stale .git/index.lock for ${error.repoPath}.`,
+      });
+    } finally {
+      setErrorRecoveryBusy(false);
+    }
+  }, [error, refreshRepository, reportAppError, writeClientLog]);
 
   const loadMoreGraph = useCallback(async () => {
     if (!selectedRepository || graphLoading || !graphHasMore) {
@@ -276,11 +400,17 @@ export function App() {
       const nextPage = await listCommitGraph(selectedRepository, 260, graphNextSkip);
       applyGraphPage(nextPage, "append");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Graph loading failed.");
+      reportAppError({
+        scope: "history.graph.error",
+        title: "Commit graph loading failed",
+        fallback: "Graph loading failed.",
+        reason,
+        context: `Load more commit graph rows from offset ${graphNextSkip}.`,
+      });
     } finally {
       setGraphLoading(false);
     }
-  }, [applyGraphPage, graphHasMore, graphLoading, graphNextSkip, selectedRepository]);
+  }, [applyGraphPage, graphHasMore, graphLoading, graphNextSkip, reportAppError, selectedRepository]);
 
   useEffect(() => {
     if (!selectedRepository || !selectedChangePath) {
@@ -466,7 +596,7 @@ export function App() {
       timers.push(window.setTimeout(() => setStatusMessage(null), 5000));
     }
 
-    if (error) {
+    if (error && !errorDialogOpen) {
       timers.push(window.setTimeout(() => setError(null), 9000));
     }
 
@@ -482,7 +612,7 @@ export function App() {
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [error, notificationsHovered, remoteDialog, statusMessage]);
+  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, statusMessage]);
 
 
   const pickRepository = useCallback(async () => {
@@ -527,7 +657,14 @@ export function App() {
 
   const runCloneRepository = useCallback(async () => {
     if (!cloneUrl.trim() || !cloneDestination.trim()) {
-      setError("Clone URL and destination path are required.");
+      reportAppError({
+        scope: "repo.clone.validation",
+        title: "Clone repository failed",
+        fallback: "Clone URL and destination path are required.",
+        reason: "Clone URL and destination path are required.",
+        context: "Validate clone repository inputs.",
+        detail: `Remote URL: ${cloneUrl.trim() || "<empty>"}\nDestination: ${cloneDestination.trim() || "<empty>"}`,
+      });
       return;
     }
 
@@ -544,13 +681,17 @@ export function App() {
       setStatusMessage(`Cloned ${result.repoName}.`);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Clone failed.";
-      setError(message);
-      writeClientLog("repo.clone.error", `Clone failed for ${cloneUrl.trim()}.`, message);
+      reportAppError({
+        scope: "repo.clone.error",
+        title: "Clone repository failed",
+        fallback: "Clone failed.",
+        reason,
+        context: `Clone ${cloneUrl.trim()} into ${cloneDestination.trim()}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [addRepository, cloneDestination, cloneUrl, refreshRepository, writeClientLog]);
+  }, [addRepository, cloneDestination, cloneUrl, refreshRepository, reportAppError, writeClientLog]);
 
   const runDiscardChangePaths = useCallback(async (paths: string[]) => {
     if (!selectedRepository || paths.length === 0) {
@@ -568,13 +709,18 @@ export function App() {
       setSelectedChangePaths([]);
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Discard failed.";
-      setError(message);
-      writeClientLog("git.discard.error", `Discard failed for ${paths.length} path(s).`, message);
+      reportAppError({
+        scope: "git.discard.error",
+        title: "Discard changes failed",
+        fallback: "Discard failed.",
+        reason,
+        context: `Discard ${paths.length} change path(s).`,
+        detail: paths.join("\n"),
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runAddToGitignore = useCallback(async (paths: string[]) => {
     if (!selectedRepository || paths.length === 0) {
@@ -590,13 +736,18 @@ export function App() {
       setStatusMessage(`Added ${paths.length} path${paths.length > 1 ? "s" : ""} to .gitignore.`);
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Updating .gitignore failed.";
-      setError(message);
-      writeClientLog("git.gitignore.add.error", `Updating .gitignore failed for ${paths.length} path(s).`, message);
+      reportAppError({
+        scope: "git.gitignore.add.error",
+        title: "Update .gitignore failed",
+        fallback: "Updating .gitignore failed.",
+        reason,
+        context: `Append ${paths.length} path(s) to .gitignore.`,
+        detail: paths.join("\n"),
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runSaveRepositoryRemote = useCallback(async (
     originalName: string | null,
@@ -618,13 +769,18 @@ export function App() {
       const nextConfig = await inspectRepositoryConfig(selectedRepository);
       setRepoConfig(nextConfig);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Saving remote failed.";
-      setError(message);
-      writeClientLog("repo.remote.save.error", `Saving remote failed for ${originalName ?? name}.`, message);
+      reportAppError({
+        scope: "repo.remote.save.error",
+        title: "Save remote failed",
+        fallback: "Saving remote failed.",
+        reason,
+        context: `Save remote ${originalName ?? name}.`,
+        detail: `${name}\n${fetchUrl}\n${pushUrl}`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [selectedRepository, writeClientLog]);
+  }, [reportAppError, selectedRepository, writeClientLog]);
 
   const runDeleteRepositoryRemote = useCallback(async (name: string) => {
     if (!selectedRepository) {
@@ -641,13 +797,17 @@ export function App() {
       const nextConfig = await inspectRepositoryConfig(selectedRepository);
       setRepoConfig(nextConfig);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Removing remote failed.";
-      setError(message);
-      writeClientLog("repo.remote.delete.error", `Removing remote failed for ${name}.`, message);
+      reportAppError({
+        scope: "repo.remote.delete.error",
+        title: "Remove remote failed",
+        fallback: "Removing remote failed.",
+        reason,
+        context: `Remove remote ${name}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [selectedRepository, writeClientLog]);
+  }, [reportAppError, selectedRepository, writeClientLog]);
 
   const runFileOperation = useCallback(
     async (mode: "stage" | "unstage", paths: string[]) => {
@@ -672,17 +832,19 @@ export function App() {
 
         await refreshRepository();
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "Git operation failed.");
-        writeClientLog(
-          "git.stage.error",
-          `Failed to ${mode} ${paths.length} path(s).`,
-          reason instanceof Error ? reason.message : "Git operation failed.",
-        );
+        reportAppError({
+          scope: "git.stage.error",
+          title: mode === "stage" ? "Stage files failed" : "Unstage files failed",
+          fallback: "Git operation failed.",
+          reason,
+          context: `Run ${mode} for ${paths.length} path(s).`,
+          detail: paths.join("\n"),
+        });
       } finally {
         setSubmitting(false);
       }
     },
-    [refreshRepository, selectedRepository, writeClientLog],
+    [refreshRepository, reportAppError, selectedRepository, writeClientLog],
   );
 
   const commitChanges = useCallback(async () => {
@@ -700,16 +862,18 @@ export function App() {
       setStatusMessage("Committed staged changes.");
       await refreshRepository();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Commit failed.");
-      writeClientLog(
-        "git.commit.error",
-        "Commit failed.",
-        reason instanceof Error ? reason.message : "Commit failed.",
-      );
+      reportAppError({
+        scope: "git.commit.error",
+        title: "Commit failed",
+        fallback: "Commit failed.",
+        reason,
+        context: "Create a commit from staged changes.",
+        detail: commitMessage.trim(),
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [commitMessage, refreshRepository, selectedRepository, writeClientLog]);
+  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const commitAndPushChanges = useCallback(async () => {
     if (!selectedRepository || !commitMessage.trim()) {
@@ -749,13 +913,19 @@ export function App() {
         writeClientLog("git.push.error", `Push after commit failed for ${selectedRepository}.`, failure);
         await refreshRepository();
       } else {
-        setError(failure);
-        writeClientLog("git.commit.error", "Commit before push failed.", failure);
+        reportAppError({
+          scope: "git.commit.error",
+          title: "Commit before push failed",
+          fallback: "Commit and push failed.",
+          reason: failure,
+          context: "Create a commit before push.",
+          detail: message,
+        });
       }
     } finally {
       setSubmitting(false);
     }
-  }, [commitMessage, refreshRepository, selectedRepository, writeClientLog]);
+  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const exportCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -788,16 +958,18 @@ export function App() {
       await exportFileFromCommit(selectedRepository, commitHash, relativePath, destinationPath);
       setStatusMessage(`Exported ${relativePath} from ${commitHash.slice(0, 7)}.`);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Commit file export failed.");
-      writeClientLog(
-        "history.export.error",
-        `Export failed for ${relativePath} from ${commitHash}.`,
-        reason instanceof Error ? reason.message : "Commit file export failed.",
-      );
+      reportAppError({
+        scope: "history.export.error",
+        title: "Commit file export failed",
+        fallback: "Commit file export failed.",
+        reason,
+        context: `Export ${relativePath} from ${commitHash}.`,
+        detail: `Destination: ${destinationPath}`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [selectedRepository, writeClientLog]);
+  }, [reportAppError, selectedRepository, writeClientLog]);
 
   const restoreCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -814,16 +986,17 @@ export function App() {
       setSelectedChangePath(relativePath);
       await refreshRepository();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Commit file restore failed.");
-      writeClientLog(
-        "history.restore.error",
-        `Restore failed for ${relativePath} from ${commitHash}.`,
-        reason instanceof Error ? reason.message : "Commit file restore failed.",
-      );
+      reportAppError({
+        scope: "history.restore.error",
+        title: "Commit file restore failed",
+        fallback: "Commit file restore failed.",
+        reason,
+        context: `Restore ${relativePath} from ${commitHash}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const applyFilePatchFromCommit = useCallback(async (commitHash: string, relativePath: string, reverse: boolean) => {
     if (!selectedRepository || !commitHash) {
@@ -845,16 +1018,17 @@ export function App() {
       setSelectedChangePath(relativePath);
       await refreshRepository();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Commit file patch failed.");
-      writeClientLog(
-        reverse ? "history.patch.reverse.error" : "history.patch.apply.error",
-        `${reverse ? "Reverse" : "Apply"} patch failed for ${relativePath} from ${commitHash}.`,
-        reason instanceof Error ? reason.message : "Commit file patch failed.",
-      );
+      reportAppError({
+        scope: reverse ? "history.patch.reverse.error" : "history.patch.apply.error",
+        title: reverse ? "Revert file patch failed" : "Apply file patch failed",
+        fallback: "Commit file patch failed.",
+        reason,
+        context: `${reverse ? "Reverse" : "Apply"} patch for ${relativePath} from ${commitHash}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const selectedBranch = useMemo(
     () => branches.find((branch) => branch.fullName === selectedBranchFullName) ?? null,
@@ -1041,13 +1215,17 @@ export function App() {
       setStatusMessage(result);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Branch switch failed.";
-      setError(message);
-      writeClientLog("git.branch.switch.error", `Branch switch failed for ${fullName}.`, message);
+      reportAppError({
+        scope: "git.branch.switch.error",
+        title: "Branch switch failed",
+        fallback: "Branch switch failed.",
+        reason,
+        context: `Switch branch ${fullName}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runRenameBranch = useCallback(async (currentName: string, nextName: string) => {
     if (!selectedRepository) {
@@ -1063,13 +1241,17 @@ export function App() {
       setStatusMessage(result);
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Branch rename failed.";
-      setError(message);
-      writeClientLog("git.branch.rename.error", `Branch rename failed for ${currentName}.`, message);
+      reportAppError({
+        scope: "git.branch.rename.error",
+        title: "Branch rename failed",
+        fallback: "Branch rename failed.",
+        reason,
+        context: `Rename branch ${currentName} to ${nextName}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runDeleteBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
@@ -1085,13 +1267,17 @@ export function App() {
       setStatusMessage(result);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Branch deletion failed.";
-      setError(message);
-      writeClientLog("git.branch.delete.error", `Branch deletion failed for ${fullName}.`, message);
+      reportAppError({
+        scope: "git.branch.delete.error",
+        title: "Branch deletion failed",
+        fallback: "Branch deletion failed.",
+        reason,
+        context: `Delete branch ${fullName}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runPush = useCallback(async () => {
     if (!selectedRepository) {
@@ -1312,7 +1498,23 @@ export function App() {
             onMouseEnter={() => setNotificationsHovered(true)}
             onMouseLeave={() => setNotificationsHovered(false)}
           >
-            {error}
+            <div className="error-banner__copy">
+              <strong>{error.title}</strong>
+              <span title={error.summary}>{error.summary}</span>
+            </div>
+            <div className="error-banner__actions">
+              {error.recoveryAction ? (
+                <button className="ghost-button" disabled={errorRecoveryBusy} onClick={() => void runErrorRecoveryAction()}>
+                  {errorRecoveryBusy ? "Fixing..." : error.recoveryAction.label}
+                </button>
+              ) : null}
+              <button className="ghost-button" onClick={() => setErrorDialogOpen(true)}>
+                View details
+              </button>
+              <button className="icon-button" onClick={() => setError(null)} aria-label="Dismiss error" title="Dismiss error">
+                <X size={14} />
+              </button>
+            </div>
           </div>
         ) : null}
         {statusMessage ? (
@@ -1955,6 +2157,15 @@ export function App() {
             setShowHiddenLocalMenu(false);
             setHiddenLocalContextMenu(null);
           }}
+        />
+      ) : null}
+
+      {error && errorDialogOpen ? (
+        <ErrorDetailDialog
+          error={error}
+          onClose={() => setErrorDialogOpen(false)}
+          onRunRecoveryAction={error.recoveryAction ? () => void runErrorRecoveryAction() : undefined}
+          recoveryBusy={errorRecoveryBusy}
         />
       ) : null}
     </div>

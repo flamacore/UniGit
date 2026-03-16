@@ -45,6 +45,20 @@ export type RemoteDialogState = {
   detail?: string;
 };
 
+export type AppErrorState = {
+  title: string;
+  summary: string;
+  detail: string;
+  occurredAt: string;
+  logPath?: string | null;
+  repoPath?: string | null;
+  recoveryAction?: {
+    kind: "clear-index-lock";
+    label: string;
+    description: string;
+  } | null;
+};
+
 export type BranchContextMenuState = {
   branch: BranchEntry;
   x: number;
