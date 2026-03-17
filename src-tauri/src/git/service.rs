@@ -15,13 +15,14 @@ use tokio::process::Command;
 
 use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CommitDetail, CommitFileEntry,
-    CloneResult, CommitGraphPage, CommitGraphRow, CommitSummary, FileChange,
+    CloneResult, CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, MergeBranchResult, RepositoryConfig, RepositoryCounts,
     RepositoryRemote, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
+const COMMIT_MESSAGE_DIFF_LIMIT: usize = 30_000;
 
 static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -167,6 +168,13 @@ pub async fn list_commit_graph(repo_path: String, limit: usize, skip: usize) -> 
 #[command]
 pub async fn inspect_commit_detail(repo_path: String, commit_hash: String) -> Result<CommitDetail, String> {
     inspect_commit_detail_inner(repo_path, commit_hash)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn inspect_commit_message_context(repo_path: String) -> Result<CommitMessageContext, String> {
+    inspect_commit_message_context_inner(repo_path)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1010,6 +1018,39 @@ async fn inspect_commit_detail_inner(repo_path: String, commit_hash: String) -> 
     })
 }
 
+async fn inspect_commit_message_context_inner(repo_path: String) -> GitResult<CommitMessageContext> {
+    let path = validate_repository_path(&repo_path)?;
+    let current_branch = current_local_branch_name(path).await.unwrap_or_else(|_| "HEAD".to_string());
+
+    let staged_files_output = run_git_owned(
+        path,
+        vec!["diff".into(), "--cached".into(), "--name-only".into()],
+    )
+    .await?;
+    let staged_files = staged_files_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    let staged_diff_raw = run_git_owned(
+        path,
+        vec!["diff".into(), "--cached".into(), "--no-ext-diff".into(), "--unified=3".into()],
+    )
+    .await?;
+    let staged_diff = truncate_commit_message_diff(staged_diff_raw);
+
+    let unpushed_commits = list_unpushed_commit_summaries(path).await?;
+
+    Ok(CommitMessageContext {
+        current_branch,
+        staged_files,
+        staged_diff,
+        unpushed_commits,
+    })
+}
+
 async fn export_file_from_commit_inner(
     repo_path: String,
     commit_hash: String,
@@ -1750,6 +1791,58 @@ async fn list_conflicted_files(repo_path: &Path) -> GitResult<Vec<String>> {
         .filter(|line| !line.is_empty())
         .map(ToString::to_string)
         .collect())
+}
+
+async fn list_unpushed_commit_summaries(repo_path: &Path) -> GitResult<Vec<String>> {
+    let maybe_upstream = run_git_owned(
+        repo_path,
+        vec!["rev-parse".into(), "--abbrev-ref".into(), "--symbolic-full-name".into(), "@{u}".into()],
+    )
+    .await;
+
+    let output = match maybe_upstream {
+        Ok(upstream) if !upstream.trim().is_empty() => run_git_owned(
+            repo_path,
+            vec![
+                "log".into(),
+                "--max-count=12".into(),
+                "--date=short".into(),
+                "--pretty=format:%h %ad %s".into(),
+                format!("{}..HEAD", upstream.trim()),
+            ],
+        )
+        .await?,
+        _ => run_git_owned(
+            repo_path,
+            vec![
+                "log".into(),
+                "--max-count=6".into(),
+                "--date=short".into(),
+                "--pretty=format:%h %ad %s".into(),
+                "HEAD".into(),
+            ],
+        )
+        .await?,
+    };
+
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn truncate_commit_message_diff(diff: String) -> String {
+    if diff.len() <= COMMIT_MESSAGE_DIFF_LIMIT {
+        return diff;
+    }
+
+    format!(
+        "{}\n\n[diff truncated by UniGit after {} characters for AI commit message generation]",
+        &diff[..COMMIT_MESSAGE_DIFF_LIMIT],
+        COMMIT_MESSAGE_DIFF_LIMIT,
+    )
 }
 
 fn resolve_branch_specifier(full_name: &str) -> GitResult<String> {

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { RepositoryConfig } from "../../features/repositories/api";
 import { formatRepoLabel } from "../utils/formatters";
 import clsx from "clsx";
+import type { AiSettings } from "../utils/aiSettings";
 
 export type RepoManagerDialogProps = {
   repositories: string[];
@@ -25,6 +26,8 @@ export type RepoManagerDialogProps = {
   onSaveRemote: (originalName: string | null, name: string, fetchUrl: string, pushUrl: string) => void;
   onDeleteRemote: (name: string) => void;
   settingsDisabled: boolean;
+  aiSettings: AiSettings;
+  onAiSettingsChange: (next: AiSettings) => void;
 };
 
 export function RepoManagerDialog({
@@ -48,6 +51,8 @@ export function RepoManagerDialog({
   onSaveRemote,
   onDeleteRemote,
   settingsDisabled,
+  aiSettings,
+  onAiSettingsChange,
 }: RepoManagerDialogProps) {
   const [draftRemotes, setDraftRemotes] = useState<Array<{ originalName: string | null; name: string; fetchUrl: string; pushUrl: string }>>([]);
 
@@ -240,6 +245,110 @@ export function RepoManagerDialog({
             {!repoConfigLoading && !repoConfigError && !repoConfig ? (
               <p className="muted">Select a loaded repository to inspect its settings.</p>
             ) : null}
+          </section>
+
+          <section className="repo-manager-section">
+            <div className="repo-manager-section__header">
+              <h3>AI commit messages</h3>
+            </div>
+
+            <div className="repo-config-card">
+              <label className="repo-form-field">
+                <span>Provider</span>
+                <select
+                  className="changes-filter"
+                  value={aiSettings.provider}
+                  disabled={settingsDisabled}
+                  onChange={(event) => onAiSettingsChange({ ...aiSettings, provider: event.target.value as AiSettings["provider"] })}
+                >
+                  <option value="none">Disabled</option>
+                  <option value="ollama">Ollama</option>
+                  <option value="openai">OpenAI API</option>
+                  <option value="claude">Claude API</option>
+                </select>
+              </label>
+
+              <label className="repo-form-field">
+                <span>Request timeout (seconds)</span>
+                <input
+                  className="changes-filter"
+                  type="number"
+                  min={5}
+                  max={300}
+                  disabled={settingsDisabled}
+                  value={aiSettings.requestTimeoutSeconds}
+                  onChange={(event) => onAiSettingsChange({
+                    ...aiSettings,
+                    requestTimeoutSeconds: Number.isFinite(Number(event.target.value))
+                      ? Math.min(300, Math.max(5, Math.round(Number(event.target.value))))
+                      : aiSettings.requestTimeoutSeconds,
+                  })}
+                />
+              </label>
+
+              {aiSettings.provider === "ollama" ? (
+                <div className="repo-config-remotes">
+                  <label className="repo-form-field">
+                    <span>Ollama endpoint</span>
+                    <input
+                      className="changes-filter"
+                      disabled={settingsDisabled}
+                      value={aiSettings.ollamaEndpoint}
+                      onChange={(event) => onAiSettingsChange({ ...aiSettings, ollamaEndpoint: event.target.value })}
+                      placeholder="http://127.0.0.1:11434"
+                    />
+                  </label>
+                  <label className="repo-form-field">
+                    <span>Model</span>
+                    <input
+                      className="changes-filter"
+                      disabled={settingsDisabled}
+                      value={aiSettings.ollamaModel}
+                      onChange={(event) => onAiSettingsChange({ ...aiSettings, ollamaModel: event.target.value })}
+                      placeholder="llama3.1"
+                    />
+                  </label>
+                </div>
+              ) : null}
+
+              {aiSettings.provider === "openai" ? (
+                <div className="repo-config-remotes">
+                  <label className="repo-form-field">
+                    <span>OpenAI API key</span>
+                    <input
+                      className="changes-filter"
+                      type="password"
+                      disabled={settingsDisabled}
+                      value={aiSettings.openAiApiKey}
+                      onChange={(event) => onAiSettingsChange({ ...aiSettings, openAiApiKey: event.target.value })}
+                      placeholder="sk-..."
+                    />
+                  </label>
+                  <p className="muted">UniGit uses {"gpt-4.1-mini"} for generated commit messages.</p>
+                </div>
+              ) : null}
+
+              {aiSettings.provider === "claude" ? (
+                <div className="repo-config-remotes">
+                  <label className="repo-form-field">
+                    <span>Claude API key</span>
+                    <input
+                      className="changes-filter"
+                      type="password"
+                      disabled={settingsDisabled}
+                      value={aiSettings.claudeApiKey}
+                      onChange={(event) => onAiSettingsChange({ ...aiSettings, claudeApiKey: event.target.value })}
+                      placeholder="sk-ant-..."
+                    />
+                  </label>
+                  <p className="muted">UniGit uses {"claude-3-5-haiku-latest"} for generated commit messages.</p>
+                </div>
+              ) : null}
+
+              {aiSettings.provider === "none" ? (
+                <p className="muted">Select a provider to enable AI-generated commit messages from the staged diff and unpushed commits.</p>
+              ) : null}
+            </div>
           </section>
         </div>
       </section>

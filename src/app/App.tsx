@@ -6,6 +6,7 @@ import {
   GitCommitHorizontal,
   GripVertical,
   RefreshCw,
+  Sparkles,
   Settings2,
   Undo2,
   Upload,
@@ -61,6 +62,7 @@ import {
   forceSwitchBranch,
   forcePullRepository,
   inspectCommitDetail,
+  inspectCommitMessageContext,
   inspectFilePreview,
   inspectRepository,
   inspectRepositoryConfig,
@@ -83,6 +85,8 @@ import {
 } from "../features/repositories/api";
 import { useRepositoryStore } from "../features/repositories/store/useRepositoryStore";
 import { isTauri } from "../lib/tauri";
+import { generateAiCommitMessage } from "./utils/aiCommitMessage";
+import { getAiSettingsValidationError, loadAiSettings, persistAiSettings, type AiSettings } from "./utils/aiSettings";
 
 type BranchDeleteDialogState = {
   branch: BranchEntry;
@@ -163,6 +167,8 @@ export function App() {
   const [graphLoading, setGraphLoading] = useState(false);
   const [historyFilter, setHistoryFilter] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
+  const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
+  const [aiGeneratingCommitMessage, setAiGeneratingCommitMessage] = useState(false);
   const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
   const [commitDetailLoading, setCommitDetailLoading] = useState(false);
@@ -327,6 +333,10 @@ export function App() {
       setConflictDialogOpen(false);
     }
   }, [mergeConflictState]);
+
+  useEffect(() => {
+    persistAiSettings(aiSettings);
+  }, [aiSettings]);
 
   const reportAppError = useCallback((options: {
     scope: string;
@@ -1012,6 +1022,47 @@ export function App() {
     }
   }, [commitMessage, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
+  const runGenerateCommitMessage = useCallback(async () => {
+    if (!selectedRepository || !stagedChanges.length) {
+      return;
+    }
+
+    const settingsError = getAiSettingsValidationError(aiSettings);
+
+    if (settingsError) {
+      reportAppError({
+        scope: "ai.commit-message.config",
+        title: "AI commit messages are not configured",
+        fallback: settingsError,
+        reason: settingsError,
+        context: "Generate AI commit message.",
+      });
+      return;
+    }
+
+    setAiGeneratingCommitMessage(true);
+    setError(null);
+
+    try {
+      writeClientLog("ai.commit-message.start", `Generating commit message with ${aiSettings.provider}.`);
+      const context = await inspectCommitMessageContext(selectedRepository);
+      const generatedMessage = await generateAiCommitMessage(aiSettings, context);
+      setCommitMessage(generatedMessage);
+      setStatusMessage(`Generated commit message with ${aiSettings.provider}.`);
+      writeClientLog("ai.commit-message.success", `Generated commit message with ${aiSettings.provider}.`, generatedMessage);
+    } catch (reason) {
+      reportAppError({
+        scope: "ai.commit-message.error",
+        title: "AI commit message generation failed",
+        fallback: "AI commit message generation failed.",
+        reason,
+        context: `Generate commit message with ${aiSettings.provider}.`,
+      });
+    } finally {
+      setAiGeneratingCommitMessage(false);
+    }
+  }, [aiSettings, reportAppError, selectedRepository, stagedChanges.length, writeClientLog]);
+
   const commitAndPushChanges = useCallback(async () => {
     if (!selectedRepository || !commitMessage.trim()) {
       return;
@@ -1181,6 +1232,24 @@ export function App() {
   const branchCreateBaseLabel = useMemo(() => {
     return selectedBranch?.name ?? branches.find((branch) => branch.isCurrent)?.name ?? "HEAD";
   }, [branches, selectedBranch]);
+
+  const aiCommitDisabledReason = useMemo(() => {
+    if (aiGeneratingCommitMessage) {
+      return "Generating commit message...";
+    }
+
+    if (!selectedRepository) {
+      return "Select a repository first.";
+    }
+
+    if (!stagedChanges.length) {
+      return "Stage at least one file to generate a commit message.";
+    }
+
+    return getAiSettingsValidationError(aiSettings);
+  }, [aiGeneratingCommitMessage, aiSettings, selectedRepository, stagedChanges.length]);
+
+  const aiCommitEnabled = !aiCommitDisabledReason;
 
   const filteredBranches = useMemo(() => {
     const query = branchQuery.trim().toLowerCase();
@@ -2540,16 +2609,34 @@ export function App() {
 
             <section className="panel commit-shell">
               <div className="commit-box">
-                <textarea
-                  className="commit-box__input"
-                  placeholder="Commit message"
-                  value={commitMessage}
-                  onChange={(event) => setCommitMessage(event.target.value)}
-                />
+                <div className="commit-box__editor">
+                  <textarea
+                    className="commit-box__input"
+                    placeholder="Commit message"
+                    value={commitMessage}
+                    onChange={(event) => setCommitMessage(event.target.value)}
+                  />
+                  {aiGeneratingCommitMessage ? (
+                    <div className="commit-box__overlay" aria-live="polite" aria-label="Generating commit message">
+                      <div className="commit-box__spinner" />
+                      <span>Generating commit message...</span>
+                    </div>
+                  ) : null}
+                  <span title={aiCommitDisabledReason ?? "Generate a commit message from staged changes and unpushed commits."}>
+                    <button
+                      className={clsx("icon-button", "commit-box__ai-button", !aiCommitEnabled && "commit-box__ai-button--disabled")}
+                      disabled={!aiCommitEnabled}
+                      onClick={() => void runGenerateCommitMessage()}
+                      aria-label="Generate commit message with AI"
+                    >
+                      <Sparkles size={16} />
+                    </button>
+                  </span>
+                </div>
                 <div className="commit-box__actions">
                   <button
                     className="ghost-button"
-                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting || aiGeneratingCommitMessage}
                     onClick={() => void commitAndPushChanges()}
                   >
                     <GitCommitHorizontal size={16} />
@@ -2557,7 +2644,7 @@ export function App() {
                   </button>
                   <button
                     className="primary-button"
-                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting || aiGeneratingCommitMessage}
                     onClick={() => void commitChanges()}
                   >
                     <GitCommitHorizontal size={16} />
@@ -2594,6 +2681,8 @@ export function App() {
           }
           onDeleteRemote={(name) => void runDeleteRepositoryRemote(name)}
           settingsDisabled={submitting}
+          aiSettings={aiSettings}
+          onAiSettingsChange={setAiSettings}
         />
       ) : null}
 

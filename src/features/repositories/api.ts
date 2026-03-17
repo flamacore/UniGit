@@ -116,6 +116,13 @@ export type CommitDetail = {
   files: CommitFileEntry[];
 };
 
+export type CommitMessageContext = {
+  currentBranch: string;
+  stagedFiles: string[];
+  stagedDiff: string;
+  unpushedCommits: string[];
+};
+
 export type FileHistoryEntry = {
   hash: string;
   shortHash: string;
@@ -194,6 +201,10 @@ export const listCommitGraph = (repoPath: string, limit = 240, skip = 0) => {
 
 export const inspectCommitDetail = (repoPath: string, commitHash: string) => {
   return invoke<CommitDetail>("inspect_commit_detail", { repoPath, commitHash });
+};
+
+export const inspectCommitMessageContext = (repoPath: string) => {
+  return invoke<CommitMessageContext>("inspect_commit_message_context", { repoPath });
 };
 
 export const listBranches = (repoPath: string) => {

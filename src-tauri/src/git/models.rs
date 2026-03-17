@@ -103,6 +103,15 @@ pub struct CommitDetail {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct CommitMessageContext {
+    pub current_branch: String,
+    pub staged_files: Vec<String>,
+    pub staged_diff: String,
+    pub unpushed_commits: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct FileHistoryEntry {
     pub hash: String,
     pub short_hash: String,

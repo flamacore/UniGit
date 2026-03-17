@@ -6,6 +6,7 @@ pub use service::{
 	create_branch, force_switch_branch, merge_branch, resolve_conflicted_files,
 	discard_paths, export_file_from_commit,
 	inspect_commit_detail, inspect_file_preview, inspect_repository,
+	inspect_commit_message_context,
 	inspect_repository_config, list_branches, list_commit_graph, list_commit_history,
 	list_file_history, clone_repository, delete_repository_remote, fetch_repository,
 	force_pull_repository, pull_repository, push_repository, rename_branch,
