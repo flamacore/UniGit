@@ -1,8 +1,8 @@
 # UniGit
 
-<!-- Add main app image here for GitHub -->
-
 [Buy Me a Coffee](https://buymeacoffee.com/chao.k)
+
+<img width="1354" height="939" alt="unigit_Wb3Dkb9u2E" src="https://github.com/user-attachments/assets/43d133fe-52f2-4e96-af0d-9f7227c0185d" />
 
 UniGit is a Windows-first desktop Git client built for fast day-to-day work, with a strong focus on game development and Unity-heavy repositories.
 
