@@ -1,3 +1,9 @@
+## [0.5.0](https://github.com/flamacore/UniGit/compare/v0.4.0...v0.5.0) (2026-03-17)
+
+### Features
+
+* Add Unity Material Preview functionality ([e670d6d](https://github.com/flamacore/UniGit/commit/e670d6dc43a9f954e02eea666729dad4fdf90029))
+
 ## [0.4.0](https://github.com/flamacore/UniGit/compare/v0.3.0...v0.4.0) (2026-03-17)
 
 ### Features
