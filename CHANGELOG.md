@@ -1,3 +1,9 @@
+## [0.3.0](https://github.com/flamacore/UniGit/compare/v0.2.0...v0.3.0) (2026-03-17)
+
+### Features
+
+* enhance image preview functionality with viewport and channel mode management ([50d8a11](https://github.com/flamacore/UniGit/commit/50d8a114ad41820ce8291a90f1b5c56af4eeafdf))
+
 ## [0.2.0](https://github.com/flamacore/UniGit/compare/v0.1.0...v0.2.0) (2026-03-17)
 
 ### Features
