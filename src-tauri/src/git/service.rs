@@ -23,6 +23,7 @@ use super::models::{
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
 const COMMIT_MESSAGE_DIFF_LIMIT: usize = 30_000;
+const COMMIT_MESSAGE_UPSTREAM_LIMIT: usize = 8;
 
 static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -1049,12 +1050,42 @@ async fn inspect_commit_message_context_inner(repo_path: String) -> GitResult<Co
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    let staged_diff_raw = run_git_owned(
+    let staged_numstat_output = run_git_owned(
         path,
-        vec!["diff".into(), "--cached".into(), "--no-ext-diff".into(), "--unified=3".into()],
+        vec!["diff".into(), "--cached".into(), "--no-ext-diff".into(), "--numstat".into()],
     )
     .await?;
-    let staged_diff = truncate_commit_message_diff(staged_diff_raw);
+    let staged_numstat = parse_numstat_map(&staged_numstat_output);
+
+    let diffable_staged_files = staged_files
+        .iter()
+        .filter(|relative_path| is_ai_commit_diffable_path(relative_path, staged_numstat.get((*relative_path).as_str()).copied()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let omitted_staged_files = staged_files
+        .iter()
+        .filter(|relative_path| !is_ai_commit_diffable_path(relative_path, staged_numstat.get((*relative_path).as_str()).copied()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let staged_diff_raw = if diffable_staged_files.is_empty() {
+        String::new()
+    } else {
+        let mut args = vec![
+            "diff".into(),
+            "--cached".into(),
+            "--no-ext-diff".into(),
+            "--unified=2".into(),
+            "--".into(),
+        ];
+        args.extend(diffable_staged_files.iter().cloned());
+        run_git_owned(path, args).await?
+    };
+    let staged_diff = truncate_commit_message_diff(format_commit_message_diff_context(
+        &diffable_staged_files,
+        &omitted_staged_files,
+        staged_diff_raw,
+    ));
 
     let unpushed_commits = list_unpushed_commit_summaries(path).await?;
 
@@ -1820,7 +1851,7 @@ async fn list_unpushed_commit_summaries(repo_path: &Path) -> GitResult<Vec<Strin
             repo_path,
             vec![
                 "log".into(),
-                "--max-count=12".into(),
+                format!("--max-count={COMMIT_MESSAGE_UPSTREAM_LIMIT}"),
                 "--date=short".into(),
                 "--pretty=format:%h %ad %s".into(),
                 format!("{}..HEAD", upstream.trim()),
@@ -1858,6 +1889,80 @@ fn truncate_commit_message_diff(diff: String) -> String {
         &diff[..COMMIT_MESSAGE_DIFF_LIMIT],
         COMMIT_MESSAGE_DIFF_LIMIT,
     )
+}
+
+fn format_commit_message_diff_context(
+    diffable_staged_files: &[String],
+    omitted_staged_files: &[String],
+    staged_diff_raw: String,
+) -> String {
+    let mut sections = Vec::new();
+
+    sections.push(if diffable_staged_files.is_empty() {
+        "Diffable staged files:\n- none".to_string()
+    } else {
+        format!(
+            "Diffable staged files:\n{}",
+            diffable_staged_files
+                .iter()
+                .map(|file| format!("- {file}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    });
+
+    if !omitted_staged_files.is_empty() {
+        sections.push(format!(
+            "Omitted binary/image files:\n{}",
+            omitted_staged_files
+                .iter()
+                .map(|file| format!("- {file}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ));
+    }
+
+    sections.push(if staged_diff_raw.trim().is_empty() {
+        "Staged text diff:\n(empty)".to_string()
+    } else {
+        format!("Staged text diff:\n{}", staged_diff_raw.trim())
+    });
+
+    sections.join("\n\n")
+}
+
+fn parse_numstat_map(output: &str) -> std::collections::HashMap<String, (Option<usize>, Option<usize>)> {
+    let mut stat_map = std::collections::HashMap::new();
+
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let segments = line.split('\t').collect::<Vec<_>>();
+
+        if segments.len() < 3 {
+            continue;
+        }
+
+        let path = segments.last().unwrap_or(&"").to_string();
+        let additions = if segments[0] == "-" { None } else { segments[0].parse().ok() };
+        let deletions = if segments[1] == "-" { None } else { segments[1].parse().ok() };
+        stat_map.insert(path, (additions, deletions));
+    }
+
+    stat_map
+}
+
+fn is_ai_commit_diffable_path(relative_path: &str, stat: Option<(Option<usize>, Option<usize>)>) -> bool {
+    let normalized = relative_path.replace('\\', "/");
+    let extension = Path::new(&normalized)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if is_previewable_image_extension(&extension) || is_known_asset_extension(&extension) {
+        return false;
+    }
+
+    !matches!(stat, Some((None, None)))
 }
 
 fn resolve_branch_specifier(full_name: &str) -> GitResult<String> {

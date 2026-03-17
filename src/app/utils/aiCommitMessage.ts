@@ -6,15 +6,15 @@ const CLAUDE_MODEL = "claude-3-5-haiku-latest";
 
 const buildPrompt = (context: CommitMessageContext) => {
   return [
-    "You write concise, high-signal git commit messages.",
+    "Write a concise, high-signal git commit message.",
     "Return only the commit message text, no code fences, no explanation.",
-    "Prefer a short imperative subject line. Add a blank line and 1-3 bullet points only if the change is meaningfully multi-part.",
+    "Prefer a short imperative subject line. Add a blank line and 1-3 bullet points only if the change is clearly multi-part.",
     `Current branch: ${context.currentBranch}`,
     `Staged files:\n${context.stagedFiles.length ? context.stagedFiles.map((file) => `- ${file}`).join("\n") : "- none"}`,
     context.unpushedCommits.length
       ? `Unpushed local commits already on this branch:\n${context.unpushedCommits.map((commit) => `- ${commit}`).join("\n")}`
       : "Unpushed local commits already on this branch:\n- none",
-    `Staged diff:\n${context.stagedDiff || "(empty)"}`,
+    context.stagedDiff || "Staged text diff:\n(empty)",
   ].join("\n\n");
 };
 

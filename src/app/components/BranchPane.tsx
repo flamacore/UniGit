@@ -146,32 +146,24 @@ export function BranchPane({
                 onContextMenu={(event) => openContextMenu(event, branch)}
               >
                 <div className="branch-row__top">
-                  <div className="branch-row__label">
-                    {hasChildren ? (
-                      <span
-                        className="branch-tree-toggle"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          toggleNode(node.id);
-                        }}
-                      >
-                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                      </span>
-                    ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
-                    <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
-                      {branch.branchKind}
+                  {hasChildren ? (
+                    <span
+                      className="branch-tree-toggle"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        toggleNode(node.id);
+                      }}
+                    >
+                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     </span>
-                  </div>
+                  ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
+                  <strong title={branch.name}>{branch.name}</strong>
+                  <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
+                    {branch.branchKind}
+                  </span>
                   {branch.isCurrent ? <span className="pill pill--success">current</span> : null}
                 </div>
-                <strong title={branch.name}>{branch.name}</strong>
-                <p title={branch.subject}>{branch.subject || "No subject"}</p>
-                {branch.trackingName ? (
-                  <span className="branch-row__meta">
-                    {branch.trackingName}{branch.trackingState ? ` ${branch.trackingState}` : ""}
-                  </span>
-                ) : null}
               </button>
 
               {selectedBranchFullName === branch.fullName ? (

@@ -1454,7 +1454,7 @@ h4 {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .branch-group,
@@ -1464,7 +1464,7 @@ h4 {
 .branch-tree-node {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .branch-group__header,
@@ -1479,25 +1479,23 @@ h4 {
 .branch-row {
   width: 100%;
   text-align: left;
-  padding: 9px 10px;
+  padding: 7px 10px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.03);
   color: var(--text-1);
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
 }
 
 .branch-card {
-  gap: 6px;
+  gap: 4px;
 }
 
 .branch-row--tree,
 .branch-folder-row,
-.branch-row__label,
-.branch-tree-toggle {
+.branch-tree-toggle,
+.branch-row__top {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1506,7 +1504,7 @@ h4 {
 .branch-folder-row {
   width: 100%;
   text-align: left;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(255, 255, 255, 0.02);
@@ -1533,11 +1531,9 @@ h4 {
   box-shadow: inset 0 0 0 1px rgba(100, 220, 164, 0.2);
 }
 
-.branch-row strong,
-.branch-row p,
-.branch-row__meta {
-  width: 100%;
-  text-align: left;
+.branch-row strong {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1545,17 +1541,12 @@ h4 {
 
 .branch-row__top {
   width: 100%;
-}
-
-.branch-row p,
-.branch-row__meta {
-  color: var(--text-3);
-  font-size: 11px;
+  min-width: 0;
 }
 
 .branch-row__actions {
   flex-wrap: wrap;
-  padding: 0 6px 0 10px;
+  padding: 0 4px 0 8px;
 }
 
 .branch-selection-actions,

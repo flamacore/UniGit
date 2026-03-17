@@ -276,6 +276,10 @@ function ImagePane({
     }
   };
 
+  const handleDoubleClick = () => {
+    onViewportChange(DEFAULT_VIEWPORT);
+  };
+
   return (
     <div className="image-pane-card">
       <div className="preview-panel__header image-pane-card__header">
@@ -310,6 +314,7 @@ function ImagePane({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
+          onDoubleClick={handleDoubleClick}
         >
           <div
             className="image-preview-transform"
