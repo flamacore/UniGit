@@ -125,8 +125,10 @@ export function App() {
   const [showPaths, setShowPaths] = useState(true);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
   const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
+  const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
@@ -1209,6 +1211,34 @@ export function App() {
     });
   }, []);
 
+  const resizeWorkspacePanels = useCallback((clientY: number) => {
+    const container = workspaceSplitRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const bounds = container.getBoundingClientRect();
+    const totalHeight = bounds.height;
+
+    if (!totalHeight) {
+      return;
+    }
+
+    setStackFractions(() => {
+      const nextY = clientY - bounds.top;
+      const minTop = 220;
+      const minBottom = 260;
+      const clampedTop = Math.min(Math.max(nextY, minTop), totalHeight - minBottom);
+      const newBottom = totalHeight - clampedTop;
+
+      return {
+        top: clampedTop / totalHeight,
+        bottom: newBottom / totalHeight,
+      };
+    });
+  }, []);
+
   const startResize = useCallback(() => {
     const handlePointerMove = (event: PointerEvent) => {
       resizePanels(event.clientX);
@@ -1237,6 +1267,20 @@ export function App() {
     window.addEventListener("pointerup", handlePointerUp);
   }, [resizeGraphPanels]);
 
+  const startWorkspaceResize = useCallback(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      resizeWorkspacePanels(event.clientY);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [resizeWorkspacePanels]);
+
   const lowerGridTemplateColumns = useMemo(() => {
     return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
@@ -1244,6 +1288,10 @@ export function App() {
   const graphGridTemplateColumns = useMemo(() => {
     return `${graphFractions.left}fr 12px ${graphFractions.right}fr`;
   }, [graphFractions]);
+
+  const workspaceGridTemplateRows = useMemo(() => {
+    return `${stackFractions.top}fr 12px ${stackFractions.bottom}fr`;
+  }, [stackFractions]);
 
   const runSwitchBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
@@ -1673,7 +1721,11 @@ export function App() {
           </div>
         ) : null}
 
-        <section className="content-grid">
+        <section
+          ref={workspaceSplitRef}
+          className="content-grid"
+          style={{ gridTemplateRows: `${workspaceGridTemplateRows} auto` }}
+        >
           <section className="panel graph-shell graph-panel--embedded">
             <div
               ref={graphSplitRef}
@@ -1718,12 +1770,22 @@ export function App() {
             </div>
           </section>
 
-          <section
-            ref={contentGridRef}
-            className="lower-grid"
-            style={{ gridTemplateColumns: lowerGridTemplateColumns }}
+          <div
+            className="panel-resizer panel-resizer--horizontal"
+            role="separator"
+            aria-orientation="horizontal"
+            onPointerDown={() => startWorkspaceResize()}
           >
-            <div className="board panel board--changes">
+            <GripVertical size={14} />
+          </div>
+
+          <section className="bottom-stack">
+            <section
+              ref={contentGridRef}
+              className="lower-grid"
+              style={{ gridTemplateColumns: lowerGridTemplateColumns }}
+            >
+              <div className="board panel board--changes">
             <div className="board__header">
               <div>
                 <p className="eyebrow">Changes</p>
@@ -2147,35 +2209,36 @@ export function App() {
               <p className="muted">Pick a file to inspect its current Git state.</p>
             )}
           </section>
-          </section>
+            </section>
 
-          <section className="panel commit-shell">
-            <div className="commit-box">
-              <textarea
-                className="commit-box__input"
-                placeholder="Commit message"
-                value={commitMessage}
-                onChange={(event) => setCommitMessage(event.target.value)}
-              />
-              <div className="commit-box__actions">
-                <button
-                  className="ghost-button"
-                  disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
-                  onClick={() => void commitAndPushChanges()}
-                >
-                  <GitCommitHorizontal size={16} />
-                  Commit & Push
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
-                  onClick={() => void commitChanges()}
-                >
-                  <GitCommitHorizontal size={16} />
-                  Commit staged
-                </button>
+            <section className="panel commit-shell">
+              <div className="commit-box">
+                <textarea
+                  className="commit-box__input"
+                  placeholder="Commit message"
+                  value={commitMessage}
+                  onChange={(event) => setCommitMessage(event.target.value)}
+                />
+                <div className="commit-box__actions">
+                  <button
+                    className="ghost-button"
+                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                    onClick={() => void commitAndPushChanges()}
+                  >
+                    <GitCommitHorizontal size={16} />
+                    Commit & Push
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={!stagedChanges.length || !commitMessage.trim() || submitting}
+                    onClick={() => void commitChanges()}
+                  >
+                    <GitCommitHorizontal size={16} />
+                    Commit staged
+                  </button>
+                </div>
               </div>
-            </div>
+            </section>
           </section>
         </section>
       </main>

@@ -582,7 +582,15 @@ h4 {
 
 .content-grid {
   display: grid;
-  grid-template-rows: minmax(260px, 0.9fr) minmax(280px, 1.2fr) auto;
+  grid-template-rows: minmax(220px, 0.9fr) 12px minmax(320px, 1.2fr) auto;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.bottom-stack {
+  display: grid;
+  grid-template-rows: minmax(220px, 1fr) auto;
   gap: 8px;
   min-height: 0;
   overflow: hidden;
@@ -610,6 +618,14 @@ h4 {
 .panel-resizer:hover {
   background: rgba(121, 164, 255, 0.14);
   color: #cfe0ff;
+}
+
+.panel-resizer--horizontal {
+  cursor: row-resize;
+}
+
+.panel-resizer--horizontal svg {
+  transform: rotate(90deg);
 }
 
 .board,
@@ -1664,6 +1680,7 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .content-grid,
+  .bottom-stack,
   .lower-grid,
   .lanes {
     grid-template-columns: 1fr;
