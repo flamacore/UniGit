@@ -1,3 +1,9 @@
+## [0.4.0](https://github.com/flamacore/UniGit/compare/v0.3.0...v0.4.0) (2026-03-17)
+
+### Features
+
+* Add staged diff context formatting and file filtering for AI commit messages ([9eabc83](https://github.com/flamacore/UniGit/commit/9eabc8364674a52ef83d8545359ba0f2f3117d44))
+
 ## [0.3.0](https://github.com/flamacore/UniGit/compare/v0.2.0...v0.3.0) (2026-03-17)
 
 ### Features
