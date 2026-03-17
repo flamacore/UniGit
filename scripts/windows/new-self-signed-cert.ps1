@@ -8,6 +8,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if (-not $Password.Trim() -and $Subject -and -not $Subject.StartsWith("CN=")) {
+  $Password = $Subject
+  $Subject = "CN=UniGit Self Signed"
+}
+
 $existingCert = Get-ChildItem Cert:\CurrentUser\My |
   Where-Object { $_.HasPrivateKey -and $_.Subject -eq $Subject } |
   Sort-Object NotAfter -Descending |
@@ -43,6 +48,11 @@ Write-Host "Created or re-used code-signing certificate:"
 Write-Host "  Subject:    $($existingCert.Subject)"
 Write-Host "  Thumbprint: $($existingCert.Thumbprint)"
 Write-Host "  Expires:    $($existingCert.NotAfter.ToString('u'))"
+
+if ($Password.Trim()) {
+  Write-Host "  Exported:   $resolvedExportPath"
+}
+
 Write-Host ""
 Write-Host "You can now build a signed installer with:"
 Write-Host "  npm run release:windows"

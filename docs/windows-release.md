@@ -47,6 +47,20 @@ That creates or reuses a code-signing certificate in `Cert:\CurrentUser\My` with
 CN=UniGit Self Signed
 ```
 
+If you also want to export a `.pfx` file for GitHub Actions, run:
+
+```powershell
+npm run release:windows:cert -- istanbuL_159753
+```
+
+Because of how `npm` forwards PowerShell arguments on Windows, the helper accepts a single trailing value as the export password and still keeps the default certificate subject.
+
+That exports the file to:
+
+```text
+certificates\unigit-self-signed.pfx
+```
+
 ## 2. Build the Installer
 
 From the repository root:
@@ -95,3 +109,45 @@ Once the repo is public and you want real public trust:
 1. Replace the self-signed certificate with OV, EV, or Azure Trusted Signing
 2. Keep the installer flow and swap only the signing configuration
 3. Add CI release automation after the local packaging flow is stable
+
+## GitHub Actions Releases
+
+This repo now includes a Windows release workflow at `.github/workflows/release.yml`.
+
+It runs when you push a tag that starts with `v`, for example:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow:
+
+- runs on `windows-latest`
+- installs Node.js and Rust
+- imports a code-signing certificate from GitHub secrets
+- runs the existing Windows release build
+- uploads the generated NSIS installer to the GitHub Release for that tag
+
+### Required GitHub Secrets
+
+- `WINDOWS_CERTIFICATE`
+	Raw base64 contents of the exported `.pfx` file
+- `WINDOWS_CERTIFICATE_PASSWORD`
+	Password for the `.pfx` certificate
+- `UNIGIT_TIMESTAMP_URL`
+	Optional timestamp server URL for signing
+
+To create the base64 value for `WINDOWS_CERTIFICATE` after exporting the `.pfx`:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes(".\certificates\unigit-self-signed.pfx")) | Set-Content ".\certificates\unigit-self-signed.base64.txt"
+```
+
+Then copy the contents of `certificates\unigit-self-signed.base64.txt` into the GitHub secret.
+
+### Recommended CI Certificate Path
+
+For early public automation, you can export your local self-signed `.pfx` and store it in GitHub Secrets.
+
+That is good enough to automate installer production, but it still does not solve SmartScreen trust for end users.
