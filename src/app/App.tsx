@@ -14,7 +14,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BranchPane } from "./components/BranchPane";
 import { BranchCreateDialog } from "./components/BranchCreateDialog";
 import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
@@ -25,7 +25,6 @@ import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
-import { ImagePreviewCompare } from "./components/ImagePreviewCompare";
 import { RemoteDetailDialog } from "./components/RemoteDetailDialog";
 import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
@@ -112,6 +111,14 @@ type MergeConflictState = {
 const buildRemoteBranchRef = (trackingName: string | null) => {
   return trackingName ? `refs/remotes/${trackingName}` : null;
 };
+
+const ImagePreviewCompare = lazy(async () => ({
+  default: (await import("./components/ImagePreviewCompare")).ImagePreviewCompare,
+}));
+
+const UnityMaterialPreviewCompare = lazy(async () => ({
+  default: (await import("./components/UnityMaterialPreviewCompare")).UnityMaterialPreviewCompare,
+}));
 
 const isMergeOverwriteError = (message: string) => {
   const normalized = message.toLowerCase();
@@ -2440,7 +2447,15 @@ export function App() {
                   ) : null}
 
                   {!previewLoading && !previewError && preview?.previewKind === "image" ? (
-                    <ImagePreviewCompare preview={preview} />
+                    <Suspense fallback={<p className="muted">Loading image preview...</p>}>
+                      <ImagePreviewCompare preview={preview} />
+                    </Suspense>
+                  ) : null}
+
+                  {!previewLoading && !previewError && preview?.previewKind === "material" ? (
+                    <Suspense fallback={<p className="muted">Loading material preview...</p>}>
+                      <UnityMaterialPreviewCompare preview={preview} />
+                    </Suspense>
                   ) : null}
 
                   {!previewLoading && !previewError && preview?.previewKind === "text" ? (
@@ -2449,7 +2464,7 @@ export function App() {
                     </div>
                   ) : null}
 
-                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" ? (
+                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" && preview.previewKind !== "material" ? (
                     <div className="preview-frame preview-frame--placeholder">
                       <p>{preview.supportHint}</p>
                     </div>

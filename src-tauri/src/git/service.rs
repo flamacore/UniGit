@@ -17,7 +17,8 @@ use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CloneResult, CommitDetail, CommitFileEntry,
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
-    RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot,
+    RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, UnityColorValue,
+    UnityMaterialPreviewSource, UnityMaterialTexturePreview,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -39,6 +40,29 @@ enum GitServiceError {
     GitCommandFailed(String),
     #[error("File preview failed: {0}")]
     FilePreviewFailed(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PreviewBlobSource {
+    WorkingTree,
+    Staged,
+    Head,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedUnityMaterial {
+    material_name: String,
+    shader_guid: Option<String>,
+    shader_file_id: Option<String>,
+    float_values: std::collections::HashMap<String, f32>,
+    color_values: std::collections::HashMap<String, UnityColorValue>,
+    texture_slots: Vec<ParsedUnityTextureSlot>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedUnityTextureSlot {
+    property_name: String,
+    guid: Option<String>,
 }
 
 type GitResult<T> = Result<T, GitServiceError>;
@@ -854,8 +878,38 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
     let mut image_sources = Vec::new();
     let mut image_comparison_presets = Vec::new();
     let mut default_image_comparison_preset_key = None;
+    let mut unity_material_sources = Vec::new();
+    let mut unity_material_comparison_presets = Vec::new();
+    let mut default_unity_material_comparison_preset_key = None;
 
-    let preview_kind = if is_previewable_image_extension(&extension) {
+    let preview_kind = if extension == "mat" {
+        let bytes = fs::read(&resolved_path)
+            .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+        let preview_bytes = &bytes[..bytes.len().min(12_000)];
+        text_excerpt = Some(String::from_utf8_lossy(preview_bytes).to_string());
+        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
+        staged_diff = git_diff(repo_root, &relative_path, true).await?;
+        unity_material_sources = collect_unity_material_preview_sources(repo_root, &resolved_path, &relative_path).await?;
+        unity_material_comparison_presets = build_image_comparison_presets(
+            &unity_material_sources
+                .iter()
+                .map(|source| ImagePreviewSource {
+                    key: source.key.clone(),
+                    label: source.label.clone(),
+                    source_kind: source.source_kind.clone(),
+                    mime_type: "application/x-unity-material".to_string(),
+                    byte_size: 0,
+                    encoded_bytes_base64: String::new(),
+                    is_psd: false,
+                })
+                .collect::<Vec<_>>(),
+            staged_diff.is_some(),
+            unstaged_diff.is_some(),
+        );
+        default_unity_material_comparison_preset_key = unity_material_comparison_presets.first().map(|preset| preset.key.clone());
+        asset_summary = unity_material_sources.first().map(build_unity_material_asset_summary);
+        if unity_material_sources.is_empty() { "text" } else { "material" }
+    } else if is_previewable_image_extension(&extension) {
         if file_size_bytes <= MAX_INLINE_IMAGE_BYTES {
             let bytes = fs::read(&resolved_path)
                 .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
@@ -894,6 +948,7 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         "image" if extension == "psd" && !image_sources.is_empty() => "PSD preview, channel inspection, and compare views are active in this slice.".to_string(),
         "image" if !image_sources.is_empty() => "Image preview, channel inspection, and compare views are active in this slice.".to_string(),
         "image" => "Image preview is recognized, but available sources are too large for inline transfer in the current slice.".to_string(),
+        "material" if !unity_material_sources.is_empty() => "Unity material preview, compare view, and mesh controls are active in this slice.".to_string(),
         "text" => "Inline text preview is active for quick inspection.".to_string(),
         "asset" => "Asset preview foundation is live. Deep PSD, FBX, and GLTF rendering is the next worker-backed slice.".to_string(),
         _ => "Binary preview is not decoded yet. Metadata is shown while the dedicated pipeline is built.".to_string(),
@@ -915,6 +970,9 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         image_sources,
         image_comparison_presets,
         default_image_comparison_preset_key,
+        unity_material_sources,
+        unity_material_comparison_presets,
+        default_unity_material_comparison_preset_key,
         support_hint,
     })
 }
@@ -2895,6 +2953,419 @@ fn build_image_comparison_presets(
     }
 
     presets
+}
+
+async fn collect_unity_material_preview_sources(
+    repo_root: &Path,
+    resolved_path: &Path,
+    relative_path: &str,
+) -> GitResult<Vec<UnityMaterialPreviewSource>> {
+    let mut sources = Vec::new();
+    let mut guid_cache = std::collections::HashMap::<String, Option<String>>::new();
+
+    for (key, label, source_kind) in [
+        ("workingTree", "Working tree", PreviewBlobSource::WorkingTree),
+        ("staged", "Staged", PreviewBlobSource::Staged),
+        ("head", "HEAD", PreviewBlobSource::Head),
+    ] {
+        let Some(bytes) = read_preview_blob(repo_root, resolved_path, relative_path, source_kind).await? else {
+            continue;
+        };
+
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        let Some(parsed_material) = parse_unity_material(&text) else {
+            continue;
+        };
+
+        let textures = resolve_unity_material_textures(repo_root, source_kind, &parsed_material, &mut guid_cache).await?;
+        let shader_family = infer_unity_shader_family(&parsed_material, &textures);
+        let shader_label = infer_unity_shader_label(&parsed_material, &shader_family);
+        let surface_kind = infer_unity_surface_kind(&parsed_material, &shader_family);
+        let base_texture_key = select_material_texture_key(&textures, &["_BaseMap", "_MainTex", "_BaseColorMap"]);
+        let normal_texture_key = select_material_texture_key(&textures, &["_BumpMap", "_NormalMap", "_NormalTexture"]);
+        let emission_texture_key = select_material_texture_key(&textures, &["_EmissionMap", "_EmissiveColorMap"]);
+
+        let notes = if shader_family == "custom" {
+            vec!["Custom shader detected. UniGit is falling back to a generic lit material using the first available texture and common scalar properties.".to_string()]
+        } else {
+            Vec::new()
+        };
+
+        sources.push(UnityMaterialPreviewSource {
+            key: key.to_string(),
+            label: label.to_string(),
+            source_kind: key.to_string(),
+            material_name: parsed_material.material_name.clone(),
+            shader_label,
+            shader_family,
+            surface_kind,
+            base_color: pick_unity_color(&parsed_material, &["_BaseColor", "_Color"]),
+            emission_color: pick_unity_color(&parsed_material, &["_EmissionColor", "_EmissiveColor"]),
+            metallic: pick_unity_float(&parsed_material, &["_Metallic"]),
+            smoothness: pick_unity_float(&parsed_material, &["_Smoothness", "_Glossiness", "_GlossMapScale"]),
+            cutoff: pick_unity_float(&parsed_material, &["_Cutoff", "_AlphaClipThreshold"]),
+            preview_shape_hint: "sphere".to_string(),
+            notes,
+            textures,
+            base_texture_key,
+            normal_texture_key,
+            emission_texture_key,
+        });
+    }
+
+    Ok(sources)
+}
+
+async fn read_preview_blob(
+    repo_root: &Path,
+    resolved_path: &Path,
+    relative_path: &str,
+    source_kind: PreviewBlobSource,
+) -> GitResult<Option<Vec<u8>>> {
+    match source_kind {
+        PreviewBlobSource::WorkingTree => Ok(Some(
+            fs::read(resolved_path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?,
+        )),
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}")).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await,
+    }
+}
+
+fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
+    enum Section {
+        None,
+        TexEnvs,
+        Floats,
+        Colors,
+    }
+
+    let mut material_name = "Material".to_string();
+    let mut shader_guid = None;
+    let mut shader_file_id = None;
+    let mut float_values = std::collections::HashMap::new();
+    let mut color_values = std::collections::HashMap::new();
+    let mut texture_slots = Vec::new();
+    let mut section = Section::None;
+    let mut current_texture_property: Option<String> = None;
+
+    for raw_line in source.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("m_Name:") {
+            material_name = value.trim().to_string();
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("m_Shader:") {
+            let inline_fields = parse_inline_object_fields(value.trim());
+            shader_guid = inline_fields.get("guid").cloned();
+            shader_file_id = inline_fields.get("fileID").cloned();
+            continue;
+        }
+
+        match trimmed {
+            "m_TexEnvs:" => {
+                section = Section::TexEnvs;
+                current_texture_property = None;
+                continue;
+            }
+            "m_Floats:" => {
+                section = Section::Floats;
+                current_texture_property = None;
+                continue;
+            }
+            "m_Colors:" => {
+                section = Section::Colors;
+                current_texture_property = None;
+                continue;
+            }
+            "m_Ints:" => {
+                section = Section::None;
+                current_texture_property = None;
+                continue;
+            }
+            _ => {}
+        }
+
+        match section {
+            Section::TexEnvs => {
+                if let Some(value) = trimmed.strip_prefix("- ") {
+                    if let Some(property_name) = value.strip_suffix(':') {
+                        current_texture_property = Some(property_name.trim().to_string());
+                    }
+                    continue;
+                }
+
+                if let Some(property_name) = current_texture_property.as_ref() {
+                    if let Some(value) = trimmed.strip_prefix("m_Texture:") {
+                        let inline_fields = parse_inline_object_fields(value.trim());
+                        texture_slots.push(ParsedUnityTextureSlot {
+                            property_name: property_name.clone(),
+                            guid: inline_fields.get("guid").cloned().filter(|guid| !guid.is_empty()),
+                        });
+                    }
+                }
+            }
+            Section::Floats => {
+                if let Some((key, value)) = parse_unity_scalar_entry(trimmed) {
+                    float_values.insert(key, value);
+                }
+            }
+            Section::Colors => {
+                if let Some((key, value)) = parse_unity_color_entry(trimmed) {
+                    color_values.insert(key, value);
+                }
+            }
+            Section::None => {}
+        }
+    }
+
+    Some(ParsedUnityMaterial {
+        material_name,
+        shader_guid,
+        shader_file_id,
+        float_values,
+        color_values,
+        texture_slots,
+    })
+}
+
+fn parse_inline_object_fields(source: &str) -> std::collections::HashMap<String, String> {
+    let mut values = std::collections::HashMap::new();
+    let trimmed = source.trim().trim_start_matches('{').trim_end_matches('}');
+
+    for part in trimmed.split(',') {
+        let mut segments = part.splitn(2, ':');
+        let key = segments.next().unwrap_or_default().trim();
+        let value = segments.next().unwrap_or_default().trim();
+        if !key.is_empty() {
+            values.insert(key.to_string(), value.to_string());
+        }
+    }
+
+    values
+}
+
+fn parse_unity_scalar_entry(trimmed: &str) -> Option<(String, f32)> {
+    let entry = trimmed.strip_prefix("- ")?;
+    let mut segments = entry.splitn(2, ':');
+    let key = segments.next()?.trim().to_string();
+    let value = segments.next()?.trim().parse::<f32>().ok()?;
+    Some((key, value))
+}
+
+fn parse_unity_color_entry(trimmed: &str) -> Option<(String, UnityColorValue)> {
+    let entry = trimmed.strip_prefix("- ")?;
+    let mut segments = entry.splitn(2, ':');
+    let key = segments.next()?.trim().to_string();
+    let value = segments.next()?.trim();
+    let inline_fields = parse_inline_object_fields(value);
+
+    Some((
+        key,
+        UnityColorValue {
+            r: inline_fields.get("r")?.parse().ok()?,
+            g: inline_fields.get("g")?.parse().ok()?,
+            b: inline_fields.get("b")?.parse().ok()?,
+            a: inline_fields.get("a").and_then(|value| value.parse().ok()).unwrap_or(1.0),
+        },
+    ))
+}
+
+async fn resolve_unity_material_textures(
+    repo_root: &Path,
+    source_kind: PreviewBlobSource,
+    material: &ParsedUnityMaterial,
+    guid_cache: &mut std::collections::HashMap<String, Option<String>>,
+) -> GitResult<Vec<UnityMaterialTexturePreview>> {
+    let mut textures = Vec::new();
+
+    for slot in &material.texture_slots {
+        let Some(guid) = slot.guid.as_ref() else {
+            continue;
+        };
+
+        let relative_texture_path = match guid_cache.get(guid) {
+            Some(value) => value.clone(),
+            None => {
+                let resolved = find_repo_asset_path_by_guid(repo_root, guid)?;
+                guid_cache.insert(guid.clone(), resolved.clone());
+                resolved
+            }
+        };
+
+        let Some(relative_texture_path) = relative_texture_path else {
+            continue;
+        };
+
+        let extension = Path::new(&relative_texture_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if !is_previewable_image_extension(&extension) {
+            continue;
+        }
+
+        let Some(bytes) = read_material_texture_bytes(repo_root, source_kind, &relative_texture_path).await? else {
+            continue;
+        };
+
+        if (bytes.len() as u64) > MAX_INLINE_IMAGE_BYTES {
+            continue;
+        }
+
+        textures.push(UnityMaterialTexturePreview {
+            key: slot.property_name.clone(),
+            property_name: slot.property_name.clone(),
+            label: slot.property_name.clone(),
+            relative_path: relative_texture_path,
+            mime_type: infer_mime_type(&extension).to_string(),
+            encoded_bytes_base64: BASE64.encode(bytes),
+            is_psd: extension == "psd",
+        });
+    }
+
+    Ok(textures)
+}
+
+async fn read_material_texture_bytes(
+    repo_root: &Path,
+    source_kind: PreviewBlobSource,
+    relative_texture_path: &str,
+) -> GitResult<Option<Vec<u8>>> {
+    match source_kind {
+        PreviewBlobSource::WorkingTree => {
+            let resolved = resolve_repo_file(repo_root, relative_texture_path)?;
+            Ok(Some(fs::read(resolved).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?))
+        }
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_texture_path}")).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_texture_path}")).await,
+    }
+}
+
+fn find_repo_asset_path_by_guid(repo_root: &Path, guid: &str) -> GitResult<Option<String>> {
+    fn walk(dir: &Path, repo_root: &Path, guid: &str) -> GitResult<Option<String>> {
+        for entry in fs::read_dir(dir).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))? {
+            let entry = entry.map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+            let path = entry.path();
+            let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+
+            if path.is_dir() {
+                if matches!(file_name, ".git" | "node_modules" | "target" | "dist") {
+                    continue;
+                }
+
+                if let Some(found) = walk(&path, repo_root, guid)? {
+                    return Ok(Some(found));
+                }
+                continue;
+            }
+
+            if path.extension().and_then(|value| value.to_str()) != Some("meta") {
+                continue;
+            }
+
+            let contents = fs::read_to_string(&path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+            if !contents.contains(&format!("guid: {guid}")) {
+                continue;
+            }
+
+            let relative_meta_path = path
+                .strip_prefix(repo_root)
+                .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            return Ok(Some(relative_meta_path.trim_end_matches(".meta").to_string()));
+        }
+
+        Ok(None)
+    }
+
+    walk(repo_root, repo_root, guid)
+}
+
+fn infer_unity_shader_family(material: &ParsedUnityMaterial, textures: &[UnityMaterialTexturePreview]) -> String {
+    let has_base_map = textures.iter().any(|texture| matches!(texture.property_name.as_str(), "_BaseMap" | "_MainTex" | "_BaseColorMap"));
+    let has_metallic = material.float_values.contains_key("_Metallic");
+    let has_smoothness = material.float_values.contains_key("_Smoothness") || material.float_values.contains_key("_Glossiness");
+    let has_emission = material.color_values.contains_key("_EmissionColor") || textures.iter().any(|texture| texture.property_name == "_EmissionMap");
+
+    if has_base_map && has_metallic && has_smoothness {
+        return "lit".to_string();
+    }
+
+    if has_base_map || has_emission {
+        return "unlit".to_string();
+    }
+
+    "custom".to_string()
+}
+
+fn infer_unity_shader_label(material: &ParsedUnityMaterial, shader_family: &str) -> String {
+    match shader_family {
+        "lit" => "Unity Lit-compatible".to_string(),
+        "unlit" => "Unity Unlit-compatible".to_string(),
+        _ => match (&material.shader_guid, &material.shader_file_id) {
+            (Some(guid), Some(file_id)) => format!("Custom shader {file_id}:{guid}"),
+            _ => "Custom shader".to_string(),
+        },
+    }
+}
+
+fn infer_unity_surface_kind(material: &ParsedUnityMaterial, shader_family: &str) -> String {
+    if material.float_values.get("_Surface").copied().unwrap_or(0.0) >= 1.0 || material.float_values.get("_AlphaClip").copied().unwrap_or(0.0) >= 1.0 {
+        return "transparent".to_string();
+    }
+
+    if shader_family == "unlit" {
+        return "unlit".to_string();
+    }
+
+    "opaque".to_string()
+}
+
+fn pick_unity_color(material: &ParsedUnityMaterial, keys: &[&str]) -> Option<UnityColorValue> {
+    keys.iter().find_map(|key| material.color_values.get(*key).cloned())
+}
+
+fn pick_unity_float(material: &ParsedUnityMaterial, keys: &[&str]) -> Option<f32> {
+    keys.iter().find_map(|key| material.float_values.get(*key).copied())
+}
+
+fn select_material_texture_key(textures: &[UnityMaterialTexturePreview], preferred_keys: &[&str]) -> Option<String> {
+    for key in preferred_keys {
+        if let Some(texture) = textures.iter().find(|texture| texture.property_name == *key) {
+            return Some(texture.key.clone());
+        }
+    }
+
+    textures.first().map(|texture| texture.key.clone())
+}
+
+fn build_unity_material_asset_summary(source: &UnityMaterialPreviewSource) -> AssetSummary {
+    AssetSummary {
+        asset_kind: "Unity material".to_string(),
+        pipeline_state: source.shader_label.clone(),
+        details: vec![
+            AssetDetail {
+                label: "Material".to_string(),
+                value: source.material_name.clone(),
+            },
+            AssetDetail {
+                label: "Surface".to_string(),
+                value: source.surface_kind.clone(),
+            },
+            AssetDetail {
+                label: "Textures".to_string(),
+                value: source.textures.len().to_string(),
+            },
+        ],
+    }
 }
 
 async fn git_show_optional_bytes(repo_root: &Path, object_spec: String) -> GitResult<Option<Vec<u8>>> {

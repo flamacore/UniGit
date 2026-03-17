@@ -186,6 +186,9 @@ pub struct FilePreview {
     pub image_sources: Vec<ImagePreviewSource>,
     pub image_comparison_presets: Vec<ImageComparisonPreset>,
     pub default_image_comparison_preset_key: Option<String>,
+    pub unity_material_sources: Vec<UnityMaterialPreviewSource>,
+    pub unity_material_comparison_presets: Vec<ImageComparisonPreset>,
+    pub default_unity_material_comparison_preset_key: Option<String>,
     pub support_hint: String,
 }
 
@@ -209,6 +212,50 @@ pub struct ImageComparisonPreset {
     pub left_source_key: String,
     pub right_source_key: String,
     pub description: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnityMaterialPreviewSource {
+    pub key: String,
+    pub label: String,
+    pub source_kind: String,
+    pub material_name: String,
+    pub shader_label: String,
+    pub shader_family: String,
+    pub surface_kind: String,
+    pub base_color: Option<UnityColorValue>,
+    pub emission_color: Option<UnityColorValue>,
+    pub metallic: Option<f32>,
+    pub smoothness: Option<f32>,
+    pub cutoff: Option<f32>,
+    pub preview_shape_hint: String,
+    pub notes: Vec<String>,
+    pub textures: Vec<UnityMaterialTexturePreview>,
+    pub base_texture_key: Option<String>,
+    pub normal_texture_key: Option<String>,
+    pub emission_texture_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnityMaterialTexturePreview {
+    pub key: String,
+    pub property_name: String,
+    pub label: String,
+    pub relative_path: String,
+    pub mime_type: String,
+    pub encoded_bytes_base64: String,
+    pub is_psd: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UnityColorValue {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
 }
 
 #[derive(Debug, Serialize, Clone)]

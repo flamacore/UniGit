@@ -1240,8 +1240,23 @@ h4 {
   gap: 10px;
 }
 
+.material-preview-workbench,
+.material-single-grid,
+.material-pane-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .image-preview-toolbar,
 .image-compare-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.material-preview-toolbar,
+.material-shape-toolbar,
+.material-compare-grid {
   display: grid;
   gap: 10px;
 }
@@ -1254,11 +1269,24 @@ h4 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.material-preview-toolbar,
+.material-shape-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(140px, max-content));
+}
+
+.material-compare-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .image-pane-card__header {
   align-items: flex-start;
 }
 
 .image-pane-card__caption {
+  margin-top: 4px;
+}
+
+.material-pane-card__meta {
   margin-top: 4px;
 }
 
@@ -1295,6 +1323,25 @@ h4 {
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
 }
 
+.material-pane-card__frame {
+  min-height: 300px;
+  padding: 0;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.material-pane-card__frame:active {
+  cursor: grabbing;
+}
+
+.material-preview-canvas {
+  display: block;
+  width: 100%;
+  height: 320px;
+}
+
 .image-pane-card__frame:active {
   cursor: grabbing;
 }
@@ -1314,6 +1361,10 @@ h4 {
 
 @media (max-width: 960px) {
   .image-compare-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .material-compare-grid {
     grid-template-columns: 1fr;
   }
 }

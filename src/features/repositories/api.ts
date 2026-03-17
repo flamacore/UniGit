@@ -136,7 +136,7 @@ export type FilePreview = {
   relativePath: string;
   fileName: string;
   extension: string;
-  previewKind: "image" | "text" | "asset" | "binary";
+  previewKind: "image" | "text" | "asset" | "binary" | "material";
   mimeType: string;
   fileSizeBytes: number;
   modifiedAt: number | null;
@@ -148,6 +148,9 @@ export type FilePreview = {
   imageSources: ImagePreviewSource[];
   imageComparisonPresets: ImageComparisonPreset[];
   defaultImageComparisonPresetKey: string | null;
+  unityMaterialSources: UnityMaterialPreviewSource[];
+  unityMaterialComparisonPresets: ImageComparisonPreset[];
+  defaultUnityMaterialComparisonPresetKey: string | null;
   supportHint: string;
 };
 
@@ -167,6 +170,44 @@ export type ImageComparisonPreset = {
   leftSourceKey: string;
   rightSourceKey: string;
   description: string;
+};
+
+export type UnityMaterialPreviewSource = {
+  key: string;
+  label: string;
+  sourceKind: "workingTree" | "staged" | "head" | string;
+  materialName: string;
+  shaderLabel: string;
+  shaderFamily: "lit" | "unlit" | "custom" | string;
+  surfaceKind: "opaque" | "transparent" | "unlit" | string;
+  baseColor: UnityColorValue | null;
+  emissionColor: UnityColorValue | null;
+  metallic: number | null;
+  smoothness: number | null;
+  cutoff: number | null;
+  previewShapeHint: "sphere" | "box" | "cylinder" | string;
+  notes: string[];
+  textures: UnityMaterialTexturePreview[];
+  baseTextureKey: string | null;
+  normalTextureKey: string | null;
+  emissionTextureKey: string | null;
+};
+
+export type UnityMaterialTexturePreview = {
+  key: string;
+  propertyName: string;
+  label: string;
+  relativePath: string;
+  mimeType: string;
+  encodedBytesBase64: string;
+  isPsd: boolean;
+};
+
+export type UnityColorValue = {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
 };
 
 export type AssetSummary = {
