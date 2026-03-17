@@ -14,10 +14,10 @@ use thiserror::Error;
 use tokio::process::Command;
 
 use super::models::{
-    AssetDetail, AssetSummary, BranchEntry, CommitDetail, CommitFileEntry,
-    CloneResult, CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
-    FileHistoryEntry, FilePreview, MergeBranchResult, RepositoryConfig, RepositoryCounts,
-    RepositoryRemote, RepositorySnapshot,
+    AssetDetail, AssetSummary, BranchEntry, CloneResult, CommitDetail, CommitFileEntry,
+    CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
+    FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
+    RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -850,8 +850,11 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
     let mut staged_diff = None;
     let mut unstaged_diff = None;
     let mut asset_summary = None;
+    let mut image_sources = Vec::new();
+    let mut image_comparison_presets = Vec::new();
+    let mut default_image_comparison_preset_key = None;
 
-    let preview_kind = if is_image_extension(&extension) {
+    let preview_kind = if is_previewable_image_extension(&extension) {
         if file_size_bytes <= MAX_INLINE_IMAGE_BYTES {
             let bytes = fs::read(&resolved_path)
                 .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
@@ -860,6 +863,14 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
 
         unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
         staged_diff = git_diff(repo_root, &relative_path, true).await?;
+
+        if extension == "psd" {
+            asset_summary = build_asset_summary(&resolved_path, &extension)?;
+        }
+
+        image_sources = collect_image_preview_sources(repo_root, &resolved_path, &relative_path, &extension, mime_type).await?;
+        image_comparison_presets = build_image_comparison_presets(&image_sources, staged_diff.is_some(), unstaged_diff.is_some());
+        default_image_comparison_preset_key = image_comparison_presets.first().map(|preset| preset.key.clone());
 
         "image"
     } else if is_text_extension(&extension) || looks_like_text(&resolved_path)? {
@@ -879,8 +890,9 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
     .to_string();
 
     let support_hint = match preview_kind.as_str() {
-        "image" if image_data_url.is_some() => "Inline image preview is active in this slice.".to_string(),
-        "image" => "Image preview is recognized, but this file is too large for inline transfer in the current slice.".to_string(),
+        "image" if extension == "psd" && !image_sources.is_empty() => "PSD preview, channel inspection, and compare views are active in this slice.".to_string(),
+        "image" if !image_sources.is_empty() => "Image preview, channel inspection, and compare views are active in this slice.".to_string(),
+        "image" => "Image preview is recognized, but available sources are too large for inline transfer in the current slice.".to_string(),
         "text" => "Inline text preview is active for quick inspection.".to_string(),
         "asset" => "Asset preview foundation is live. Deep PSD, FBX, and GLTF rendering is the next worker-backed slice.".to_string(),
         _ => "Binary preview is not decoded yet. Metadata is shown while the dedicated pipeline is built.".to_string(),
@@ -899,6 +911,9 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         staged_diff,
         unstaged_diff,
         asset_summary,
+        image_sources,
+        image_comparison_presets,
+        default_image_comparison_preset_key,
         support_hint,
     })
 }
@@ -2634,6 +2649,10 @@ fn is_image_extension(extension: &str) -> bool {
     matches!(extension, "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg")
 }
 
+fn is_previewable_image_extension(extension: &str) -> bool {
+    is_image_extension(extension) || extension == "psd"
+}
+
 fn is_text_extension(extension: &str) -> bool {
     matches!(
         extension,
@@ -2661,6 +2680,133 @@ fn is_text_extension(extension: &str) -> bool {
 
 fn is_known_asset_extension(extension: &str) -> bool {
     matches!(extension, "psd" | "fbx" | "glb" | "gltf" | "blend" | "tga" | "exr")
+}
+
+async fn collect_image_preview_sources(
+    repo_root: &Path,
+    resolved_path: &Path,
+    relative_path: &str,
+    extension: &str,
+    mime_type: &str,
+) -> GitResult<Vec<ImagePreviewSource>> {
+    let mut sources = Vec::new();
+
+    let working_tree_bytes = fs::read(resolved_path)
+        .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+
+    if (working_tree_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
+        sources.push(build_image_preview_source(
+            "workingTree",
+            "Working tree",
+            "workingTree",
+            mime_type,
+            extension,
+            working_tree_bytes,
+        ));
+    }
+
+    if let Some(staged_bytes) = git_show_optional_bytes(repo_root, format!(":{relative_path}")).await? {
+        if (staged_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
+            sources.push(build_image_preview_source(
+                "staged",
+                "Staged",
+                "staged",
+                mime_type,
+                extension,
+                staged_bytes,
+            ));
+        }
+    }
+
+    if let Some(head_bytes) = git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await? {
+        if (head_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
+            sources.push(build_image_preview_source(
+                "head",
+                "HEAD",
+                "head",
+                mime_type,
+                extension,
+                head_bytes,
+            ));
+        }
+    }
+
+    Ok(sources)
+}
+
+fn build_image_preview_source(
+    key: &str,
+    label: &str,
+    source_kind: &str,
+    mime_type: &str,
+    extension: &str,
+    bytes: Vec<u8>,
+) -> ImagePreviewSource {
+    ImagePreviewSource {
+        key: key.to_string(),
+        label: label.to_string(),
+        source_kind: source_kind.to_string(),
+        mime_type: mime_type.to_string(),
+        byte_size: bytes.len() as u64,
+        encoded_bytes_base64: BASE64.encode(bytes),
+        is_psd: extension == "psd",
+    }
+}
+
+fn build_image_comparison_presets(
+    sources: &[ImagePreviewSource],
+    has_staged_diff: bool,
+    has_unstaged_diff: bool,
+) -> Vec<ImageComparisonPreset> {
+    let has_key = |needle: &str| sources.iter().any(|source| source.key == needle);
+    let mut presets = Vec::new();
+
+    if has_staged_diff && has_key("head") && has_key("staged") {
+        presets.push(ImageComparisonPreset {
+            key: "staged-vs-head".to_string(),
+            label: "Staged vs HEAD".to_string(),
+            left_source_key: "head".to_string(),
+            right_source_key: "staged".to_string(),
+            description: "Inspect what is currently staged against the last committed version.".to_string(),
+        });
+    }
+
+    if has_unstaged_diff && has_key("staged") && has_key("workingTree") {
+        presets.push(ImageComparisonPreset {
+            key: "working-tree-vs-staged".to_string(),
+            label: "Working tree vs staged".to_string(),
+            left_source_key: "staged".to_string(),
+            right_source_key: "workingTree".to_string(),
+            description: "Inspect unstaged image changes against the current index state.".to_string(),
+        });
+    } else if has_unstaged_diff && has_key("head") && has_key("workingTree") {
+        presets.push(ImageComparisonPreset {
+            key: "working-tree-vs-head".to_string(),
+            label: "Working tree vs HEAD".to_string(),
+            left_source_key: "head".to_string(),
+            right_source_key: "workingTree".to_string(),
+            description: "Inspect the current working tree image against the last committed version.".to_string(),
+        });
+    }
+
+    presets
+}
+
+async fn git_show_optional_bytes(repo_root: &Path, object_spec: String) -> GitResult<Option<Vec<u8>>> {
+    match run_git_bytes_owned(repo_root, vec!["show".into(), object_spec]).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(GitServiceError::GitCommandFailed(message)) if is_missing_git_object_error(&message) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn is_missing_git_object_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+
+    normalized.contains("exists on disk, but not in")
+        || normalized.contains("does not exist in")
+        || normalized.contains("path '" ) && normalized.contains("exists on disk, but not in 'head'")
+        || normalized.contains("fatal: pathspec")
 }
 
 fn looks_like_text(path: &Path) -> GitResult<bool> {

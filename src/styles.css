@@ -1232,6 +1232,79 @@ h4 {
   background: linear-gradient(135deg, rgba(79, 130, 255, 0.06), rgba(62, 208, 188, 0.04));
 }
 
+.image-preview-workbench,
+.image-single-grid,
+.image-pane-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.image-preview-toolbar,
+.image-compare-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.image-preview-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(140px, max-content));
+}
+
+.image-compare-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.image-pane-card__header {
+  align-items: flex-start;
+}
+
+.image-pane-card__caption {
+  margin-top: 4px;
+}
+
+.image-channel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.image-channel-toolbar .ghost-button {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 10px;
+}
+
+.image-pane-card__frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  padding: 12px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.04) 75%),
+    rgba(3, 8, 16, 0.95);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
+.image-preview-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 420px;
+  object-fit: contain;
+}
+
+@media (max-width: 960px) {
+  .image-compare-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .preview-code,
 .diff-code {
   margin: 0;

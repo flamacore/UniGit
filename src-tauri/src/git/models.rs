@@ -183,7 +183,32 @@ pub struct FilePreview {
     pub staged_diff: Option<String>,
     pub unstaged_diff: Option<String>,
     pub asset_summary: Option<AssetSummary>,
+    pub image_sources: Vec<ImagePreviewSource>,
+    pub image_comparison_presets: Vec<ImageComparisonPreset>,
+    pub default_image_comparison_preset_key: Option<String>,
     pub support_hint: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImagePreviewSource {
+    pub key: String,
+    pub label: String,
+    pub source_kind: String,
+    pub mime_type: String,
+    pub byte_size: u64,
+    pub encoded_bytes_base64: String,
+    pub is_psd: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageComparisonPreset {
+    pub key: String,
+    pub label: String,
+    pub left_source_key: String,
+    pub right_source_key: String,
+    pub description: String,
 }
 
 #[derive(Debug, Serialize, Clone)]

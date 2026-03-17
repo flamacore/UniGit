@@ -25,6 +25,7 @@ import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
+import { ImagePreviewCompare } from "./components/ImagePreviewCompare";
 import { RemoteDetailDialog } from "./components/RemoteDetailDialog";
 import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
@@ -2438,10 +2439,8 @@ export function App() {
                     </div>
                   ) : null}
 
-                  {!previewLoading && !previewError && preview?.previewKind === "image" && preview.imageDataUrl ? (
-                    <div className="preview-frame">
-                      <img className="preview-image" src={preview.imageDataUrl} alt={preview.relativePath} />
-                    </div>
+                  {!previewLoading && !previewError && preview?.previewKind === "image" ? (
+                    <ImagePreviewCompare preview={preview} />
                   ) : null}
 
                   {!previewLoading && !previewError && preview?.previewKind === "text" ? (

@@ -145,7 +145,28 @@ export type FilePreview = {
   stagedDiff: string | null;
   unstagedDiff: string | null;
   assetSummary: AssetSummary | null;
+  imageSources: ImagePreviewSource[];
+  imageComparisonPresets: ImageComparisonPreset[];
+  defaultImageComparisonPresetKey: string | null;
   supportHint: string;
+};
+
+export type ImagePreviewSource = {
+  key: string;
+  label: string;
+  sourceKind: "workingTree" | "staged" | "head" | string;
+  mimeType: string;
+  byteSize: number;
+  encodedBytesBase64: string;
+  isPsd: boolean;
+};
+
+export type ImageComparisonPreset = {
+  key: string;
+  label: string;
+  leftSourceKey: string;
+  rightSourceKey: string;
+  description: string;
 };
 
 export type AssetSummary = {
