@@ -1104,6 +1104,15 @@ h4 {
   height: 100%;
 }
 
+.inspector--fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+  border: none;
+  padding: 10px;
+  background: linear-gradient(180deg, rgba(5, 10, 18, 0.98), rgba(6, 11, 19, 0.98));
+}
+
 .selection-card {
   flex: 1;
   padding: 12px;

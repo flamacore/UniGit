@@ -1,10 +1,12 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import {
+  Expand,
   FolderPlus,
   GitBranch,
   GitCommitHorizontal,
   GripVertical,
+  Minimize2,
   RefreshCw,
   Sparkles,
   Settings2,
@@ -198,11 +200,13 @@ export function App() {
   const [pairMetaFiles, setPairMetaFiles] = useState(true);
   const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
   const [showPaths, setShowPaths] = useState(true);
+  const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
   const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
+  const inspectorRef = useRef<HTMLElement | null>(null);
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
@@ -299,6 +303,15 @@ export function App() {
       setErrorDialogOpen(false);
     }
   }, [error]);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsInspectorFullscreen(document.fullscreenElement === inspectorRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
 
   useEffect(() => {
     if (!remoteDialog) {
@@ -801,6 +814,19 @@ export function App() {
       setCloneDestination(value);
     }
   }, [cloneDestination]);
+
+  const toggleInspectorFullscreen = useCallback(async () => {
+    if (!inspectorRef.current) {
+      return;
+    }
+
+    if (document.fullscreenElement === inspectorRef.current) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await inspectorRef.current.requestFullscreen();
+  }, []);
 
   const runCloneRepository = useCallback(async () => {
     if (!cloneUrl.trim() || !cloneDestination.trim()) {
@@ -2312,7 +2338,14 @@ export function App() {
             <GripVertical size={14} />
           </div>
 
-          <section className={clsx("panel inspector inspector--long", mergeConflictState && "inspector--conflicted")}>
+          <section
+            ref={inspectorRef}
+            className={clsx(
+              "panel inspector inspector--long",
+              mergeConflictState && "inspector--conflicted",
+              isInspectorFullscreen && "inspector--fullscreen",
+            )}
+          >
             <div className="board__header">
               <div>
                 <p className="eyebrow">Selection</p>
@@ -2320,6 +2353,10 @@ export function App() {
                   {selectedChange?.path ?? selectedCommit?.subject ?? "Nothing selected"}
                 </h3>
               </div>
+              <button className="ghost-button" onClick={() => void toggleInspectorFullscreen()}>
+                {isInspectorFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
+                {isInspectorFullscreen ? "Window" : "Fullscreen"}
+              </button>
             </div>
             {mergeConflictState ? (
               <div className="selection-conflict-banner">
