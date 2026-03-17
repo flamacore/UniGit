@@ -1254,6 +1254,37 @@ h4 {
   gap: 10px;
 }
 
+.branch-panel--conflicted {
+  border-color: rgba(255, 180, 84, 0.32);
+  background: linear-gradient(180deg, rgba(73, 42, 12, 0.58), rgba(20, 14, 9, 0.92));
+}
+
+.branch-panel__header-actions,
+.branch-card,
+.branch-row__actions,
+.branch-action-dialog,
+.branch-action-dialog__header,
+.branch-action-dialog__actions,
+.conflict-dialog,
+.conflict-dialog__list {
+  display: flex;
+  gap: 8px;
+}
+
+.branch-panel__header-actions,
+.branch-action-dialog__header,
+.branch-action-dialog__actions {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.branch-card,
+.branch-action-dialog,
+.conflict-dialog,
+.conflict-dialog__list {
+  flex-direction: column;
+}
+
 .branch-panel--fullscreen {
   width: 100vw;
   height: 100vh;
@@ -1301,6 +1332,10 @@ h4 {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+}
+
+.branch-card {
+  gap: 6px;
 }
 
 .branch-row--tree,
@@ -1360,6 +1395,79 @@ h4 {
 .branch-row__meta {
   color: var(--text-3);
   font-size: 11px;
+}
+
+.branch-row__actions {
+  flex-wrap: wrap;
+  padding: 0 6px 0 10px;
+}
+
+.branch-selection-actions,
+.selection-conflict-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.selection-conflict-banner {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 180, 84, 0.24);
+  background: rgba(112, 63, 12, 0.28);
+}
+
+.inspector--conflicted {
+  border-color: rgba(255, 180, 84, 0.32);
+  background: linear-gradient(180deg, rgba(61, 37, 13, 0.78), rgba(10, 16, 28, 0.96));
+}
+
+.branch-action-dialog {
+  width: min(560px, 100%);
+  padding: 16px;
+  border-radius: 24px;
+}
+
+.branch-action-dialog__checkbox,
+.conflict-dialog__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.branch-action-dialog__checkbox input,
+.conflict-dialog__row input {
+  margin-top: 2px;
+}
+
+.conflict-dialog {
+  width: min(760px, 100%);
+  max-height: min(820px, 100%);
+  padding: 16px;
+  border-radius: 24px;
+}
+
+.conflict-dialog__list {
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.conflict-dialog__row {
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.conflict-dialog__row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .branch-context-menu {

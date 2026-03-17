@@ -88,6 +88,12 @@ export type BranchEntry = {
   subject: string;
 };
 
+export type MergeBranchResult = {
+  status: "merged" | "conflicts";
+  message: string;
+  conflictedFiles: string[];
+};
+
 export type CommitFileEntry = {
   path: string;
   status: string;
@@ -198,12 +204,28 @@ export const switchBranch = (repoPath: string, fullName: string) => {
   return invoke<string>("switch_branch", { repoPath, fullName });
 };
 
+export const forceSwitchBranch = (repoPath: string, fullName: string) => {
+  return invoke<string>("force_switch_branch", { repoPath, fullName });
+};
+
+export const createBranch = (repoPath: string, name: string, startPoint?: string, discardChanges = false) => {
+  return invoke<string>("create_branch", { repoPath, name, startPoint, discardChanges });
+};
+
 export const renameBranch = (repoPath: string, currentName: string, nextName: string) => {
   return invoke<string>("rename_branch", { repoPath, currentName, nextName });
 };
 
 export const deleteBranch = (repoPath: string, fullName: string) => {
   return invoke<string>("delete_branch", { repoPath, fullName });
+};
+
+export const mergeBranch = (repoPath: string, fullName: string, discardLocalChanges = false) => {
+  return invoke<MergeBranchResult>("merge_branch", { repoPath, fullName, discardLocalChanges });
+};
+
+export const resolveConflictedFiles = (repoPath: string, paths: string[], strategy: "ours" | "theirs") => {
+  return invoke<string>("resolve_conflicted_files", { repoPath, paths, strategy });
 };
 
 export const listFileHistory = (repoPath: string, relativePath: string, limit = 20) => {

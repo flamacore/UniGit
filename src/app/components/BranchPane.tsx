@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronDown, ChevronRight, Expand, Minimize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Expand, GitMerge, Minimize2, Plus, Trash2 } from "lucide-react";
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BranchEntry } from "../../features/repositories/api";
 import type { BranchContextMenuState, BranchTreeNode } from "../types";
@@ -13,8 +13,12 @@ export type BranchPaneProps = {
   selectedBranchFullName: string | null;
   onSelectBranch: (fullName: string) => void;
   onSwitchBranch: (fullName: string) => void;
+  onForceSwitchBranch: (fullName: string) => void;
+  onMergeBranch: (fullName: string) => void;
   onRenameBranch: (currentName: string, nextName: string) => void;
-  onDeleteBranch: (fullName: string) => void;
+  onRequestDeleteBranch: (branch: BranchEntry) => void;
+  onOpenCreateBranch: () => void;
+  hasMergeConflict: boolean;
   disabled: boolean;
 };
 
@@ -26,8 +30,12 @@ export function BranchPane({
   selectedBranchFullName,
   onSelectBranch,
   onSwitchBranch,
+  onForceSwitchBranch,
+  onMergeBranch,
   onRenameBranch,
-  onDeleteBranch,
+  onRequestDeleteBranch,
+  onOpenCreateBranch,
+  hasMergeConflict,
   disabled,
 }: BranchPaneProps) {
   const rootRef = useRef<HTMLElement | null>(null);
@@ -103,6 +111,11 @@ export function BranchPane({
     });
   };
 
+  const stopRowButton = (event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   const renderTreeNodes = (nodes: BranchTreeNode[], depth: number): JSX.Element[] => {
     return nodes.map((node) => {
       const isExpanded = filter.trim() ? true : expandedNodes.has(node.id);
@@ -112,48 +125,90 @@ export function BranchPane({
       return (
         <div key={node.id} className="branch-tree-node">
           {branch ? (
-            <button
+            <div
               className={clsx(
-                "branch-row",
-                "branch-row--tree",
-                selectedBranchFullName === branch.fullName && "branch-row--selected",
-                branch.isCurrent && "branch-row--current",
+                "branch-card",
+                selectedBranchFullName === branch.fullName && "branch-card--selected",
               )}
-              style={{ paddingLeft: `${10 + depth * 18}px` }}
-              onClick={() => {
-                onSelectBranch(branch.fullName);
-                setContextMenu(null);
-              }}
-              onContextMenu={(event) => openContextMenu(event, branch)}
             >
-              <div className="branch-row__top">
-                <div className="branch-row__label">
-                  {hasChildren ? (
-                    <span
-                      className="branch-tree-toggle"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        toggleNode(node.id);
-                      }}
-                    >
-                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <button
+                className={clsx(
+                  "branch-row",
+                  "branch-row--tree",
+                  selectedBranchFullName === branch.fullName && "branch-row--selected",
+                  branch.isCurrent && "branch-row--current",
+                )}
+                style={{ paddingLeft: `${10 + depth * 18}px` }}
+                onClick={() => {
+                  onSelectBranch(branch.fullName);
+                  setContextMenu(null);
+                }}
+                onContextMenu={(event) => openContextMenu(event, branch)}
+              >
+                <div className="branch-row__top">
+                  <div className="branch-row__label">
+                    {hasChildren ? (
+                      <span
+                        className="branch-tree-toggle"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          toggleNode(node.id);
+                        }}
+                      >
+                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </span>
+                    ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
+                    <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
+                      {branch.branchKind}
                     </span>
-                  ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
-                  <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
-                    {branch.branchKind}
-                  </span>
+                  </div>
+                  {branch.isCurrent ? <span className="pill pill--success">current</span> : null}
                 </div>
-                {branch.isCurrent ? <span className="pill pill--success">current</span> : null}
-              </div>
-              <strong title={branch.name}>{branch.name}</strong>
-              <p title={branch.subject}>{branch.subject || "No subject"}</p>
-              {branch.trackingName ? (
-                <span className="branch-row__meta">
-                  {branch.trackingName}{branch.trackingState ? ` ${branch.trackingState}` : ""}
-                </span>
+                <strong title={branch.name}>{branch.name}</strong>
+                <p title={branch.subject}>{branch.subject || "No subject"}</p>
+                {branch.trackingName ? (
+                  <span className="branch-row__meta">
+                    {branch.trackingName}{branch.trackingState ? ` ${branch.trackingState}` : ""}
+                  </span>
+                ) : null}
+              </button>
+
+              {selectedBranchFullName === branch.fullName ? (
+                <div className="branch-row__actions">
+                  <button className="ghost-button" disabled={disabled} onClick={(event) => { stopRowButton(event); onSwitchBranch(branch.fullName); }}>
+                    Switch
+                  </button>
+                  <button className="ghost-button" disabled={disabled} onClick={(event) => { stopRowButton(event); onForceSwitchBranch(branch.fullName); }}>
+                    Force switch
+                  </button>
+                  <button className="ghost-button" disabled={disabled || branch.isCurrent} onClick={(event) => { stopRowButton(event); onMergeBranch(branch.fullName); }}>
+                    <GitMerge size={14} />
+                    Merge
+                  </button>
+                  {branch.branchKind === "local" ? (
+                    <>
+                      <button className="ghost-button" disabled={disabled} onClick={(event) => { stopRowButton(event); setContextMenu({ branch, x: 16, y: 16, renameValue: branch.name.replace(/^origin\//, ""), renameMode: true }); }}>
+                        Rename
+                      </button>
+                      <button className="ghost-button ghost-button--danger" disabled={disabled || branch.isCurrent} onClick={(event) => { stopRowButton(event); onRequestDeleteBranch(branch); }}>
+                        <Trash2 size={14} />
+                        Delete local
+                      </button>
+                      {branch.trackingName ? (
+                        <button className="ghost-button ghost-button--danger" disabled={disabled} onClick={(event) => { stopRowButton(event); onRequestDeleteBranch({ ...branch, branchKind: "remote", fullName: `refs/remotes/${branch.trackingName}`, name: branch.trackingName ?? branch.name }); }}>
+                          Delete remote
+                        </button>
+                      ) : null}
+                    </>
+                  ) : (
+                    <button className="ghost-button ghost-button--danger" disabled={disabled} onClick={(event) => { stopRowButton(event); onRequestDeleteBranch(branch); }}>
+                      Delete remote
+                    </button>
+                  )}
+                </div>
               ) : null}
-            </button>
+            </div>
           ) : (
             <button
               className="branch-folder-row"
@@ -194,16 +249,22 @@ export function BranchPane({
   };
 
   return (
-    <section ref={rootRef} className={clsx("branch-panel", isFullscreen && "branch-panel--fullscreen")}>
+    <section ref={rootRef} className={clsx("branch-panel", hasMergeConflict && "branch-panel--conflicted", isFullscreen && "branch-panel--fullscreen")}>
       <div className="board__header">
         <div>
           <p className="eyebrow">Branches</p>
           <h3>{selectedBranchFullName ? (localBranches.concat(remoteBranches).find((branch) => branch.fullName === selectedBranchFullName)?.name ?? "Branch view") : "Branch view"}</h3>
         </div>
-        <button className="ghost-button" onClick={() => void toggleFullscreen()}>
-          {isFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
-          {isFullscreen ? "Window" : "Fullscreen"}
-        </button>
+        <div className="branch-panel__header-actions">
+          <button className="ghost-button" disabled={disabled} onClick={onOpenCreateBranch}>
+            <Plus size={15} />
+            New branch
+          </button>
+          <button className="ghost-button" onClick={() => void toggleFullscreen()}>
+            {isFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
+            {isFullscreen ? "Window" : "Fullscreen"}
+          </button>
+        </div>
       </div>
 
       <input
@@ -235,6 +296,26 @@ export function BranchPane({
               >
                 Switch to
               </button>
+              <button
+                className="ghost-button"
+                disabled={disabled}
+                onClick={() => {
+                  onForceSwitchBranch(contextMenu.branch.fullName);
+                  setContextMenu(null);
+                }}
+              >
+                Force switch
+              </button>
+              <button
+                className="ghost-button"
+                disabled={disabled || contextMenu.branch.isCurrent}
+                onClick={() => {
+                  onMergeBranch(contextMenu.branch.fullName);
+                  setContextMenu(null);
+                }}
+              >
+                Merge
+              </button>
               {contextMenu.branch.branchKind === "local" ? (
                 <button
                   className="ghost-button"
@@ -248,12 +329,29 @@ export function BranchPane({
                 className="ghost-button ghost-button--danger"
                 disabled={disabled || contextMenu.branch.isCurrent}
                 onClick={() => {
-                  onDeleteBranch(contextMenu.branch.fullName);
+                  onRequestDeleteBranch(contextMenu.branch);
                   setContextMenu(null);
                 }}
               >
-                Delete
+                {contextMenu.branch.branchKind === "local" ? "Delete local" : "Delete remote"}
               </button>
+              {contextMenu.branch.branchKind === "local" && contextMenu.branch.trackingName ? (
+                <button
+                  className="ghost-button ghost-button--danger"
+                  disabled={disabled}
+                  onClick={() => {
+                    onRequestDeleteBranch({
+                      ...contextMenu.branch,
+                      branchKind: "remote",
+                      fullName: `refs/remotes/${contextMenu.branch.trackingName}`,
+                      name: contextMenu.branch.trackingName ?? contextMenu.branch.name,
+                    });
+                    setContextMenu(null);
+                  }}
+                >
+                  Delete remote
+                </button>
+              ) : null}
             </>
           ) : (
             <form

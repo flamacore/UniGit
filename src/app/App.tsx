@@ -13,9 +13,13 @@ import {
 } from "lucide-react";
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BranchPane } from "./components/BranchPane";
+import { BranchCreateDialog } from "./components/BranchCreateDialog";
+import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
+import { ConflictResolutionDialog } from "./components/ConflictResolutionDialog";
 import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
+import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
 import { RemoteDetailDialog } from "./components/RemoteDetailDialog";
@@ -47,12 +51,14 @@ import {
   RepositorySnapshot,
   cloneRepository,
   clearGitIndexLock,
+  createBranch,
   createCommit,
   discardPaths,
   deleteRepositoryRemote,
   deleteBranch,
   exportFileFromCommit,
   fetchRepository,
+  forceSwitchBranch,
   forcePullRepository,
   inspectCommitDetail,
   inspectFilePreview,
@@ -63,17 +69,54 @@ import {
   listFileHistory,
   listCommitGraph,
   logClientEvent,
+  mergeBranch,
+  MergeBranchResult,
   pullRepository,
   pushRepository,
   renameBranch,
   restoreFileFromCommit,
   saveRepositoryRemote,
+  resolveConflictedFiles,
   stageFiles,
   switchBranch,
   unstageFiles,
 } from "../features/repositories/api";
 import { useRepositoryStore } from "../features/repositories/store/useRepositoryStore";
 import { isTauri } from "../lib/tauri";
+
+type BranchDeleteDialogState = {
+  branch: BranchEntry;
+  deleteRemote: boolean;
+  remoteFullName: string | null;
+  remoteLabel: string | null;
+};
+
+type MergeDiscardDialogState = {
+  branchFullName: string;
+  branchLabel: string;
+};
+
+type MergeConflictState = {
+  branchFullName: string;
+  branchLabel: string;
+  conflictedFiles: string[];
+};
+
+const buildRemoteBranchRef = (trackingName: string | null) => {
+  return trackingName ? `refs/remotes/${trackingName}` : null;
+};
+
+const isMergeOverwriteError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return normalized.includes("would be overwritten by merge")
+    || normalized.includes("please commit your changes or stash them before you merge");
+};
+
+const resolveBranchNameFromRef = (fullName: string) => {
+  return fullName
+    .replace(/^refs\/heads\//, "")
+    .replace(/^refs\/remotes\//, "");
+};
 
 export function App() {
   const {
@@ -88,6 +131,13 @@ export function App() {
   const [branches, setBranches] = useState<BranchEntry[]>([]);
   const [selectedBranchFullName, setSelectedBranchFullName] = useState<string | null>(null);
   const [branchQuery, setBranchQuery] = useState("");
+  const [branchCreateOpen, setBranchCreateOpen] = useState(false);
+  const [branchCreateName, setBranchCreateName] = useState("");
+  const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
+  const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
+  const [mergeDiscardDialog, setMergeDiscardDialog] = useState<MergeDiscardDialogState | null>(null);
+  const [mergeConflictState, setMergeConflictState] = useState<MergeConflictState | null>(null);
+  const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
   const [graphNextSkip, setGraphNextSkip] = useState(0);
   const [graphHasMore, setGraphHasMore] = useState(false);
@@ -230,6 +280,34 @@ export function App() {
       setRemoteDialogOpen(false);
     }
   }, [remoteDialog]);
+
+  useEffect(() => {
+    if ((snapshot?.counts.conflicted ?? 0) === 0) {
+      setMergeConflictState(null);
+      return;
+    }
+
+    if (!mergeConflictState) {
+      return;
+    }
+
+    const conflictedFiles = snapshot?.files.filter((file) => file.conflicted).map((file) => file.path) ?? [];
+
+    if (conflictedFiles.length === 0) {
+      setMergeConflictState(null);
+      return;
+    }
+
+    setMergeConflictState((current) => current ? { ...current, conflictedFiles } : current);
+  }, [mergeConflictState, snapshot]);
+
+  useEffect(() => {
+    if (mergeConflictState) {
+      setConflictDialogOpen(true);
+    } else {
+      setConflictDialogOpen(false);
+    }
+  }, [mergeConflictState]);
 
   const reportAppError = useCallback((options: {
     scope: string;
@@ -1081,6 +1159,10 @@ export function App() {
     [branches, selectedBranchFullName],
   );
 
+  const branchCreateBaseLabel = useMemo(() => {
+    return selectedBranch?.name ?? branches.find((branch) => branch.isCurrent)?.name ?? "HEAD";
+  }, [branches, selectedBranch]);
+
   const filteredBranches = useMemo(() => {
     const query = branchQuery.trim().toLowerCase();
     const visible = !query
@@ -1107,6 +1189,35 @@ export function App() {
     () => commitGraph.find((commit) => commit.hash === selectedCommitHash) ?? null,
     [commitGraph, selectedCommitHash],
   );
+
+  const selectedCommitBranch = useMemo(() => {
+    if (selectedBranch) {
+      return selectedBranch;
+    }
+
+    if (!selectedCommit) {
+      return null;
+    }
+
+    const tipMatch = branches.find((branch) => branch.commitHash === selectedCommit.hash);
+
+    if (tipMatch) {
+      return tipMatch;
+    }
+
+    const displayBranch = selectedCommit.displayBranch?.trim();
+
+    if (!displayBranch) {
+      return null;
+    }
+
+    const normalized = displayBranch.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
+
+    return branches.find((branch) => {
+      const branchName = resolveBranchNameFromRef(branch.fullName);
+      return branch.name === normalized || branchName === normalized || branchName.endsWith(`/${normalized}`);
+    }) ?? null;
+  }, [branches, selectedBranch, selectedCommit]);
 
   const filteredHistory = useMemo(() => {
     if (!historyFilter.trim()) {
@@ -1293,6 +1404,20 @@ export function App() {
     return `${stackFractions.top}fr 12px ${stackFractions.bottom}fr`;
   }, [stackFractions]);
 
+  const applyMergeBranchResult = useCallback(async (branchFullName: string, branchLabel: string, result: MergeBranchResult) => {
+    setStatusMessage(result.message);
+
+    if (result.status === "conflicts") {
+      setMergeConflictState({
+        branchFullName,
+        branchLabel,
+        conflictedFiles: result.conflictedFiles,
+      });
+    }
+
+    await refreshRepository({ fetchRemote: true });
+  }, [refreshRepository]);
+
   const runSwitchBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
       return;
@@ -1305,6 +1430,7 @@ export function App() {
       writeClientLog("git.branch.switch", `Switching branch ${fullName}.`);
       const result = await switchBranch(selectedRepository, fullName);
       setStatusMessage(result);
+      setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       reportAppError({
@@ -1319,6 +1445,71 @@ export function App() {
     }
   }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
+  const runForceSwitchBranch = useCallback(async (fullName: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.force-switch", `Force switching branch ${fullName}.`);
+      const result = await forceSwitchBranch(selectedRepository, fullName);
+      setStatusMessage(result);
+      setMergeConflictState(null);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      reportAppError({
+        scope: "git.branch.force-switch.error",
+        title: "Force switch failed",
+        fallback: "Force switch failed.",
+        reason,
+        context: `Force switch branch ${fullName}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runCreateBranch = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    const nextName = branchCreateName.trim();
+
+    if (!nextName) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      const startPoint = selectedBranchFullName ?? branches.find((branch) => branch.isCurrent)?.fullName;
+      writeClientLog("git.branch.create", `Creating branch ${nextName}.`, startPoint ?? "HEAD");
+      const result = await createBranch(selectedRepository, nextName, startPoint ?? undefined, branchCreateDiscardChanges);
+      setStatusMessage(result);
+      setBranchCreateOpen(false);
+      setBranchCreateName("");
+      setBranchCreateDiscardChanges(false);
+      setMergeConflictState(null);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      reportAppError({
+        scope: "git.branch.create.error",
+        title: "Create branch failed",
+        fallback: "Create branch failed.",
+        reason,
+        context: `Create branch ${branchCreateName.trim()}.`,
+        detail: selectedBranchFullName ?? undefined,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [branchCreateDiscardChanges, branchCreateName, branches, refreshRepository, reportAppError, selectedBranchFullName, selectedRepository, writeClientLog]);
+
   const runRenameBranch = useCallback(async (currentName: string, nextName: string) => {
     if (!selectedRepository) {
       return;
@@ -1331,7 +1522,7 @@ export function App() {
       writeClientLog("git.branch.rename", `Renaming branch ${currentName} to ${nextName}.`);
       const result = await renameBranch(selectedRepository, currentName, nextName);
       setStatusMessage(result);
-      await refreshRepository();
+      await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       reportAppError({
         scope: "git.branch.rename.error",
@@ -1345,8 +1536,21 @@ export function App() {
     }
   }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
-  const runDeleteBranch = useCallback(async (fullName: string) => {
-    if (!selectedRepository) {
+  const openDeleteBranchDialog = useCallback((branch: BranchEntry) => {
+    const remoteFullName = branch.branchKind === "local"
+      ? buildRemoteBranchRef(branch.trackingName)
+      : null;
+
+    setBranchDeleteDialog({
+      branch,
+      deleteRemote: false,
+      remoteFullName,
+      remoteLabel: branch.branchKind === "local" ? branch.trackingName : null,
+    });
+  }, []);
+
+  const runConfirmDeleteBranch = useCallback(async () => {
+    if (!selectedRepository || !branchDeleteDialog) {
       return;
     }
 
@@ -1354,9 +1558,18 @@ export function App() {
     setError(null);
 
     try {
-      writeClientLog("git.branch.delete", `Deleting branch ${fullName}.`);
-      const result = await deleteBranch(selectedRepository, fullName);
-      setStatusMessage(result);
+      writeClientLog("git.branch.delete", `Deleting branch ${branchDeleteDialog.branch.fullName}.`);
+      const localResult = await deleteBranch(selectedRepository, branchDeleteDialog.branch.fullName);
+
+      let finalMessage = localResult;
+
+      if (branchDeleteDialog.deleteRemote && branchDeleteDialog.remoteFullName) {
+        const remoteResult = await deleteBranch(selectedRepository, branchDeleteDialog.remoteFullName);
+        finalMessage = `${localResult} ${remoteResult}`;
+      }
+
+      setStatusMessage(finalMessage);
+      setBranchDeleteDialog(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       reportAppError({
@@ -1364,12 +1577,75 @@ export function App() {
         title: "Branch deletion failed",
         fallback: "Branch deletion failed.",
         reason,
-        context: `Delete branch ${fullName}.`,
+        context: `Delete branch ${branchDeleteDialog.branch.fullName}.`,
       });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+  }, [branchDeleteDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runMergeBranch = useCallback(async (fullName: string, discardLocalChanges = false) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    const branchLabel = resolveBranchNameFromRef(fullName);
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.merge", `Merging branch ${fullName}.`, discardLocalChanges ? "discard local changes" : undefined);
+      const result = await mergeBranch(selectedRepository, fullName, discardLocalChanges);
+      setMergeDiscardDialog(null);
+      await applyMergeBranchResult(fullName, branchLabel, result);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Merge failed.";
+
+      if (!discardLocalChanges && isMergeOverwriteError(message)) {
+        setMergeDiscardDialog({
+          branchFullName: fullName,
+          branchLabel,
+        });
+      } else {
+        reportAppError({
+          scope: "git.branch.merge.error",
+          title: "Merge failed",
+          fallback: "Merge failed.",
+          reason,
+          context: `Merge branch ${fullName}.`,
+        });
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }, [applyMergeBranchResult, reportAppError, selectedRepository, writeClientLog]);
+
+  const runResolveConflicts = useCallback(async (paths: string[], strategy: "ours" | "theirs") => {
+    if (!selectedRepository || !mergeConflictState) {
+      return;
+    }
+
+    setSubmitting(true);
+
+    try {
+      writeClientLog("git.merge.resolve", `Resolving ${paths.length} conflicted file(s).`, `${strategy}\n${paths.join("\n")}`);
+      const result = await resolveConflictedFiles(selectedRepository, paths, strategy);
+      setStatusMessage(result);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      reportAppError({
+        scope: "git.merge.resolve.error",
+        title: "Conflict resolution failed",
+        fallback: "Conflict resolution failed.",
+        reason,
+        context: `Resolve conflicted files for ${mergeConflictState.branchFullName}.`,
+        detail: `${strategy}\n${paths.join("\n")}`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [mergeConflictState, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runPush = useCallback(async () => {
     if (!selectedRepository) {
@@ -1740,8 +2016,16 @@ export function App() {
                 selectedBranchFullName={selectedBranchFullName}
                 onSelectBranch={setSelectedBranchFullName}
                 onSwitchBranch={(fullName) => void runSwitchBranch(fullName)}
+                onForceSwitchBranch={(fullName) => void runForceSwitchBranch(fullName)}
+                onMergeBranch={(fullName) => void runMergeBranch(fullName)}
                 onRenameBranch={(currentName, nextName) => void runRenameBranch(currentName, nextName)}
-                onDeleteBranch={(fullName) => void runDeleteBranch(fullName)}
+                onRequestDeleteBranch={openDeleteBranchDialog}
+                onOpenCreateBranch={() => {
+                  setBranchCreateName("");
+                  setBranchCreateDiscardChanges(false);
+                  setBranchCreateOpen(true);
+                }}
+                hasMergeConflict={Boolean(mergeConflictState)}
                 disabled={submitting}
               />
 
@@ -1940,7 +2224,7 @@ export function App() {
             <GripVertical size={14} />
           </div>
 
-          <section className="panel inspector inspector--long">
+          <section className={clsx("panel inspector inspector--long", mergeConflictState && "inspector--conflicted")}>
             <div className="board__header">
               <div>
                 <p className="eyebrow">Selection</p>
@@ -1949,6 +2233,16 @@ export function App() {
                 </h3>
               </div>
             </div>
+            {mergeConflictState ? (
+              <div className="selection-conflict-banner">
+                <span className="pill pill--mixed">Merge conflict</span>
+                <strong>{mergeConflictState.branchLabel}</strong>
+                <span className="muted">{mergeConflictState.conflictedFiles.length} conflicted file(s)</span>
+                <button className="ghost-button" disabled={submitting} onClick={() => setConflictDialogOpen(true)}>
+                  Resolve conflicts
+                </button>
+              </div>
+            ) : null}
             {selectedChange ? (
               <div className="selection-card panel-scroll">
                 <span className={clsx("pill", `pill--${getStatusTone(selectedChange)}`)}>
@@ -2144,6 +2438,20 @@ export function App() {
                 {!commitDetailLoading && !commitDetailError && commitDetail ? (
                   <>
                     <span className="pill pill--accent">Commit {commitDetail.shortHash}</span>
+                    {selectedCommitBranch ? (
+                      <div className="branch-selection-actions">
+                        <span className="pill pill--default">Branch {selectedCommitBranch.name}</span>
+                        <button className="ghost-button" disabled={submitting || selectedCommitBranch.isCurrent} onClick={() => void runSwitchBranch(selectedCommitBranch.fullName)}>
+                          Switch to
+                        </button>
+                        <button className="ghost-button" disabled={submitting || selectedCommitBranch.isCurrent} onClick={() => void runForceSwitchBranch(selectedCommitBranch.fullName)}>
+                          Force switch
+                        </button>
+                        <button className="ghost-button" disabled={submitting || selectedCommitBranch.isCurrent} onClick={() => void runMergeBranch(selectedCommitBranch.fullName)}>
+                          Merge
+                        </button>
+                      </div>
+                    ) : null}
                     <dl>
                       <div>
                         <dt>Author</dt>
@@ -2296,6 +2604,50 @@ export function App() {
 
       {remoteDialog && remoteDialogOpen ? (
         <RemoteDetailDialog dialog={remoteDialog} onClose={() => setRemoteDialogOpen(false)} />
+      ) : null}
+
+      {branchCreateOpen ? (
+        <BranchCreateDialog
+          baseLabel={branchCreateBaseLabel}
+          value={branchCreateName}
+          discardChanges={branchCreateDiscardChanges}
+          disabled={submitting}
+          onChangeValue={setBranchCreateName}
+          onChangeDiscard={setBranchCreateDiscardChanges}
+          onClose={() => setBranchCreateOpen(false)}
+          onSubmit={() => void runCreateBranch()}
+        />
+      ) : null}
+
+      {branchDeleteDialog ? (
+        <BranchDeleteDialog
+          branch={branchDeleteDialog.branch}
+          deleteRemote={branchDeleteDialog.deleteRemote}
+          remoteLabel={branchDeleteDialog.remoteLabel}
+          disabled={submitting}
+          onChangeDeleteRemote={(value) => setBranchDeleteDialog((current) => current ? { ...current, deleteRemote: value } : current)}
+          onClose={() => setBranchDeleteDialog(null)}
+          onConfirm={() => void runConfirmDeleteBranch()}
+        />
+      ) : null}
+
+      {mergeDiscardDialog ? (
+        <MergeDiscardDialog
+          branchLabel={mergeDiscardDialog.branchLabel}
+          disabled={submitting}
+          onClose={() => setMergeDiscardDialog(null)}
+          onConfirm={() => void runMergeBranch(mergeDiscardDialog.branchFullName, true)}
+        />
+      ) : null}
+
+      {mergeConflictState && conflictDialogOpen ? (
+        <ConflictResolutionDialog
+          branchLabel={mergeConflictState.branchLabel}
+          conflictedFiles={mergeConflictState.conflictedFiles}
+          disabled={submitting}
+          onClose={() => setConflictDialogOpen(false)}
+          onResolve={(paths, strategy) => void runResolveConflicts(paths, strategy)}
+        />
       ) : null}
     </div>
   );

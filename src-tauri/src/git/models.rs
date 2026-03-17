@@ -128,6 +128,14 @@ pub struct BranchEntry {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct MergeBranchResult {
+    pub status: String,
+    pub message: String,
+    pub conflicted_files: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepositoryRemote {
     pub name: String,
     pub fetch_url: Option<String>,

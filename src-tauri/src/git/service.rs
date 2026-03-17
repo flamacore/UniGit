@@ -16,7 +16,7 @@ use tokio::process::Command;
 use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CommitDetail, CommitFileEntry,
     CloneResult, CommitGraphPage, CommitGraphRow, CommitSummary, FileChange,
-    FileHistoryEntry, FilePreview, RepositoryConfig, RepositoryCounts,
+    FileHistoryEntry, FilePreview, MergeBranchResult, RepositoryConfig, RepositoryCounts,
     RepositoryRemote, RepositorySnapshot,
 };
 
@@ -186,6 +186,20 @@ pub async fn switch_branch(repo_path: String, full_name: String) -> Result<Strin
 }
 
 #[command]
+pub async fn force_switch_branch(repo_path: String, full_name: String) -> Result<String, String> {
+    force_switch_branch_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn create_branch(repo_path: String, name: String, start_point: Option<String>, discard_changes: bool) -> Result<String, String> {
+    create_branch_inner(repo_path, name, start_point, discard_changes)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn rename_branch(repo_path: String, current_name: String, next_name: String) -> Result<String, String> {
     rename_branch_inner(repo_path, current_name, next_name)
         .await
@@ -195,6 +209,20 @@ pub async fn rename_branch(repo_path: String, current_name: String, next_name: S
 #[command]
 pub async fn delete_branch(repo_path: String, full_name: String) -> Result<String, String> {
     delete_branch_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn merge_branch(repo_path: String, full_name: String, discard_local_changes: bool) -> Result<MergeBranchResult, String> {
+    merge_branch_inner(repo_path, full_name, discard_local_changes)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn resolve_conflicted_files(repo_path: String, paths: Vec<String>, strategy: String) -> Result<String, String> {
+    resolve_conflicted_files_inner(repo_path, paths, strategy)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1197,10 +1225,50 @@ async fn add_paths_to_gitignore_inner(repo_path: String, paths: Vec<String>) -> 
 
 async fn switch_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
+    switch_branch_to_target(path, full_name.trim(), false).await
+}
+
+async fn force_switch_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    switch_branch_to_target(path, full_name.trim(), true).await
+}
+
+async fn create_branch_inner(repo_path: String, name: String, start_point: Option<String>, discard_changes: bool) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let branch_name = name.trim();
+
+    if branch_name.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Branch name cannot be empty.".to_string()));
+    }
+
+    if discard_changes {
+        discard_all_local_state(path).await?;
+    }
+
+    let mut args = vec!["switch".into(), "-c".into(), branch_name.to_string()];
+
+    if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        args.push(resolve_branch_specifier(start)?);
+    }
+
+    run_git_owned(path, args).await?;
+
+    Ok(if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        format!("Created branch {branch_name} from {} and switched to it.", pretty_branch_label(start))
+    } else {
+        format!("Created branch {branch_name} and switched to it.")
+    })
+}
+
+async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool) -> GitResult<String> {
     let trimmed = full_name.trim();
 
+    if force {
+        discard_all_local_state(repo_path).await?;
+    }
+
     if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
-        run_git_owned(path, vec!["switch".into(), local_name.to_string()]).await?;
+        run_git_owned(repo_path, vec!["switch".into(), local_name.to_string()]).await?;
         return Ok(format!("Switched to {local_name}."));
     }
 
@@ -1213,16 +1281,16 @@ async fn switch_branch_inner(repo_path: String, full_name: String) -> GitResult<
             return Err(GitServiceError::GitCommandFailed("Remote branch is malformed.".to_string()));
         }
 
-        let local_exists = !run_git_owned(path, vec!["branch".into(), "--list".into(), branch_name.clone()])
+        let local_exists = !run_git_owned(repo_path, vec!["branch".into(), "--list".into(), branch_name.clone()])
             .await?
             .trim()
             .is_empty();
 
         if local_exists {
-            run_git_owned(path, vec!["switch".into(), branch_name.clone()]).await?;
+            run_git_owned(repo_path, vec!["switch".into(), branch_name.clone()]).await?;
         } else {
             run_git_owned(
-                path,
+                repo_path,
                 vec![
                     "switch".into(),
                     "--track".into(),
@@ -1253,13 +1321,76 @@ async fn rename_branch_inner(repo_path: String, current_name: String, next_name:
         .strip_prefix("refs/heads/")
         .ok_or_else(|| GitServiceError::GitCommandFailed("Only local branches can be renamed right now.".to_string()))?;
 
+    let upstream_before_rename = run_git_owned(
+        path,
+        vec![
+            "for-each-ref".into(),
+            "--format=%(upstream:short)".into(),
+            format!("refs/heads/{local_name}"),
+        ],
+    )
+    .await?
+    .trim()
+    .to_string();
+
     run_git_owned(
         path,
         vec!["branch".into(), "-m".into(), local_name.to_string(), next_trimmed.to_string()],
     )
     .await?;
 
-    Ok(format!("Renamed {local_name} to {next_trimmed}."))
+    let mut result = format!("Renamed {local_name} to {next_trimmed}.");
+
+    if !upstream_before_rename.is_empty() {
+        let mut segments = upstream_before_rename.split('/');
+        let remote_name = segments.next().unwrap_or_default();
+        let remote_branch = segments.collect::<Vec<_>>().join("/");
+
+        if !remote_name.is_empty() && !remote_branch.is_empty() {
+            let remote_sync_result = async {
+                run_git_owned(
+                    path,
+                    vec![
+                        "push".into(),
+                        remote_name.to_string(),
+                        format!("refs/heads/{next_trimmed}:refs/heads/{next_trimmed}"),
+                    ],
+                )
+                .await?;
+
+                let _ = run_git_owned(
+                    path,
+                    vec!["push".into(), remote_name.to_string(), "--delete".into(), remote_branch.clone()],
+                )
+                .await;
+
+                run_git_owned(
+                    path,
+                    vec![
+                        "branch".into(),
+                        "--set-upstream-to".into(),
+                        format!("{remote_name}/{next_trimmed}"),
+                        next_trimmed.to_string(),
+                    ],
+                )
+                .await?;
+
+                Ok::<(), GitServiceError>(())
+            }
+            .await;
+
+            match remote_sync_result {
+                Ok(()) => {
+                    result.push_str(&format!(" Updated remote branch on {remote_name} as well."));
+                }
+                Err(error) => {
+                    result.push_str(&format!(" Local rename succeeded, but remote rename sync failed: {error}"));
+                }
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
@@ -1290,6 +1421,91 @@ async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<
     }
 
     Err(GitServiceError::GitCommandFailed("Unsupported branch reference.".to_string()))
+}
+
+async fn merge_branch_inner(repo_path: String, full_name: String, discard_local_changes: bool) -> GitResult<MergeBranchResult> {
+    let path = validate_repository_path(&repo_path)?;
+    let target = resolve_branch_specifier(full_name.trim())?;
+    let target_label = pretty_branch_label(full_name.trim());
+
+    if discard_local_changes {
+        discard_all_local_state(path).await?;
+    }
+
+    let output = run_git_capture_owned(path, vec!["merge".into(), "--no-edit".into(), target.clone()]).await?;
+    let detail = combine_command_output(&output.stdout, &output.stderr);
+
+    if output.success {
+        return Ok(MergeBranchResult {
+            status: "merged".to_string(),
+            message: if detail.is_empty() {
+                format!("Merged {target_label} into the current branch.")
+            } else {
+                detail
+            },
+            conflicted_files: Vec::new(),
+        });
+    }
+
+    if !discard_local_changes && is_local_change_merge_block(detail.as_str()) {
+        return Err(GitServiceError::GitCommandFailed(detail));
+    }
+
+    let conflicted_files = list_conflicted_files(path).await?;
+
+    if !conflicted_files.is_empty() {
+        return Ok(MergeBranchResult {
+            status: "conflicts".to_string(),
+            message: if detail.is_empty() {
+                format!("Merge with {target_label} produced conflicts.")
+            } else {
+                detail
+            },
+            conflicted_files,
+        });
+    }
+
+    Err(GitServiceError::GitCommandFailed(if detail.is_empty() {
+        format!("Merge with {target_label} failed.")
+    } else {
+        detail
+    }))
+}
+
+async fn resolve_conflicted_files_inner(repo_path: String, paths: Vec<String>, strategy: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let sanitized_paths = sanitize_path_list(paths);
+
+    if sanitized_paths.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Choose at least one conflicted file to resolve.".to_string()));
+    }
+
+    let checkout_flag = match strategy.trim() {
+        "ours" => "--ours",
+        "theirs" => "--theirs",
+        _ => {
+            return Err(GitServiceError::GitCommandFailed(
+                "Conflict strategy must be either 'ours' or 'theirs'.".to_string(),
+            ))
+        }
+    };
+
+    let mut checkout_args = vec!["checkout".into(), checkout_flag.into(), "--".into()];
+    checkout_args.extend(sanitized_paths.iter().cloned());
+    run_git_owned(path, checkout_args).await?;
+
+    let mut add_args = vec!["add".into(), "--".into()];
+    add_args.extend(sanitized_paths.iter().cloned());
+    run_git_owned(path, add_args).await?;
+
+    let remaining = list_conflicted_files(path).await?;
+
+    Ok(format!(
+        "Resolved {} conflicted file(s) using {}. Remaining conflicted files: {}.",
+        sanitized_paths.len(),
+        if checkout_flag == "--ours" { "yours" } else { "theirs" },
+        remaining.len()
+    ))
 }
 
 async fn push_repository_inner(repo_path: String) -> GitResult<String> {
@@ -1384,6 +1600,75 @@ async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
         "Force pull completed from {upstream}. Discarded local state for {} upstream-touched path(s) and kept unrelated local-only changes.",
         overlapping_paths.len()
     ))
+}
+
+async fn discard_all_local_state(repo_path: &Path) -> GitResult<()> {
+    run_git_owned(repo_path, vec!["reset".into(), "--hard".into(), "HEAD".into()]).await?;
+    run_git_owned(repo_path, vec!["clean".into(), "-fd".into()]).await?;
+    Ok(())
+}
+
+async fn list_conflicted_files(repo_path: &Path) -> GitResult<Vec<String>> {
+    let output = run_git_owned(
+        repo_path,
+        vec!["diff".into(), "--name-only".into(), "--diff-filter=U".into()],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn resolve_branch_specifier(full_name: &str) -> GitResult<String> {
+    let trimmed = full_name.trim();
+
+    if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
+        return Ok(local_name.to_string());
+    }
+
+    if let Some(remote_branch) = trimmed.strip_prefix("refs/remotes/") {
+        return Ok(remote_branch.to_string());
+    }
+
+    if trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Branch reference cannot be empty.".to_string()));
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn pretty_branch_label(full_name: &str) -> String {
+    if let Some(local_name) = full_name.trim().strip_prefix("refs/heads/") {
+        return local_name.to_string();
+    }
+
+    if let Some(remote_name) = full_name.trim().strip_prefix("refs/remotes/") {
+        return remote_name.to_string();
+    }
+
+    full_name.trim().to_string()
+}
+
+fn is_local_change_merge_block(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("would be overwritten by merge")
+        || normalized.contains("please commit your changes or stash them before you merge")
+}
+
+fn combine_command_output(stdout: &str, stderr: &str) -> String {
+    let trimmed_stdout = stdout.trim();
+    let trimmed_stderr = stderr.trim();
+
+    match (trimmed_stdout.is_empty(), trimmed_stderr.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => trimmed_stdout.to_string(),
+        (true, false) => trimmed_stderr.to_string(),
+        (false, false) => format!("{trimmed_stdout}\n{trimmed_stderr}"),
+    }
 }
 
 async fn resolve_upstream_divergence(repo_path: &Path) -> GitResult<(usize, usize)> {
@@ -1565,6 +1850,48 @@ async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String>
     );
 
     Ok(stdout)
+}
+
+struct GitCommandOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+async fn run_git_capture_owned(repo_path: &Path, args: Vec<String>) -> GitResult<GitCommandOutput> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), None);
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    let _ = append_log(
+        "backend",
+        if output.status.success() { "git.command.success" } else { "git.command.error" },
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&combine_command_output(&stdout, &stderr)),
+    );
+
+    Ok(GitCommandOutput {
+        success: output.status.success(),
+        stdout,
+        stderr,
+    })
 }
 
 async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<Vec<u8>> {

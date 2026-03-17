@@ -33,6 +33,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The app uses a viewport-contained layout with internal pane scrolling.
 - Large-screen scaling for 4K-class displays is already handled.
 - User-facing status, error, and remote-operation notifications now auto-dismiss after a delay unless the pointer is hovering them.
+- The main workspace now has both left-right splitters and a top-bottom splitter, so the graph area and lower workspace can be resized independently.
 
 ### Repository management
 
@@ -64,6 +65,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The refresh control now performs a real fetch so ahead/behind state and remote refs can update from the server instead of only rereading local status.
 - A persistent verbose application log now records frontend action events plus backend Git command execution details.
 - Branch listing, switching, renaming, and deletion commands now exist for local and remote branches.
+- A targeted stale `.git/index.lock` recovery command now exists for the specific "lock file already exists" failure mode.
 - Stage files command exists.
 - Unstage files command exists.
 - Commit command exists.
@@ -74,6 +76,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 - The app now writes a persistent log file to the local app data folder at `UniGit/logs/unigit.log`.
 - The log includes frontend action events, remote-operation outcomes, and verbose Git command start, success, and failure entries.
+- Structured working-tree errors and remote-operation dialogs now capture timestamped detail payloads and log-file references for modal inspection.
 
 ### Working tree UI
 
@@ -124,6 +127,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 
 - The previous stacked history list has been replaced by a dedicated middle graph viewport.
 - The graph area is now split with a resizable branch-management pane on the left and the commit graph on the right.
+- The graph area is now also vertically resizable against the lower workspace through a dedicated top-bottom splitter.
 - The graph now renders on a real canvas-backed surface instead of using lane markers inside list rows.
 - Commit nodes and lane tracks are colorized per lane.
 - Merge commits are visually distinct from regular commits.
@@ -144,6 +148,7 @@ The project is currently in active Phase 2 with early Phase 3 preview work alrea
 - The new branch pane lists local and remote branches, supports click selection, right-click branch actions, branch switching, inline rename for local branches, and deletion for local or remote branches.
 - The branch pane now supports fullscreen mode independently of the commit graph.
 - Branches in the pane are now grouped into a slash-segment tree with fold and unfold behavior, so names like `task/xyz` appear under their shared folder path.
+- Branch management is now the next active maturity target: force-switch flows, branch creation, richer branch-card actions, merge automation, and conflict-resolution UX are the next implementation step.
 - The current graph is still an initial scalable foundation rather than the final enterprise graph engine.
 
 ## Major UX corrections already made
@@ -204,6 +209,7 @@ The app has also been run through Tauri dev during iteration.
 - File tree per commit beyond the changed-file list
 - Richer file tree and commit browsing beyond the current changed-file list and file-history summary
 - Branch-scoped graph views, ancestry focus, and path history overlays
+- Mature branch workflows including force switch from multiple surfaces, branch creation, richer local/remote branch actions, merge automation, and conflict-resolution UI
 - Rendered PSD preview
 - Embedded GLTF/FBX viewer
 - Local ignore layer
@@ -214,14 +220,14 @@ The app has also been run through Tauri dev during iteration.
 
 ## Recommended next step
 
-Next focus should be the real commit graph phase.
+Next focus should be branch workflow maturity on top of the current graph foundation.
 
 That means:
 
-1. Improve merge connector routing and branch continuity in the graph canvas.
-2. Extend the new commit inspector into full file-level history actions, starting with restore and export from selected commits.
-3. Extend backend graph paging to support branch, author, and path-oriented queries.
-4. Add stronger graph navigation for gigantic repositories, including jump, focus, and branch-scoped views.
+1. Add force-switch actions that can discard conflicting local state when the user explicitly asks for it.
+2. Add branch creation, richer branch-card actions, and smarter rename or delete flows for local and remote branches.
+3. Add branch-level merge workflows from the branch pane and commit-selection inspector.
+4. Add a first-pass merge-conflict resolution surface focused on choosing `theirs` vs `yours` for conflicted files.
 
 ## Notes for future continuation
 
