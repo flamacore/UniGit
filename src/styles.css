@@ -1281,6 +1281,10 @@ h4 {
   justify-content: center;
   min-height: 240px;
   padding: 12px;
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
   background:
     linear-gradient(45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
     linear-gradient(-45deg, rgba(255, 255, 255, 0.04) 25%, transparent 25%),
@@ -1289,6 +1293,15 @@ h4 {
     rgba(3, 8, 16, 0.95);
   background-size: 18px 18px;
   background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+}
+
+.image-pane-card__frame:active {
+  cursor: grabbing;
+}
+
+.image-preview-transform {
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .image-preview-canvas {
