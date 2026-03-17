@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "tauri:build:nsis": "tauri build",
+    "release:windows:cert": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/new-self-signed-cert.ps1",
+    "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/build-release.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

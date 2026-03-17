@@ -6,3 +6,8 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 docs/notes.md
+certificates/
+*.pfx
+*.cer
+*.pvk
+*.snk

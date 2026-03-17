@@ -28,6 +28,42 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "publisher": "flamacore",
+    "homepage": "https://github.com/flamacore/UniGit",
+    "shortDescription": "A Windows-first desktop Git client for dense day-to-day repository work.",
+    "longDescription": "UniGit is a Windows-first desktop Git client focused on fast repository inspection, branch workflows, commit history review, and game-development-heavy repositories. It bundles a NSIS installer for Windows distribution and supports local self-signed packaging for early public releases.",
+    "windows": {
+      "allowDowngrades": false,
+      "digestAlgorithm": "sha256",
+      "signCommand": {
+        "cmd": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "./windows/sign-unigit.ps1",
+          "-BinaryPath",
+          "%1"
+        ]
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "UniGit",
+        "installerIcon": "./icons/icon.ico",
+        "displayLanguageSelector": false
+      }
+    }
   }
 }
