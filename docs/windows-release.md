@@ -114,14 +114,48 @@ Once the repo is public and you want real public trust:
 
 This repo now includes a Windows release workflow at `.github/workflows/release.yml`.
 
-It runs when you push a tag that starts with `v`, for example:
+It now runs from commits pushed to `main`.
+
+Semantic versioning is driven by Conventional Commits and `semantic-release`:
+
+- `feat:` triggers a minor release
+- `fix:` triggers a patch release
+- `perf:`, `refactor:`, `docs:`, `build:`, and `ci:` trigger patch releases
+- any commit with a breaking change triggers a major release
+
+Example commit messages:
+
+```text
+feat: add branch conflict resolution dialog
+fix: handle missing upstream on first push
+refactor: simplify commit message generation flow
+feat!: redesign repository storage format
+```
+
+When semantic-release detects a new version, it will:
+
+- update `package.json`
+- update `package-lock.json`
+- update `src-tauri/tauri.conf.json`
+- update `src-tauri/Cargo.toml`
+- update `CHANGELOG.md`
+- create a Git tag and GitHub Release
+- trigger the Windows installer job in the same workflow
+
+The previous manual tag push flow is no longer required for normal releases.
+
+If you want to cut a release, you now do it by merging commits into `main` with the right commit messages.
+
+The old manual tag example was:
 
 ```powershell
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow:
+That is now only useful for exceptional manual recovery cases.
+
+The automated workflow:
 
 - runs on `windows-latest`
 - installs Node.js and Rust

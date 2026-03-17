@@ -11,6 +11,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:build:nsis": "tauri build",
+    "release:semantic": "semantic-release",
     "release:windows:cert": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/new-self-signed-cert.ps1",
     "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/build-release.ps1"
   },
@@ -24,10 +25,17 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/exec": "^7.1.0",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.6",
+    "@semantic-release/release-notes-generator": "^14.1.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.3",
+    "semantic-release": "^24.2.3",
     "typescript": "^5.6.3",
     "vite": "^5.4.10"
   }

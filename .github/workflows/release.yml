@@ -2,19 +2,57 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
-  windows-release:
-    runs-on: windows-latest
+  semantic-version:
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+      tag: ${{ steps.semantic.outputs.new_release_git_tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run semantic release
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 24
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows-release:
+    runs-on: windows-latest
+    needs: semantic-version
+    if: needs.semantic-version.outputs.released == 'true'
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.semantic-version.outputs.tag }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -58,7 +96,7 @@ jobs:
       - name: Upload installer to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.semantic-version.outputs.tag }}
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.zip
-          generate_release_notes: true
