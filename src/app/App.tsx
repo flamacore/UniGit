@@ -118,6 +118,25 @@ const resolveBranchNameFromRef = (fullName: string) => {
     .replace(/^refs\/remotes\//, "");
 };
 
+const getReasonMessage = (reason: unknown, fallback: string) => {
+  if (reason instanceof Error && reason.message.trim()) {
+    return reason.message;
+  }
+
+  if (typeof reason === "string" && reason.trim()) {
+    return reason;
+  }
+
+  if (reason && typeof reason === "object" && "message" in reason) {
+    const message = (reason as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
+};
+
 export function App() {
   const {
     repositories,
@@ -412,7 +431,7 @@ export function App() {
           writeClientLog("git.fetch", `Fetching remote updates for ${selectedRepository}.`);
           await fetchRepository(selectedRepository);
         } catch (reason) {
-          const message = reason instanceof Error ? reason.message : "Fetch failed.";
+          const message = getReasonMessage(reason, "Fetch failed.");
           showRemoteDialog(describeRemoteFailure("fetch", message), {
             scope: "git.fetch.error",
             context: `Fetch remote updates for ${selectedRepository}.`,
@@ -1025,7 +1044,7 @@ export function App() {
       });
       await refreshRepository();
     } catch (reason) {
-      const failure = reason instanceof Error ? reason.message : "Commit and push failed.";
+      const failure = getReasonMessage(reason, "Commit and push failed.");
 
       if (committed) {
         setError(null);
@@ -1600,7 +1619,7 @@ export function App() {
       setMergeDiscardDialog(null);
       await applyMergeBranchResult(fullName, branchLabel, result);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Merge failed.";
+      const message = getReasonMessage(reason, "Merge failed.");
 
       if (!discardLocalChanges && isMergeOverwriteError(message)) {
         setMergeDiscardDialog({
@@ -1670,7 +1689,7 @@ export function App() {
       });
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Push failed.";
+      const message = getReasonMessage(reason, "Push failed.");
       setError(null);
       showRemoteDialog(describeRemoteFailure("push", message), {
         scope: "git.push.error",
@@ -1704,7 +1723,7 @@ export function App() {
       });
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Pull failed.";
+      const message = getReasonMessage(reason, "Pull failed.");
       setError(null);
       showRemoteDialog(describeRemoteFailure("pull", message), {
         scope: "git.pull.error",
@@ -1739,7 +1758,7 @@ export function App() {
       });
       await refreshRepository();
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Force pull failed.";
+      const message = getReasonMessage(reason, "Force pull failed.");
       setError(null);
       showRemoteDialog(describeRemoteFailure("force-pull", message), {
         scope: "git.force-pull.error",

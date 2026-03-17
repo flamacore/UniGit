@@ -1245,6 +1245,8 @@ async fn create_branch_inner(repo_path: String, name: String, start_point: Optio
         discard_all_local_state(path).await?;
     }
 
+    let preferred_remote = infer_branch_creation_remote(path, start_point.as_deref()).await?;
+
     let mut args = vec!["switch".into(), "-c".into(), branch_name.to_string()];
 
     if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
@@ -1253,11 +1255,25 @@ async fn create_branch_inner(repo_path: String, name: String, start_point: Optio
 
     run_git_owned(path, args).await?;
 
-    Ok(if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let mut result = if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         format!("Created branch {branch_name} from {} and switched to it.", pretty_branch_label(start))
     } else {
         format!("Created branch {branch_name} and switched to it.")
-    })
+    };
+
+    if let Some(remote_name) = preferred_remote {
+        match push_branch_with_upstream(path, &remote_name, branch_name).await {
+            Ok(message) => {
+                result.push(' ');
+                result.push_str(&message);
+            }
+            Err(error) => {
+                result.push_str(&format!(" Local branch creation succeeded, but automatic remote publish failed: {error}"));
+            }
+        }
+    }
+
+    Ok(result)
 }
 
 async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool) -> GitResult<String> {
@@ -1510,7 +1526,20 @@ async fn resolve_conflicted_files_inner(repo_path: String, paths: Vec<String>, s
 
 async fn push_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
-    let output = run_git_owned(path, vec!["push".into()]).await?;
+    let output = match run_git_owned(path, vec!["push".into()]).await {
+        Ok(output) => output,
+        Err(GitServiceError::GitCommandFailed(message)) if is_missing_upstream_error(&message) => {
+            let branch_name = current_local_branch_name(path).await?;
+            let remote_name = infer_preferred_remote(path).await?
+                .ok_or_else(|| GitServiceError::GitCommandFailed(format!(
+                    "{message}\n\nUniGit could not infer which remote should track {branch_name}."
+                )))?;
+
+            let auto_result = push_branch_with_upstream(path, &remote_name, &branch_name).await?;
+            return Ok(format!("{auto_result} Auto-configured upstream after detecting a new local branch without remote tracking."));
+        }
+        Err(error) => return Err(error),
+    };
     let trimmed = output.trim();
 
     if trimmed.is_empty() {
@@ -1518,6 +1547,106 @@ async fn push_repository_inner(repo_path: String) -> GitResult<String> {
     } else {
         Ok(trimmed.to_string())
     }
+}
+
+async fn infer_branch_creation_remote(repo_path: &Path, start_point: Option<&str>) -> GitResult<Option<String>> {
+    if let Some(start) = start_point.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(remote_branch) = start.strip_prefix("refs/remotes/") {
+            let remote_name = remote_branch.split('/').next().unwrap_or_default().trim();
+            if !remote_name.is_empty() {
+                return Ok(Some(remote_name.to_string()));
+            }
+        }
+
+        if let Some(local_branch) = start.strip_prefix("refs/heads/") {
+            if let Some(remote_name) = branch_upstream_remote(repo_path, local_branch).await? {
+                return Ok(Some(remote_name));
+            }
+        }
+    }
+
+    infer_preferred_remote(repo_path).await
+}
+
+async fn infer_preferred_remote(repo_path: &Path) -> GitResult<Option<String>> {
+    if let Ok(branch_name) = current_local_branch_name(repo_path).await {
+        if let Some(remote_name) = branch_upstream_remote(repo_path, &branch_name).await? {
+            return Ok(Some(remote_name));
+        }
+    }
+
+    let remotes_output = run_git_owned(repo_path, vec!["remote".into()]).await?;
+    let remotes = remotes_output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if remotes.iter().any(|remote| remote == "origin") {
+        return Ok(Some("origin".to_string()));
+    }
+
+    Ok(remotes.into_iter().next())
+}
+
+async fn branch_upstream_remote(repo_path: &Path, branch_name: &str) -> GitResult<Option<String>> {
+    let upstream = run_git_owned(
+        repo_path,
+        vec![
+            "for-each-ref".into(),
+            "--format=%(upstream:short)".into(),
+            format!("refs/heads/{branch_name}"),
+        ],
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    if upstream.is_empty() {
+        return Ok(None);
+    }
+
+    let remote_name = upstream.split('/').next().unwrap_or_default().trim();
+
+    if remote_name.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(remote_name.to_string()))
+    }
+}
+
+async fn current_local_branch_name(repo_path: &Path) -> GitResult<String> {
+    let branch_name = run_git_owned(repo_path, vec!["branch".into(), "--show-current".into()]).await?
+        .trim()
+        .to_string();
+
+    if branch_name.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Current HEAD is detached, so no local branch name is available.".to_string()));
+    }
+
+    Ok(branch_name)
+}
+
+async fn push_branch_with_upstream(repo_path: &Path, remote_name: &str, branch_name: &str) -> GitResult<String> {
+    let output = run_git_owned(
+        repo_path,
+        vec!["push".into(), "--set-upstream".into(), remote_name.to_string(), branch_name.to_string()],
+    )
+    .await?;
+
+    let trimmed = output.trim();
+
+    if trimmed.is_empty() {
+        Ok(format!("Published {branch_name} to {remote_name} and set upstream."))
+    } else {
+        Ok(format!("Published {branch_name} to {remote_name} and set upstream.\n{trimmed}"))
+    }
+}
+
+fn is_missing_upstream_error(message: &str) -> bool {
+    let normalized = message.to_lowercase();
+    normalized.contains("has no upstream branch") || normalized.contains("no upstream branch")
 }
 
 async fn fetch_repository_inner(repo_path: String) -> GitResult<String> {
