@@ -357,6 +357,10 @@ h4 {
   background: rgba(28, 49, 87, 0.28);
 }
 
+.remote-dialog .error-banner__copy {
+  min-width: 0;
+}
+
 .remote-dialog--error {
   border-color: rgba(255, 84, 111, 0.32);
   background: rgba(114, 27, 45, 0.3);

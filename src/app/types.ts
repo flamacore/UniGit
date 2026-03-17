@@ -43,6 +43,9 @@ export type RemoteDialogState = {
   title: string;
   summary: string;
   detail?: string;
+  occurredAt?: string;
+  logPath?: string | null;
+  fullDetail?: string;
 };
 
 export type AppErrorState = {

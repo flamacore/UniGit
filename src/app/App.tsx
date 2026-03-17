@@ -18,6 +18,7 @@ import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
+import { RemoteDetailDialog } from "./components/RemoteDetailDialog";
 import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
   AppErrorState,
@@ -104,6 +105,7 @@ export function App() {
   const [errorRecoveryBusy, setErrorRecoveryBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
+  const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
   const [repoConfig, setRepoConfig] = useState<RepositoryConfig | null>(null);
   const [repoConfigLoading, setRepoConfigLoading] = useState(false);
@@ -221,6 +223,12 @@ export function App() {
     }
   }, [error]);
 
+  useEffect(() => {
+    if (!remoteDialog) {
+      setRemoteDialogOpen(false);
+    }
+  }, [remoteDialog]);
+
   const reportAppError = useCallback((options: {
     scope: string;
     title: string;
@@ -275,6 +283,34 @@ export function App() {
     writeClientLog(options.scope, options.title, fullDetail);
   }, [logFilePath, selectedRepository, writeClientLog]);
 
+  const showRemoteDialog = useCallback((dialog: RemoteDialogState, options?: {
+    scope?: string;
+    context?: string;
+    extraDetail?: string;
+  }) => {
+    const occurredAt = new Date().toISOString();
+    const fullDetail = [
+      `Time: ${occurredAt}`,
+      selectedRepository ? `Repository: ${selectedRepository}` : null,
+      options?.context ? `Action: ${options.context}` : null,
+      `Summary: ${dialog.summary}`,
+      dialog.detail ? `Git said:\n${dialog.detail}` : null,
+      options?.extraDetail ? `Context:\n${options.extraDetail}` : null,
+      logFilePath ? `Log file:\n${logFilePath}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    setRemoteDialog({
+      ...dialog,
+      occurredAt,
+      logPath: logFilePath,
+      fullDetail,
+    });
+
+    if (options?.scope) {
+      writeClientLog(options.scope, dialog.title, fullDetail);
+    }
+  }, [logFilePath, selectedRepository, writeClientLog]);
+
   const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
       setSnapshot(null);
@@ -297,8 +333,10 @@ export function App() {
           await fetchRepository(selectedRepository);
         } catch (reason) {
           const message = reason instanceof Error ? reason.message : "Fetch failed.";
-          setRemoteDialog(describeRemoteFailure("fetch", message));
-          writeClientLog("git.fetch.error", `Fetch failed for ${selectedRepository}.`, message);
+          showRemoteDialog(describeRemoteFailure("fetch", message), {
+            scope: "git.fetch.error",
+            context: `Fetch remote updates for ${selectedRepository}.`,
+          });
         }
       }
 
@@ -361,7 +399,7 @@ export function App() {
       setLoading(false);
       setGraphLoading(false);
     }
-  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, writeClientLog]);
+  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, showRemoteDialog, writeClientLog]);
 
   const runErrorRecoveryAction = useCallback(async () => {
     if (!error?.recoveryAction || error.recoveryAction.kind !== "clear-index-lock" || !error.repoPath) {
@@ -600,7 +638,7 @@ export function App() {
       timers.push(window.setTimeout(() => setError(null), 9000));
     }
 
-    if (remoteDialog) {
+    if (remoteDialog && !remoteDialogOpen) {
       timers.push(
         window.setTimeout(
           () => setRemoteDialog(null),
@@ -612,7 +650,7 @@ export function App() {
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, statusMessage]);
+  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, remoteDialogOpen, statusMessage]);
 
 
   const pickRepository = useCallback(async () => {
@@ -897,10 +935,13 @@ export function App() {
       const pushResult = await pushRepository(selectedRepository);
 
       setStatusMessage(pushResult || "Committed staged changes and pushed them.");
-      setRemoteDialog({
+      showRemoteDialog({
         tone: "info",
         title: "Commit and push completed",
         summary: pushResult || "Staged changes were committed and pushed to the tracked remote branch.",
+      }, {
+        scope: "git.push.success",
+        context: `Push repository ${selectedRepository} after commit.`,
       });
       await refreshRepository();
     } catch (reason) {
@@ -909,8 +950,11 @@ export function App() {
       if (committed) {
         setError(null);
         setStatusMessage("Committed staged changes locally. Push failed.");
-        setRemoteDialog(describeRemoteFailure("push", failure));
-        writeClientLog("git.push.error", `Push after commit failed for ${selectedRepository}.`, failure);
+        showRemoteDialog(describeRemoteFailure("push", failure), {
+          scope: "git.push.error",
+          context: `Push repository ${selectedRepository} after commit.`,
+          extraDetail: message,
+        });
         await refreshRepository();
       } else {
         reportAppError({
@@ -925,7 +969,7 @@ export function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, showRemoteDialog, writeClientLog]);
 
   const exportCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -1292,21 +1336,26 @@ export function App() {
       writeClientLog("git.push", `Pushing repository ${selectedRepository}.`);
       const result = await pushRepository(selectedRepository);
       setStatusMessage(result || "Push completed.");
-      setRemoteDialog({
+      showRemoteDialog({
         tone: "info",
         title: "Push completed",
         summary: result || "Local commits were pushed to the tracked remote branch.",
+      }, {
+        scope: "git.push.success",
+        context: `Push repository ${selectedRepository}.`,
       });
       await refreshRepository();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Push failed.";
       setError(null);
-      setRemoteDialog(describeRemoteFailure("push", message));
-      writeClientLog("git.push.error", `Push failed for ${selectedRepository}.`, message);
+      showRemoteDialog(describeRemoteFailure("push", message), {
+        scope: "git.push.error",
+        context: `Push repository ${selectedRepository}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
 
   const runPull = useCallback(async () => {
     if (!selectedRepository) {
@@ -1321,21 +1370,26 @@ export function App() {
       writeClientLog("git.pull", `Pull requested for ${selectedRepository}.`);
       const result = await pullRepository(selectedRepository);
       setStatusMessage(result || "Pull completed.");
-      setRemoteDialog({
+      showRemoteDialog({
         tone: "info",
         title: "Pull completed",
         summary: result || "Remote commits were integrated with a fast-forward pull.",
+      }, {
+        scope: "git.pull.success",
+        context: `Pull repository ${selectedRepository}.`,
       });
       await refreshRepository();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Pull failed.";
       setError(null);
-      setRemoteDialog(describeRemoteFailure("pull", message));
-      writeClientLog("git.pull.error", `Pull failed for ${selectedRepository}.`, message);
+      showRemoteDialog(describeRemoteFailure("pull", message), {
+        scope: "git.pull.error",
+        context: `Pull repository ${selectedRepository}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
 
   const runForcePull = useCallback(async () => {
     if (!selectedRepository) {
@@ -1351,21 +1405,26 @@ export function App() {
       const result = await forcePullRepository(selectedRepository);
       setStatusMessage(result);
       setError(null);
-      setRemoteDialog({
+      showRemoteDialog({
         tone: "info",
         title: "Force pull completed",
         summary: result,
+      }, {
+        scope: "git.force-pull.success",
+        context: `Force pull repository ${selectedRepository}.`,
       });
       await refreshRepository();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Force pull failed.";
       setError(null);
-      setRemoteDialog(describeRemoteFailure("force-pull", message));
-      writeClientLog("git.force-pull.error", `Force pull failed for ${selectedRepository}.`, message);
+      showRemoteDialog(describeRemoteFailure("force-pull", message), {
+        scope: "git.force-pull.error",
+        context: `Force pull repository ${selectedRepository}.`,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, writeClientLog]);
+  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
 
   return (
     <div className="shell">
@@ -1468,24 +1527,27 @@ export function App() {
             onMouseLeave={() => setNotificationsHovered(false)}
           >
             <div className="remote-dialog__header">
-              <strong>{remoteDialog.title}</strong>
-              <button
-                className="icon-button"
-                onClick={() => {
-                  writeClientLog("notification.dismiss", `Dismissed remote dialog: ${remoteDialog.title}`);
-                  setRemoteDialog(null);
-                }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-            <p>{remoteDialog.summary}</p>
-            {remoteDialog.detail ? (
-              <div className="remote-dialog__detail-block">
-                <span className="remote-dialog__detail-label">Git said</span>
-                <pre className="remote-dialog__detail">{remoteDialog.detail}</pre>
+              <div className="error-banner__copy">
+                <strong>{remoteDialog.title}</strong>
+                <span title={remoteDialog.summary}>{remoteDialog.summary}</span>
               </div>
-            ) : null}
+              <div className="error-banner__actions">
+                <button className="ghost-button" onClick={() => setRemoteDialogOpen(true)}>
+                  View details
+                </button>
+                <button
+                  className="icon-button"
+                  onClick={() => {
+                    writeClientLog("notification.dismiss", `Dismissed remote dialog: ${remoteDialog.title}`);
+                    setRemoteDialog(null);
+                  }}
+                  aria-label="Dismiss remote dialog"
+                  title="Dismiss remote dialog"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
       </header>
@@ -2167,6 +2229,10 @@ export function App() {
           onRunRecoveryAction={error.recoveryAction ? () => void runErrorRecoveryAction() : undefined}
           recoveryBusy={errorRecoveryBusy}
         />
+      ) : null}
+
+      {remoteDialog && remoteDialogOpen ? (
+        <RemoteDetailDialog dialog={remoteDialog} onClose={() => setRemoteDialogOpen(false)} />
       ) : null}
     </div>
   );
