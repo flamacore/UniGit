@@ -1,3 +1,9 @@
+## [0.6.0](https://github.com/flamacore/UniGit/compare/v0.5.0...v0.6.0) (2026-03-18)
+
+### Features
+
+* Implement model preview functionality with support for various model formats ([84367df](https://github.com/flamacore/UniGit/commit/84367dfd287ff386907b23e30d91f3c041e2ab26))
+
 ## [0.5.0](https://github.com/flamacore/UniGit/compare/v0.4.0...v0.5.0) (2026-03-17)
 
 ### Features
