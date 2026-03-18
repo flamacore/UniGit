@@ -120,6 +120,10 @@ const UnityMaterialPreviewCompare = lazy(async () => ({
   default: (await import("./components/UnityMaterialPreviewCompare")).UnityMaterialPreviewCompare,
 }));
 
+const ModelPreviewCompare = lazy(async () => ({
+  default: (await import("./components/ModelPreviewCompare")).ModelPreviewCompare,
+}));
+
 const isMergeOverwriteError = (message: string) => {
   const normalized = message.toLowerCase();
   return normalized.includes("would be overwritten by merge")
@@ -2458,13 +2462,19 @@ export function App() {
                     </Suspense>
                   ) : null}
 
+                  {!previewLoading && !previewError && preview?.previewKind === "model" ? (
+                    <Suspense fallback={<p className="muted">Loading model preview...</p>}>
+                      <ModelPreviewCompare preview={preview} />
+                    </Suspense>
+                  ) : null}
+
                   {!previewLoading && !previewError && preview?.previewKind === "text" ? (
                     <div className="preview-frame preview-frame--code">
                       <pre className="preview-code">{preview.textExcerpt}</pre>
                     </div>
                   ) : null}
 
-                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" && preview.previewKind !== "material" ? (
+                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" && preview.previewKind !== "material" && preview.previewKind !== "model" ? (
                     <div className="preview-frame preview-frame--placeholder">
                       <p>{preview.supportHint}</p>
                     </div>

@@ -136,7 +136,7 @@ export type FilePreview = {
   relativePath: string;
   fileName: string;
   extension: string;
-  previewKind: "image" | "text" | "asset" | "binary" | "material";
+  previewKind: "image" | "text" | "asset" | "binary" | "material" | "model";
   mimeType: string;
   fileSizeBytes: number;
   modifiedAt: number | null;
@@ -151,6 +151,9 @@ export type FilePreview = {
   unityMaterialSources: UnityMaterialPreviewSource[];
   unityMaterialComparisonPresets: ImageComparisonPreset[];
   defaultUnityMaterialComparisonPresetKey: string | null;
+  modelSources: ModelPreviewSource[];
+  modelComparisonPresets: ImageComparisonPreset[];
+  defaultModelComparisonPresetKey: string | null;
   supportHint: string;
 };
 
@@ -208,6 +211,25 @@ export type UnityColorValue = {
   g: number;
   b: number;
   a: number;
+};
+
+export type ModelPreviewSource = {
+  key: string;
+  label: string;
+  sourceKind: "workingTree" | "staged" | "head" | string;
+  format: "fbx" | "obj" | "gltf" | "glb" | "blend" | string;
+  relativePath: string;
+  mimeType: string;
+  encodedBytesBase64: string;
+  assetLabel: string;
+  notes: string[];
+  externalResources: ModelPreviewResource[];
+};
+
+export type ModelPreviewResource = {
+  uri: string;
+  mimeType: string;
+  encodedBytesBase64: string;
 };
 
 export type AssetSummary = {

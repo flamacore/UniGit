@@ -189,6 +189,9 @@ pub struct FilePreview {
     pub unity_material_sources: Vec<UnityMaterialPreviewSource>,
     pub unity_material_comparison_presets: Vec<ImageComparisonPreset>,
     pub default_unity_material_comparison_preset_key: Option<String>,
+    pub model_sources: Vec<ModelPreviewSource>,
+    pub model_comparison_presets: Vec<ImageComparisonPreset>,
+    pub default_model_comparison_preset_key: Option<String>,
     pub support_hint: String,
 }
 
@@ -256,6 +259,29 @@ pub struct UnityColorValue {
     pub g: f32,
     pub b: f32,
     pub a: f32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPreviewSource {
+    pub key: String,
+    pub label: String,
+    pub source_kind: String,
+    pub format: String,
+    pub relative_path: String,
+    pub mime_type: String,
+    pub encoded_bytes_base64: String,
+    pub asset_label: String,
+    pub notes: Vec<String>,
+    pub external_resources: Vec<ModelPreviewResource>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPreviewResource {
+    pub uri: String,
+    pub mime_type: String,
+    pub encoded_bytes_base64: String,
 }
 
 #[derive(Debug, Serialize, Clone)]

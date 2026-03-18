@@ -17,11 +17,13 @@ use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CloneResult, CommitDetail, CommitFileEntry,
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
+    ModelPreviewResource, ModelPreviewSource,
     RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, UnityColorValue,
     UnityMaterialPreviewSource, UnityMaterialTexturePreview,
 };
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_INLINE_MODEL_BYTES: u64 = 24 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
 const COMMIT_MESSAGE_DIFF_LIMIT: usize = 30_000;
 const COMMIT_MESSAGE_UPSTREAM_LIMIT: usize = 8;
@@ -881,6 +883,9 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
     let mut unity_material_sources = Vec::new();
     let mut unity_material_comparison_presets = Vec::new();
     let mut default_unity_material_comparison_preset_key = None;
+    let mut model_sources = Vec::new();
+    let mut model_comparison_presets = Vec::new();
+    let mut default_model_comparison_preset_key = None;
 
     let preview_kind = if extension == "mat" {
         let bytes = fs::read(&resolved_path)
@@ -909,6 +914,34 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         default_unity_material_comparison_preset_key = unity_material_comparison_presets.first().map(|preset| preset.key.clone());
         asset_summary = unity_material_sources.first().map(build_unity_material_asset_summary);
         if unity_material_sources.is_empty() { "text" } else { "material" }
+    } else if is_previewable_model_extension(&extension) {
+        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
+        staged_diff = git_diff(repo_root, &relative_path, true).await?;
+        model_sources = collect_model_preview_sources(repo_root, &resolved_path, &relative_path, &extension, mime_type).await?;
+        model_comparison_presets = build_image_comparison_presets(
+            &model_sources
+                .iter()
+                .map(|source| ImagePreviewSource {
+                    key: source.key.clone(),
+                    label: source.label.clone(),
+                    source_kind: source.source_kind.clone(),
+                    mime_type: source.mime_type.clone(),
+                    byte_size: 0,
+                    encoded_bytes_base64: String::new(),
+                    is_psd: false,
+                })
+                .collect::<Vec<_>>(),
+            staged_diff.is_some(),
+            unstaged_diff.is_some(),
+        );
+        default_model_comparison_preset_key = model_comparison_presets.first().map(|preset| preset.key.clone());
+        asset_summary = build_asset_summary(&resolved_path, &extension)?;
+
+        if model_sources.is_empty() {
+            "asset"
+        } else {
+            "model"
+        }
     } else if is_previewable_image_extension(&extension) {
         if file_size_bytes <= MAX_INLINE_IMAGE_BYTES {
             let bytes = fs::read(&resolved_path)
@@ -949,6 +982,7 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         "image" if !image_sources.is_empty() => "Image preview, channel inspection, and compare views are active in this slice.".to_string(),
         "image" => "Image preview is recognized, but available sources are too large for inline transfer in the current slice.".to_string(),
         "material" if !unity_material_sources.is_empty() => "Unity material preview, compare view, and mesh controls are active in this slice.".to_string(),
+        "model" if !model_sources.is_empty() => "3D model preview, compare view, and orbit controls are active in this slice.".to_string(),
         "text" => "Inline text preview is active for quick inspection.".to_string(),
         "asset" => "Asset preview foundation is live. Deep PSD, FBX, and GLTF rendering is the next worker-backed slice.".to_string(),
         _ => "Binary preview is not decoded yet. Metadata is shown while the dedicated pipeline is built.".to_string(),
@@ -973,6 +1007,9 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         unity_material_sources,
         unity_material_comparison_presets,
         default_unity_material_comparison_preset_key,
+        model_sources,
+        model_comparison_presets,
+        default_model_comparison_preset_key,
         support_hint,
     })
 }
@@ -2624,8 +2661,10 @@ fn infer_mime_type(extension: &str) -> &'static str {
         "txt" | "md" | "json" | "toml" | "yaml" | "yml" | "py" | "ts" | "tsx" | "js" | "jsx" | "rs" | "cs" | "shader" | "cginc" | "hlsl" | "glsl" => "text/plain",
         "psd" => "image/vnd.adobe.photoshop",
         "fbx" => "model/vnd.fbx",
+        "obj" => "model/obj",
         "glb" => "model/gltf-binary",
         "gltf" => "model/gltf+json",
+        "blend" => "application/x-blender",
         _ => "application/octet-stream",
     }
 }
@@ -2816,6 +2855,10 @@ fn is_previewable_image_extension(extension: &str) -> bool {
     is_image_extension(extension) || extension == "psd"
 }
 
+fn is_previewable_model_extension(extension: &str) -> bool {
+    matches!(extension, "fbx" | "obj" | "gltf" | "glb")
+}
+
 fn is_text_extension(extension: &str) -> bool {
     matches!(
         extension,
@@ -2842,7 +2885,179 @@ fn is_text_extension(extension: &str) -> bool {
 }
 
 fn is_known_asset_extension(extension: &str) -> bool {
-    matches!(extension, "psd" | "fbx" | "glb" | "gltf" | "blend" | "tga" | "exr")
+    matches!(extension, "psd" | "fbx" | "obj" | "glb" | "gltf" | "blend" | "tga" | "exr")
+}
+
+async fn collect_model_preview_sources(
+    repo_root: &Path,
+    resolved_path: &Path,
+    relative_path: &str,
+    extension: &str,
+    mime_type: &str,
+) -> GitResult<Vec<ModelPreviewSource>> {
+    let mut sources = Vec::new();
+
+    for (key, label, source_kind) in [
+        ("workingTree", "Working tree", PreviewBlobSource::WorkingTree),
+        ("staged", "Staged", PreviewBlobSource::Staged),
+        ("head", "HEAD", PreviewBlobSource::Head),
+    ] {
+        let Some(bytes) = read_preview_blob(repo_root, resolved_path, relative_path, source_kind).await? else {
+            continue;
+        };
+
+        if (bytes.len() as u64) > MAX_INLINE_MODEL_BYTES {
+            continue;
+        }
+
+        let external_resources = collect_model_preview_resources(repo_root, source_kind, relative_path, extension, &bytes).await?;
+        let notes = match extension {
+            "fbx" => vec!["FBX preview uses a generic Three.js loader. External texture references may not always resolve.".to_string()],
+            "obj" => vec!["OBJ preview loads geometry directly and uses MTL resources when they can be resolved from sidecar files.".to_string()],
+            "gltf" => vec!["glTF preview loads referenced buffers and textures when they are available in the same repo state.".to_string()],
+            "glb" => Vec::new(),
+            _ => Vec::new(),
+        };
+
+        sources.push(ModelPreviewSource {
+            key: key.to_string(),
+            label: label.to_string(),
+            source_kind: key.to_string(),
+            format: extension.to_string(),
+            relative_path: relative_path.to_string(),
+            mime_type: mime_type.to_string(),
+            encoded_bytes_base64: BASE64.encode(bytes),
+            asset_label: match extension {
+                "fbx" => "FBX scene".to_string(),
+                "obj" => "OBJ mesh".to_string(),
+                "gltf" | "glb" => "glTF scene".to_string(),
+                _ => "3D model".to_string(),
+            },
+            notes,
+            external_resources,
+        });
+    }
+
+    Ok(sources)
+}
+
+async fn collect_model_preview_resources(
+    repo_root: &Path,
+    source_kind: PreviewBlobSource,
+    relative_path: &str,
+    extension: &str,
+    bytes: &[u8],
+) -> GitResult<Vec<ModelPreviewResource>> {
+    let referenced_uris = match extension {
+        "gltf" => parse_gltf_external_uris(bytes),
+        "obj" => parse_obj_external_uris(bytes, repo_root, source_kind, relative_path).await?,
+        _ => Vec::new(),
+    };
+
+    let mut resources = Vec::new();
+    for uri in referenced_uris {
+        if uri.starts_with("data:") {
+            continue;
+        }
+
+        let resolved_relative_path = resolve_relative_asset_path(relative_path, &uri);
+        let Some(resource_bytes) = read_model_external_resource_bytes(repo_root, source_kind, &resolved_relative_path).await? else {
+            continue;
+        };
+
+        if (resource_bytes.len() as u64) > MAX_INLINE_MODEL_BYTES {
+            continue;
+        }
+
+        let resource_extension = Path::new(&resolved_relative_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        resources.push(ModelPreviewResource {
+            uri,
+            mime_type: infer_mime_type(&resource_extension).to_string(),
+            encoded_bytes_base64: BASE64.encode(resource_bytes),
+        });
+    }
+
+    Ok(resources)
+}
+
+fn parse_gltf_external_uris(bytes: &[u8]) -> Vec<String> {
+    let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+    let mut uris = Vec::new();
+
+    if let Some(root) = json {
+        for key in ["buffers", "images"] {
+            if let Some(entries) = root.get(key).and_then(|value| value.as_array()) {
+                for entry in entries {
+                    if let Some(uri) = entry.get("uri").and_then(|value| value.as_str()) {
+                        uris.push(uri.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    uris
+}
+
+async fn parse_obj_external_uris(
+    bytes: &[u8],
+    repo_root: &Path,
+    source_kind: PreviewBlobSource,
+    relative_path: &str,
+) -> GitResult<Vec<String>> {
+    let source = String::from_utf8_lossy(bytes);
+    let mut uris = Vec::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(uri) = trimmed.strip_prefix("mtllib ") {
+            let uri = uri.trim().to_string();
+            uris.push(uri.clone());
+
+            let resolved_relative_path = resolve_relative_asset_path(relative_path, &uri);
+            let Some(mtl_bytes) = read_model_external_resource_bytes(repo_root, source_kind, &resolved_relative_path).await? else {
+                continue;
+            };
+
+            let mtl_source = String::from_utf8_lossy(&mtl_bytes);
+            for mtl_line in mtl_source.lines() {
+                let trimmed_mtl = mtl_line.trim();
+                for prefix in ["map_Kd ", "map_Ka ", "map_Bump ", "map_bump ", "bump ", "map_d "] {
+                    if let Some(texture_uri) = trimmed_mtl.strip_prefix(prefix) {
+                        uris.push(texture_uri.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(uris)
+}
+
+fn resolve_relative_asset_path(base_relative_path: &str, uri: &str) -> String {
+    let base_path = Path::new(base_relative_path);
+    let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
+    parent.join(uri).to_string_lossy().replace('\\', "/")
+}
+
+async fn read_model_external_resource_bytes(
+    repo_root: &Path,
+    source_kind: PreviewBlobSource,
+    relative_path: &str,
+) -> GitResult<Option<Vec<u8>>> {
+    match source_kind {
+        PreviewBlobSource::WorkingTree => {
+            let resolved = resolve_repo_file(repo_root, relative_path)?;
+            Ok(Some(fs::read(resolved).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?))
+        }
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}")).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await,
+    }
 }
 
 async fn collect_image_preview_sources(
