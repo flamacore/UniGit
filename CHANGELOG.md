@@ -1,3 +1,9 @@
+## [0.7.0](https://github.com/flamacore/UniGit/compare/v0.6.0...v0.7.0) (2026-03-18)
+
+### Features
+
+* Enhance preview panel layout and add material preview mode toggle ([76b2416](https://github.com/flamacore/UniGit/commit/76b2416fb13dba5462c9dd958446966d76eb0e1c))
+
 ## [0.6.0](https://github.com/flamacore/UniGit/compare/v0.5.0...v0.6.0) (2026-03-18)
 
 ### Features
