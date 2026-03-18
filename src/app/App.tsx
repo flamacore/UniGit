@@ -205,6 +205,7 @@ export function App() {
   const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [materialPreviewMode, setMaterialPreviewMode] = useState<"preview" | "text">("preview");
   const [fileHistory, setFileHistory] = useState<FileHistoryEntry[]>([]);
   const [fileHistoryLoading, setFileHistoryLoading] = useState(false);
   const [fileHistoryError, setFileHistoryError] = useState<string | null>(null);
@@ -213,12 +214,16 @@ export function App() {
   const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
   const [showPaths, setShowPaths] = useState(true);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
+  const [inspectorFractions, setInspectorFractions] = useState({ top: 0.68, bottom: 0.32 });
+  const [previewFractions, setPreviewFractions] = useState({ top: 0.42, bottom: 0.58 });
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
   const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
   const inspectorRef = useRef<HTMLElement | null>(null);
+  const inspectorSplitRef = useRef<HTMLDivElement | null>(null);
+  const previewSplitRef = useRef<HTMLDivElement | null>(null);
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
@@ -1386,6 +1391,13 @@ export function App() {
   const previewHeading = preview?.previewKind
     ? `${preview.previewKind[0].toUpperCase()}${preview.previewKind.slice(1)} preview`
     : "Preview";
+  const canToggleMaterialTextPreview = preview?.previewKind === "material" && Boolean(preview?.textExcerpt);
+  const showMaterialTextPreview = canToggleMaterialTextPreview && materialPreviewMode === "text";
+  const shouldSplitPreviewPanels = isInspectorFullscreen && !previewLoading && !previewError && hasDiffContent(preview);
+
+  useEffect(() => {
+    setMaterialPreviewMode("preview");
+  }, [selectedChangePath]);
 
   const resizePanels = useCallback((clientX: number) => {
     const container = contentGridRef.current;
@@ -1476,6 +1488,62 @@ export function App() {
     });
   }, []);
 
+  const resizeInspectorPanels = useCallback((clientY: number) => {
+    const container = inspectorSplitRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const bounds = container.getBoundingClientRect();
+    const totalHeight = bounds.height;
+
+    if (!totalHeight) {
+      return;
+    }
+
+    setInspectorFractions(() => {
+      const nextY = clientY - bounds.top;
+      const minTop = 260;
+      const minBottom = 180;
+      const clampedTop = Math.min(Math.max(nextY, minTop), totalHeight - minBottom);
+      const newBottom = totalHeight - clampedTop;
+
+      return {
+        top: clampedTop / totalHeight,
+        bottom: newBottom / totalHeight,
+      };
+    });
+  }, []);
+
+  const resizePreviewPanels = useCallback((clientY: number) => {
+    const container = previewSplitRef.current;
+
+    if (!container) {
+      return;
+    }
+
+    const bounds = container.getBoundingClientRect();
+    const totalHeight = bounds.height;
+
+    if (!totalHeight) {
+      return;
+    }
+
+    setPreviewFractions(() => {
+      const nextY = clientY - bounds.top;
+      const minTop = 140;
+      const minBottom = 220;
+      const clampedTop = Math.min(Math.max(nextY, minTop), totalHeight - minBottom);
+      const newBottom = totalHeight - clampedTop;
+
+      return {
+        top: clampedTop / totalHeight,
+        bottom: newBottom / totalHeight,
+      };
+    });
+  }, []);
+
   const startResize = useCallback(() => {
     const handlePointerMove = (event: PointerEvent) => {
       resizePanels(event.clientX);
@@ -1518,6 +1586,34 @@ export function App() {
     window.addEventListener("pointerup", handlePointerUp);
   }, [resizeWorkspacePanels]);
 
+  const startInspectorResize = useCallback(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      resizeInspectorPanels(event.clientY);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [resizeInspectorPanels]);
+
+  const startPreviewResize = useCallback(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      resizePreviewPanels(event.clientY);
+    };
+
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  }, [resizePreviewPanels]);
+
   const lowerGridTemplateColumns = useMemo(() => {
     return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
@@ -1529,6 +1625,121 @@ export function App() {
   const workspaceGridTemplateRows = useMemo(() => {
     return `${stackFractions.top}fr 12px ${stackFractions.bottom}fr`;
   }, [stackFractions]);
+
+  const inspectorGridTemplateRows = useMemo(() => {
+    return `${inspectorFractions.top}fr 12px ${inspectorFractions.bottom}fr`;
+  }, [inspectorFractions]);
+
+  const previewGridTemplateRows = useMemo(() => {
+    return `${previewFractions.top}fr 12px ${previewFractions.bottom}fr`;
+  }, [previewFractions]);
+
+  const diffContent = !previewLoading && !previewError && hasDiffContent(preview) ? (
+    <div className="diff-stack">
+      <div className="preview-panel__header">
+        <strong>Exact changes</strong>
+        <span className="preview-panel__meta">Git diff</span>
+      </div>
+
+      {preview?.unstagedDiff ? (
+        <div className="diff-card">
+          <div className="diff-card__header">
+            <span className="pill pill--mixed">Unstaged diff</span>
+          </div>
+          <pre className="diff-code">
+            {preview.unstagedDiff.split("\n").map((line, index) => (
+              <div key={`unstaged-${index}`} className={getDiffLineClassName(line)}>
+                {line || " "}
+              </div>
+            ))}
+          </pre>
+        </div>
+      ) : null}
+
+      {preview?.stagedDiff ? (
+        <div className="diff-card">
+          <div className="diff-card__header">
+            <span className="pill pill--success">Staged diff</span>
+          </div>
+          <pre className="diff-code">
+            {preview.stagedDiff.split("\n").map((line, index) => (
+              <div key={`staged-${index}`} className={getDiffLineClassName(line)}>
+                {line || " "}
+              </div>
+            ))}
+          </pre>
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  const previewBodyContent = (
+    <>
+      {!previewLoading && !previewError && preview?.previewKind === "image" ? (
+        <Suspense fallback={<p className="muted">Loading image preview...</p>}>
+          <ImagePreviewCompare preview={preview} />
+        </Suspense>
+      ) : null}
+
+      {!previewLoading && !previewError && preview?.previewKind === "material" && !showMaterialTextPreview ? (
+        <Suspense fallback={<p className="muted">Loading material preview...</p>}>
+          <UnityMaterialPreviewCompare preview={preview} />
+        </Suspense>
+      ) : null}
+
+      {!previewLoading && !previewError && preview?.previewKind === "model" ? (
+        <Suspense fallback={<p className="muted">Loading model preview...</p>}>
+          <ModelPreviewCompare preview={preview} />
+        </Suspense>
+      ) : null}
+
+      {!previewLoading && !previewError && (preview?.previewKind === "text" || showMaterialTextPreview) ? (
+        <div className="preview-frame preview-frame--code">
+          <pre className="preview-code">{preview.textExcerpt}</pre>
+        </div>
+      ) : null}
+
+      {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" && preview.previewKind !== "material" && preview.previewKind !== "model" ? (
+        <div className="preview-frame preview-frame--placeholder">
+          <p>{preview.supportHint}</p>
+        </div>
+      ) : null}
+
+      {!previewLoading && !previewError && preview?.assetSummary ? (
+        <div className="asset-summary">
+          <div className="preview-panel__header">
+            <strong>{preview.assetSummary.assetKind}</strong>
+            <span className="preview-panel__meta">{preview.assetSummary.pipelineState}</span>
+          </div>
+          <dl className="preview-details">
+            {preview.assetSummary.details.map((detail) => (
+              <div key={`${detail.label}-${detail.value}`}>
+                <dt>{detail.label}</dt>
+                <dd>{detail.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
+
+      {preview ? (
+        <dl className="preview-details">
+          <div>
+            <dt>Type</dt>
+            <dd>{preview.mimeType}</dd>
+          </div>
+          <div>
+            <dt>Extension</dt>
+            <dd>{preview.extension || "none"}</dd>
+          </div>
+          <div>
+            <dt>Modified</dt>
+            <dd>{formatUnixTimestamp(preview.modifiedAt)}</dd>
+          </div>
+        </dl>
+      ) : null}
+    </>
+  );
 
   const applyMergeBranchResult = useCallback(async (branchFullName: string, branchLabel: string, result: MergeBranchResult) => {
     setStatusMessage(result.message);
@@ -2381,7 +2592,7 @@ export function App() {
               </div>
             ) : null}
             {selectedChange ? (
-              <div className="selection-card panel-scroll">
+              <div className={clsx("selection-card", !isInspectorFullscreen && "panel-scroll", isInspectorFullscreen && "selection-card--split")}>
                 <span className={clsx("pill", `pill--${getStatusTone(selectedChange)}`)}>
                   {selectedChange.displayStatus}
                 </span>
@@ -2400,121 +2611,79 @@ export function App() {
                   </div>
                 </dl>
 
-                <div className="preview-panel">
-                  <div className="preview-panel__header">
-                    <strong>{previewHeading}</strong>
-                    {preview ? (
-                      <span className="preview-panel__meta">{formatFileSize(preview.fileSizeBytes)}</span>
-                    ) : null}
+                <div
+                  ref={isInspectorFullscreen ? inspectorSplitRef : undefined}
+                  className={clsx(isInspectorFullscreen && "inspector-content-split")}
+                  style={isInspectorFullscreen ? { gridTemplateRows: inspectorGridTemplateRows } : undefined}
+                >
+                  <div className={clsx(isInspectorFullscreen && "inspector-pane panel-scroll")}>
+                    <div className="preview-panel">
+                      <div className="preview-panel__header">
+                        <strong>{previewHeading}</strong>
+                        <div className="preview-panel__header-actions">
+                          {canToggleMaterialTextPreview ? (
+                            <>
+                              <button className={clsx("ghost-button", materialPreviewMode === "preview" && "ghost-button--active")} onClick={() => setMaterialPreviewMode("preview")}>
+                                Preview
+                              </button>
+                              <button className={clsx("ghost-button", materialPreviewMode === "text" && "ghost-button--active")} onClick={() => setMaterialPreviewMode("text")}>
+                                Text
+                              </button>
+                            </>
+                          ) : null}
+                          {preview ? (
+                            <span className="preview-panel__meta">{formatFileSize(preview.fileSizeBytes)}</span>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {previewLoading ? <p className="muted">Loading preview...</p> : null}
+                      {previewError ? <p className="muted">{previewError}</p> : null}
+
+                      {shouldSplitPreviewPanels ? (
+                        <div
+                          ref={previewSplitRef}
+                          className="preview-content-split"
+                          style={{ gridTemplateRows: previewGridTemplateRows }}
+                        >
+                          <div className="preview-split-pane panel-scroll">
+                            {diffContent}
+                          </div>
+
+                          <div
+                            className="panel-resizer panel-resizer--horizontal"
+                            role="separator"
+                            aria-orientation="horizontal"
+                            onPointerDown={() => startPreviewResize()}
+                          >
+                            <GripVertical size={14} />
+                          </div>
+
+                          <div className="preview-split-pane panel-scroll">
+                            {previewBodyContent}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          {diffContent}
+                          {previewBodyContent}
+                        </>
+                      )}
+                    </div>
                   </div>
 
-                  {previewLoading ? <p className="muted">Loading preview...</p> : null}
-                  {previewError ? <p className="muted">{previewError}</p> : null}
-
-                  {!previewLoading && !previewError && hasDiffContent(preview) ? (
-                    <div className="diff-stack">
-                      <div className="preview-panel__header">
-                        <strong>Exact changes</strong>
-                        <span className="preview-panel__meta">Git diff</span>
-                      </div>
-
-                      {preview?.unstagedDiff ? (
-                        <div className="diff-card">
-                          <div className="diff-card__header">
-                            <span className="pill pill--mixed">Unstaged diff</span>
-                          </div>
-                          <pre className="diff-code">
-                            {preview.unstagedDiff.split("\n").map((line, index) => (
-                              <div key={`unstaged-${index}`} className={getDiffLineClassName(line)}>
-                                {line || " "}
-                              </div>
-                            ))}
-                          </pre>
-                        </div>
-                      ) : null}
-
-                      {preview?.stagedDiff ? (
-                        <div className="diff-card">
-                          <div className="diff-card__header">
-                            <span className="pill pill--success">Staged diff</span>
-                          </div>
-                          <pre className="diff-code">
-                            {preview.stagedDiff.split("\n").map((line, index) => (
-                              <div key={`staged-${index}`} className={getDiffLineClassName(line)}>
-                                {line || " "}
-                              </div>
-                            ))}
-                          </pre>
-                        </div>
-                      ) : null}
+                  {isInspectorFullscreen ? (
+                    <div
+                      className="panel-resizer panel-resizer--horizontal"
+                      role="separator"
+                      aria-orientation="horizontal"
+                      onPointerDown={() => startInspectorResize()}
+                    >
+                      <GripVertical size={14} />
                     </div>
                   ) : null}
 
-                  {!previewLoading && !previewError && preview?.previewKind === "image" ? (
-                    <Suspense fallback={<p className="muted">Loading image preview...</p>}>
-                      <ImagePreviewCompare preview={preview} />
-                    </Suspense>
-                  ) : null}
-
-                  {!previewLoading && !previewError && preview?.previewKind === "material" ? (
-                    <Suspense fallback={<p className="muted">Loading material preview...</p>}>
-                      <UnityMaterialPreviewCompare preview={preview} />
-                    </Suspense>
-                  ) : null}
-
-                  {!previewLoading && !previewError && preview?.previewKind === "model" ? (
-                    <Suspense fallback={<p className="muted">Loading model preview...</p>}>
-                      <ModelPreviewCompare preview={preview} />
-                    </Suspense>
-                  ) : null}
-
-                  {!previewLoading && !previewError && preview?.previewKind === "text" ? (
-                    <div className="preview-frame preview-frame--code">
-                      <pre className="preview-code">{preview.textExcerpt}</pre>
-                    </div>
-                  ) : null}
-
-                  {!previewLoading && !previewError && preview && preview.previewKind !== "image" && preview.previewKind !== "text" && preview.previewKind !== "material" && preview.previewKind !== "model" ? (
-                    <div className="preview-frame preview-frame--placeholder">
-                      <p>{preview.supportHint}</p>
-                    </div>
-                  ) : null}
-
-                  {!previewLoading && !previewError && preview?.assetSummary ? (
-                    <div className="asset-summary">
-                      <div className="preview-panel__header">
-                        <strong>{preview.assetSummary.assetKind}</strong>
-                        <span className="preview-panel__meta">{preview.assetSummary.pipelineState}</span>
-                      </div>
-                      <dl className="preview-details">
-                        {preview.assetSummary.details.map((detail) => (
-                          <div key={`${detail.label}-${detail.value}`}>
-                            <dt>{detail.label}</dt>
-                            <dd>{detail.value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </div>
-                  ) : null}
-
-                  {preview ? (
-                    <dl className="preview-details">
-                      <div>
-                        <dt>Type</dt>
-                        <dd>{preview.mimeType}</dd>
-                      </div>
-                      <div>
-                        <dt>Extension</dt>
-                        <dd>{preview.extension || "none"}</dd>
-                      </div>
-                      <div>
-                        <dt>Modified</dt>
-                        <dd>{formatUnixTimestamp(preview.modifiedAt)}</dd>
-                      </div>
-                    </dl>
-                  ) : null}
-
-                  <div className="file-history-list">
+                  <div className={clsx("file-history-list", isInspectorFullscreen && "inspector-pane panel-scroll")}>
                     <div className="preview-panel__header">
                       <strong>File history</strong>
                       <span className="preview-panel__meta">{fileHistory.length}</span>

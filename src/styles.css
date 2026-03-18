@@ -1121,6 +1121,32 @@ h4 {
   gap: 12px;
 }
 
+.selection-card--split {
+  overflow: hidden;
+}
+
+.inspector-content-split {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+.preview-content-split {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+.inspector-pane {
+  min-height: 0;
+}
+
+.preview-split-pane {
+  min-height: 0;
+}
+
 .selection-card dl,
 .preview-details,
 .asset-summary,
@@ -1138,6 +1164,14 @@ h4 {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.preview-panel__header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .commit-file-row__actions {
