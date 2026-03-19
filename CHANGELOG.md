@@ -1,3 +1,9 @@
+## [0.11.0](https://github.com/flamacore/UniGit/compare/v0.10.1...v0.11.0) (2026-03-19)
+
+### Features
+
+* enhance commit graph functionality with scope and order options ([ae39e66](https://github.com/flamacore/UniGit/commit/ae39e664ce6a2f464b3de8cc6e4e4ba5c77ed41d))
+
 ## [0.10.1](https://github.com/flamacore/UniGit/compare/v0.10.0...v0.10.1) (2026-03-19)
 
 ### Bug Fixes
