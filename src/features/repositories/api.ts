@@ -110,6 +110,9 @@ export type CommitGraphPage = {
   nextSkip: number;
 };
 
+export type CommitGraphScope = "current" | "local" | "all";
+export type CommitGraphOrder = "date" | "topo" | "author-date";
+
 export type BranchEntry = {
   fullName: string;
   name: string;
@@ -317,8 +320,14 @@ export const listCommitHistory = (repoPath: string, limit = 40) => {
   return invoke<CommitSummary[]>("list_commit_history", { repoPath, limit });
 };
 
-export const listCommitGraph = (repoPath: string, limit = 240, skip = 0) => {
-  return invoke<CommitGraphPage>("list_commit_graph", { repoPath, limit, skip });
+export const listCommitGraph = (
+  repoPath: string,
+  limit = 240,
+  skip = 0,
+  graphScope: CommitGraphScope = "all",
+  graphOrder: CommitGraphOrder = "date",
+) => {
+  return invoke<CommitGraphPage>("list_commit_graph", { repoPath, limit, skip, graphScope, graphOrder });
 };
 
 export const inspectCommitDetail = (repoPath: string, commitHash: string) => {

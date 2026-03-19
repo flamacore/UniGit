@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { CommitGraphRow } from "../features/repositories/api";
+import type { CommitGraphOrder, CommitGraphRow, CommitGraphScope } from "../features/repositories/api";
 
 const BASE_ROW_HEIGHT = 68;
 const MIN_ROW_HEIGHT = 30;
@@ -73,6 +73,10 @@ type CommitGraphCanvasProps = {
   rows: CommitGraphRow[];
   filter: string;
   onFilterChange: (value: string) => void;
+  graphScope: CommitGraphScope;
+  onGraphScopeChange: (value: CommitGraphScope) => void;
+  graphOrder: CommitGraphOrder;
+  onGraphOrderChange: (value: CommitGraphOrder) => void;
   onLoadMore: () => void;
   hasMore: boolean;
   loading: boolean;
@@ -84,6 +88,10 @@ export function CommitGraphCanvas({
   rows,
   filter,
   onFilterChange,
+  graphScope,
+  onGraphScopeChange,
+  graphOrder,
+  onGraphOrderChange,
   onLoadMore,
   hasMore,
   loading,
@@ -377,6 +385,26 @@ export function CommitGraphCanvas({
             value={filter}
             onChange={(event) => onFilterChange(event.target.value)}
           />
+          <select
+            className="changes-select graph-select"
+            value={graphScope}
+            onChange={(event) => onGraphScopeChange(event.target.value as CommitGraphScope)}
+            title="Graph scope"
+          >
+            <option value="current">Current branch</option>
+            <option value="local">Local branches</option>
+            <option value="all">Local + remote</option>
+          </select>
+          <select
+            className="changes-select graph-select"
+            value={graphOrder}
+            onChange={(event) => onGraphOrderChange(event.target.value as CommitGraphOrder)}
+            title="Graph ordering"
+          >
+            <option value="date">Date order</option>
+            <option value="topo">Topo order</option>
+            <option value="author-date">Author date</option>
+          </select>
           <button className="ghost-button" onClick={onLoadMore} disabled={!hasMore || loading}>
             <RefreshCw size={15} className={clsx(loading && "spin")}/>
             {hasMore ? "Load more" : "Loaded"}

@@ -241,8 +241,14 @@ pub async fn list_file_history(repo_path: String, relative_path: String, limit: 
 }
 
 #[command]
-pub async fn list_commit_graph(repo_path: String, limit: usize, skip: usize) -> Result<CommitGraphPage, String> {
-    list_commit_graph_inner(repo_path, limit, skip)
+pub async fn list_commit_graph(
+    repo_path: String,
+    limit: usize,
+    skip: usize,
+    graph_scope: Option<String>,
+    graph_order: Option<String>,
+) -> Result<CommitGraphPage, String> {
+    list_commit_graph_inner(repo_path, limit, skip, graph_scope, graph_order)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1335,20 +1341,45 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
         .collect())
 }
 
-async fn list_commit_graph_inner(repo_path: String, limit: usize, skip: usize) -> GitResult<CommitGraphPage> {
+async fn list_commit_graph_inner(
+    repo_path: String,
+    limit: usize,
+    skip: usize,
+    graph_scope: Option<String>,
+    graph_order: Option<String>,
+) -> GitResult<CommitGraphPage> {
     let path = validate_repository_path(&repo_path)?;
     let page_limit = limit.clamp(40, 2_000);
     let format = "%H%x1f%h%x1f%P%x1f%an%x1f%aI%x1f%s%x1f%D";
-    let log_output = run_git(
+    let scope = graph_scope.unwrap_or_else(|| "all".to_string());
+    let order = graph_order.unwrap_or_else(|| "date".to_string());
+    let mut args = vec!["log".into()];
+
+    match scope.as_str() {
+        "current" => {}
+        "local" => {
+            args.push("--branches".into());
+        }
+        _ => {
+            args.push("--branches".into());
+            args.push("--remotes".into());
+        }
+    }
+
+    match order.as_str() {
+        "topo" => args.push("--topo-order".into()),
+        "author-date" => args.push("--author-date-order".into()),
+        _ => args.push("--date-order".into()),
+    }
+
+    args.push(format!("--max-count={}", page_limit + 1));
+    args.push(format!("--skip={skip}"));
+    args.push("--date=iso-strict".into());
+    args.push(format!("--pretty=format:{format}"));
+
+    let log_output = run_git_owned(
         path,
-        [
-            "log",
-            "--date-order",
-            &format!("--max-count={}", page_limit + 1),
-            &format!("--skip={skip}"),
-            "--date=iso-strict",
-            &format!("--pretty=format:{format}"),
-        ],
+        args,
     )
     .await?;
 
@@ -1502,6 +1533,7 @@ async fn resolve_branch_labels(
         "name-rev".to_string(),
         "--name-only".to_string(),
         "--refs=refs/heads/*".to_string(),
+        "--refs=refs/remotes/*".to_string(),
     ];
 
     args.extend(parsed_rows.iter().map(|row| row.0.clone()));

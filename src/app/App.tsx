@@ -45,8 +45,10 @@ import {
   BranchEntry,
   CloneResult,
   CommitDetail,
+  CommitGraphOrder,
   CommitGraphPage,
   CommitGraphRow,
+  CommitGraphScope,
   FileChange,
   FileHistoryEntry,
   FilePreview,
@@ -138,6 +140,16 @@ const resolveBranchNameFromRef = (fullName: string) => {
     .replace(/^refs\/remotes\//, "");
 };
 
+const extractCommitRefCandidates = (...sources: Array<string | null | undefined>) => {
+  return Array.from(new Set(
+    sources
+      .flatMap((source) => (source ?? "").split(","))
+      .map((value) => value.trim())
+      .filter((value) => Boolean(value) && value !== "HEAD" && !value.startsWith("tag: "))
+      .map((value) => value.replace(/^HEAD ->\s*/, "").trim()),
+  ));
+};
+
 const getReasonMessage = (reason: unknown, fallback: string) => {
   if (reason instanceof Error && reason.message.trim()) {
     return reason.message;
@@ -178,6 +190,8 @@ export function App() {
   const [mergeConflictState, setMergeConflictState] = useState<MergeConflictState | null>(null);
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
+  const [graphScope, setGraphScope] = useState<CommitGraphScope>("all");
+  const [graphOrder, setGraphOrder] = useState<CommitGraphOrder>("date");
   const [graphNextSkip, setGraphNextSkip] = useState(0);
   const [graphHasMore, setGraphHasMore] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -230,6 +244,7 @@ export function App() {
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
+  const lastAutoRefreshAtRef = useRef(0);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
 
   const {
@@ -454,6 +469,8 @@ export function App() {
     }
   }, [logFilePath, selectedRepository, writeClientLog]);
 
+  const showRepoManager = repoManagerOpen || repositories.length === 0;
+
   const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
       setSnapshot(null);
@@ -486,7 +503,7 @@ export function App() {
       const [nextSnapshot, nextBranches, nextGraph] = await Promise.all([
         inspectRepository(selectedRepository),
         listBranches(selectedRepository),
-        listCommitGraph(selectedRepository, 260, 0),
+        listCommitGraph(selectedRepository, 260, 0, graphScope, graphOrder),
       ]);
 
       setSnapshot(nextSnapshot);
@@ -542,7 +559,7 @@ export function App() {
       setLoading(false);
       setGraphLoading(false);
     }
-  }, [applyGraphPage, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, showRemoteDialog, writeClientLog]);
+  }, [applyGraphPage, graphOrder, graphScope, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, showRemoteDialog, writeClientLog]);
 
   const runErrorRecoveryAction = useCallback(async () => {
     if (!error?.recoveryAction || error.recoveryAction.kind !== "clear-index-lock" || !error.repoPath) {
@@ -578,7 +595,7 @@ export function App() {
     setGraphLoading(true);
 
     try {
-      const nextPage = await listCommitGraph(selectedRepository, 260, graphNextSkip);
+      const nextPage = await listCommitGraph(selectedRepository, 260, graphNextSkip, graphScope, graphOrder);
       applyGraphPage(nextPage, "append");
     } catch (reason) {
       reportAppError({
@@ -591,7 +608,7 @@ export function App() {
     } finally {
       setGraphLoading(false);
     }
-  }, [applyGraphPage, graphHasMore, graphLoading, graphNextSkip, reportAppError, selectedRepository]);
+  }, [applyGraphPage, graphHasMore, graphLoading, graphNextSkip, graphOrder, graphScope, reportAppError, selectedRepository]);
 
   useEffect(() => {
     if (!selectedRepository || !selectedChangePath) {
@@ -726,7 +743,53 @@ export function App() {
     void refreshRepository();
   }, [refreshRepository]);
 
-  const showRepoManager = repoManagerOpen || repositories.length === 0;
+  const runAutoRefresh = useCallback(async (reason: "interval" | "resume") => {
+    if (!selectedRepository || showRepoManager || submitting || loading) {
+      return;
+    }
+
+    if (document.hidden) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastAutoRefreshAtRef.current < 10_000) {
+      return;
+    }
+
+    lastAutoRefreshAtRef.current = now;
+    writeClientLog("repo.auto-refresh", `Running automatic repository refresh (${reason}).`, selectedRepository);
+    await refreshRepository({ fetchRemote: true });
+  }, [loading, refreshRepository, selectedRepository, showRepoManager, submitting, writeClientLog]);
+
+  useEffect(() => {
+    if (!selectedRepository || showRepoManager) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void runAutoRefresh("interval");
+    }, 5 * 60 * 1000);
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        void runAutoRefresh("resume");
+      }
+    };
+
+    const handleFocus = () => {
+      void runAutoRefresh("resume");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [runAutoRefresh, selectedRepository, showRepoManager]);
 
   useEffect(() => {
     if (!showRepoManager || !selectedRepository) {
@@ -928,6 +991,23 @@ export function App() {
       setSubmitting(false);
     }
   }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runDiscardAllUnstaged = useCallback(async () => {
+    if (!selectedRepository || unstagedChanges.length === 0) {
+      return;
+    }
+
+    const allPaths = Array.from(new Set(unstagedChanges.flatMap((item) => item.actionPaths)));
+    const confirmed = window.confirm(
+      `Discard all ${allPaths.length} unstaged path${allPaths.length === 1 ? "" : "s"}? This also removes newly added untracked files.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    await runDiscardChangePaths(allPaths);
+  }, [refreshRepository, runDiscardChangePaths, selectedRepository, unstagedChanges]);
 
   const runAddToGitignore = useCallback(async (paths: string[]) => {
     if (!selectedRepository || paths.length === 0) {
@@ -1387,34 +1467,58 @@ export function App() {
     [commitGraph, selectedCommitHash],
   );
 
-  const selectedCommitBranch = useMemo(() => {
-    if (selectedBranch) {
-      return selectedBranch;
-    }
-
+  const selectedCommitBranches = useMemo(() => {
     if (!selectedCommit) {
-      return null;
+      return [];
     }
 
-    const tipMatch = branches.find((branch) => branch.commitHash === selectedCommit.hash);
-
-    if (tipMatch) {
-      return tipMatch;
-    }
-
-    const displayBranch = selectedCommit.displayBranch?.trim();
-
-    if (!displayBranch) {
-      return null;
-    }
-
-    const normalized = displayBranch.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
-
-    return branches.find((branch) => {
+    const tipMatches = branches.filter((branch) => branch.commitHash === selectedCommit.hash);
+    const refCandidates = extractCommitRefCandidates(
+      selectedCommit.displayBranch,
+      selectedCommit.decorations,
+      commitDetail?.decorations,
+    );
+    const normalizedCandidates = refCandidates.map((value) => value.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, ""));
+    const matchedByRef = branches.filter((branch) => {
       const branchName = resolveBranchNameFromRef(branch.fullName);
-      return branch.name === normalized || branchName === normalized || branchName.endsWith(`/${normalized}`);
-    }) ?? null;
-  }, [branches, selectedBranch, selectedCommit]);
+      return normalizedCandidates.some((candidate) => {
+        return branch.fullName === candidate
+          || branch.name === candidate
+          || branchName === candidate
+          || branchName.endsWith(`/${candidate}`)
+          || candidate.endsWith(`/${branch.name}`);
+      });
+    });
+
+    const unique = new Map<string, typeof branches[number]>();
+    [...tipMatches, ...matchedByRef].forEach((branch) => unique.set(branch.fullName, branch));
+    return Array.from(unique.values());
+  }, [branches, commitDetail?.decorations, selectedCommit]);
+
+  const [selectedCommitBranchFullName, setSelectedCommitBranchFullName] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!selectedCommitBranches.length) {
+      setSelectedCommitBranchFullName(null);
+      return;
+    }
+
+    setSelectedCommitBranchFullName((current) => {
+      if (current && selectedCommitBranches.some((branch) => branch.fullName === current)) {
+        return current;
+      }
+
+      return selectedCommitBranches[0].fullName;
+    });
+  }, [selectedCommitBranches]);
+
+  const selectedCommitBranch = useMemo(() => {
+    if (!selectedCommitBranchFullName) {
+      return selectedCommitBranches[0] ?? null;
+    }
+
+    return selectedCommitBranches.find((branch) => branch.fullName === selectedCommitBranchFullName) ?? selectedCommitBranches[0] ?? null;
+  }, [selectedCommitBranchFullName, selectedCommitBranches]);
 
   const filteredHistory = useMemo(() => {
     if (!historyFilter.trim()) {
@@ -2411,6 +2515,10 @@ export function App() {
                 rows={filteredHistory}
                 filter={historyFilter}
                 onFilterChange={setHistoryFilter}
+                graphScope={graphScope}
+                onGraphScopeChange={setGraphScope}
+                graphOrder={graphOrder}
+                onGraphOrderChange={setGraphOrder}
                 onLoadMore={() => void loadMoreGraph()}
                 hasMore={graphHasMore}
                 loading={graphLoading}
@@ -2541,6 +2649,12 @@ export function App() {
                     label: "Discard selected",
                     disabled: submitting || selectedUnstagedPaths.length === 0,
                     onClick: () => void runDiscardChangePaths(resolveActionPathsForSelection(selectedUnstagedPaths)),
+                    danger: true,
+                  },
+                  {
+                    label: "Discard all",
+                    disabled: submitting || unstagedChanges.length === 0,
+                    onClick: () => void runDiscardAllUnstaged(),
                     danger: true,
                   },
                   {
@@ -2767,7 +2881,19 @@ export function App() {
                     <span className="pill pill--accent">Commit {commitDetail.shortHash}</span>
                     {selectedCommitBranch ? (
                       <div className="branch-selection-actions">
-                        <span className="pill pill--default">Branch {selectedCommitBranch.name}</span>
+                        {selectedCommitBranches.length > 1 ? (
+                          <select
+                            className="changes-select"
+                            value={selectedCommitBranch.fullName}
+                            onChange={(event) => setSelectedCommitBranchFullName(event.target.value)}
+                          >
+                            {selectedCommitBranches.map((branch) => (
+                              <option key={branch.fullName} value={branch.fullName}>{branch.name}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="pill pill--default">Branch {selectedCommitBranch.name}</span>
+                        )}
                         <button className="ghost-button" disabled={submitting || selectedCommitBranch.isCurrent} onClick={() => void runSwitchBranch(selectedCommitBranch.fullName)}>
                           Switch to
                         </button>
