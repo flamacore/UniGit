@@ -217,12 +217,14 @@ export function App() {
   const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
   const [showPaths, setShowPaths] = useState(true);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
+  const [isChangesFullscreen, setIsChangesFullscreen] = useState(false);
   const [inspectorFractions, setInspectorFractions] = useState({ top: 0.68, bottom: 0.32 });
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
   const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
+  const changesBoardRef = useRef<HTMLDivElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   const inspectorSplitRef = useRef<HTMLDivElement | null>(null);
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
@@ -325,6 +327,7 @@ export function App() {
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsInspectorFullscreen(document.fullscreenElement === inspectorRef.current);
+      setIsChangesFullscreen(document.fullscreenElement === changesBoardRef.current);
     };
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -844,6 +847,19 @@ export function App() {
     }
 
     await inspectorRef.current.requestFullscreen();
+  }, []);
+
+  const toggleChangesFullscreen = useCallback(async () => {
+    if (!changesBoardRef.current) {
+      return;
+    }
+
+    if (document.fullscreenElement === changesBoardRef.current) {
+      await document.exitFullscreen();
+      return;
+    }
+
+    await changesBoardRef.current.requestFullscreen();
   }, []);
 
   const runCloneRepository = useCallback(async () => {
@@ -2422,7 +2438,7 @@ export function App() {
               className="lower-grid"
               style={{ gridTemplateColumns: lowerGridTemplateColumns }}
             >
-              <div className="board panel board--changes">
+              <div ref={changesBoardRef} className={clsx("board panel board--changes", isChangesFullscreen && "board--changes--fullscreen")}>
             <div className="board__header">
               <div>
                 <p className="eyebrow">Changes</p>
@@ -2430,6 +2446,10 @@ export function App() {
               </div>
               <div className="changes-header-actions">
                 <p className="board__hint">Drag, click, commit. Nothing extra.</p>
+                <button className="ghost-button" onClick={() => void toggleChangesFullscreen()} title="Toggle working tree fullscreen">
+                  {isChangesFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
+                  {isChangesFullscreen ? "Window" : "Fullscreen"}
+                </button>
                 <button
                   className="icon-button"
                   disabled={!selectedRepository || loading || submitting}
