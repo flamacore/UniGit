@@ -1,2 +1,4 @@
 This file is used as a rubber duck for testing pull/push or other operational functionality.
 Test push6
+
+This is for testing merge conflicts, deliberately causing a merge conflict
