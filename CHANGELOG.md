@@ -1,3 +1,9 @@
+## [0.10.1](https://github.com/flamacore/UniGit/compare/v0.10.0...v0.10.1) (2026-03-19)
+
+### Bug Fixes
+
+* enhance SSH key management and improve repository SSH support ([a7b80e8](https://github.com/flamacore/UniGit/commit/a7b80e82f5bd6662861d61f710b603becdaaa6b1))
+
 ## [0.10.0](https://github.com/flamacore/UniGit/compare/v0.9.0...v0.10.0) (2026-03-19)
 
 ### Features
