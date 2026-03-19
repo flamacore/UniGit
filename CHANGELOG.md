@@ -1,3 +1,9 @@
+## [0.9.0](https://github.com/flamacore/UniGit/compare/v0.8.0...v0.9.0) (2026-03-19)
+
+### Features
+
+* add SSH settings management to repository configuration ([1b7c26d](https://github.com/flamacore/UniGit/commit/1b7c26dc7fd71576a88723d3d231ee558fcdd402))
+
 ## [0.8.0](https://github.com/flamacore/UniGit/compare/v0.7.0...v0.8.0) (2026-03-19)
 
 ### Features
