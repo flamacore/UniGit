@@ -2054,7 +2054,7 @@ async fn create_branch_inner(repo_path: String, name: String, start_point: Optio
         args.push(resolve_branch_specifier(start)?);
     }
 
-    run_git_owned(path, args).await?;
+    run_git_remote_owned(path, args).await?;
 
     let mut result = if let Some(start) = start_point.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
         format!("Created branch {branch_name} from {} and switched to it.", pretty_branch_label(start))
@@ -2085,7 +2085,7 @@ async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool)
     }
 
     if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
-        run_git_owned(repo_path, vec!["switch".into(), local_name.to_string()]).await?;
+        run_git_remote_owned(repo_path, vec!["switch".into(), local_name.to_string()]).await?;
         return Ok(format!("Switched to {local_name}."));
     }
 
@@ -2104,9 +2104,9 @@ async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool)
             .is_empty();
 
         if local_exists {
-            run_git_owned(repo_path, vec!["switch".into(), branch_name.clone()]).await?;
+            run_git_remote_owned(repo_path, vec!["switch".into(), branch_name.clone()]).await?;
         } else {
-            run_git_owned(
+            run_git_remote_owned(
                 repo_path,
                 vec![
                     "switch".into(),
@@ -2901,6 +2901,71 @@ async fn run_git_owned_with_env(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    if let Some(value) = overrides.as_ref() {
+        for (key, env_value) in &value.env_pairs {
+            command.env(key, env_value);
+        }
+    }
+
+    let output = command.output().await.map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+        _ => GitServiceError::GitCommandFailed(error.to_string()),
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if should_retry_with_longpaths_fix(&stderr) && ensure_git_longpaths(repo_path).await? {
+            let _ = append_log(
+                "backend",
+                "git.command.retry",
+                &format!("git -C {repo_display} {command_preview}"),
+                Some("Enabled core.longpaths=true after Windows path-length failure; retrying command."),
+            );
+
+            return rerun_git_owned_with_env(repo_path, args, overrides).await;
+        }
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
+        return Err(GitServiceError::GitCommandFailed(
+            stderr,
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&stdout),
+    );
+
+    Ok(stdout)
+}
+
+async fn rerun_git_owned_with_env(
+    repo_path: &Path,
+    args: Vec<String>,
+    overrides: Option<GitRemoteEnvironment>,
+) -> GitResult<String> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
     if let Some(value) = overrides {
         for (key, env_value) in value.env_pairs {
             command.env(key, env_value);
@@ -2920,9 +2985,85 @@ async fn run_git_owned_with_env(
             &format!("git -C {repo_display} {command_preview}"),
             Some(&stderr),
         );
-        return Err(GitServiceError::GitCommandFailed(
-            stderr,
-        ));
+        return Err(GitServiceError::GitCommandFailed(stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&stdout),
+    );
+
+    Ok(stdout)
+}
+
+fn should_retry_with_longpaths_fix(stderr: &str) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+
+    let normalized = stderr.to_lowercase();
+    normalized.contains("os error 206")
+        || normalized.contains("dateiname oder die erweiterung ist zu lang")
+        || normalized.contains("filename too long")
+        || normalized.contains("path too long")
+}
+
+async fn ensure_git_longpaths(repo_path: &Path) -> GitResult<bool> {
+    let current = run_git_owned_without_retry(
+        repo_path,
+        vec!["config".into(), "--local".into(), "--get".into(), "core.longpaths".into()],
+    )
+    .await;
+
+    if matches!(current, Ok(value) if value.trim().eq_ignore_ascii_case("true")) {
+        return Ok(false);
+    }
+
+    run_git_owned_without_retry(
+        repo_path,
+        vec!["config".into(), "--local".into(), "core.longpaths".into(), "true".into()],
+    )
+    .await?;
+
+    Ok(true)
+}
+
+async fn run_git_owned_without_retry(repo_path: &Path, args: Vec<String>) -> GitResult<String> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.start",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some("no-retry"),
+    );
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
+        return Err(GitServiceError::GitCommandFailed(stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

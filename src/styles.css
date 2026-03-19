@@ -335,10 +335,27 @@ h4 {
 
 .error-detail-dialog {
   width: min(920px, 100%);
-  max-height: min(760px, 100%);
+  max-height: min(920px, calc(100vh - 36px));
   padding: 16px;
   border-radius: 24px;
   overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
+.dialog-backdrop--error-detail {
+  place-items: stretch center;
+  padding: 18px;
+  overflow: auto;
+}
+
+.error-detail-dialog__body {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .error-detail-dialog__actions {
@@ -348,6 +365,14 @@ h4 {
 
 .error-detail-dialog__path {
   word-break: break-all;
+}
+
+.error-detail-dialog__detail-block {
+  min-height: 0;
+}
+
+.error-detail-dialog__detail {
+  min-height: 260px;
 }
 
 .remote-dialog {
