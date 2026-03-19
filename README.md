@@ -10,11 +10,10 @@ It is designed around a dense single-window workflow: inspect changes, manage br
 
 ## Why It Stands Out
 
-- See exact staged and unstaged changes for the currently selected file directly in the inspector instead of guessing what will actually be committed
-- Preview images, Unity materials, and 3D assets inline inside the Git workflow rather than switching out to separate tools
-- Compare working tree, staged, and `HEAD` asset states for supported preview types
-- Work comfortably with Unity-heavy repos, including Unity meta pairing and material-focused inspection flows
-- Keep everything in one dense window with drag-and-drop staging, branch operations, history, and commit actions side by side
+- ### Preview images, Unity materials, and 3D assets inline inside the Git workflow rather than switching out to separate tools
+- ### Compare working tree, staged, and `HEAD` asset states for supported preview types
+- ### Work comfortably with Unity-heavy repos, including Unity meta pairing and material-focused inspection flows
+- ### Deliberate destructive actions allowing you to discard local conflicted files while switching/pulling/checking out or other operations
 
 ## What It Does
 
