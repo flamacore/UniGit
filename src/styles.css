@@ -26,12 +26,15 @@
 html,
 body,
 #root {
+  min-height: 100vh;
+  min-height: 100dvh;
   height: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  min-height: 100dvh;
   background: transparent;
   zoom: var(--ui-zoom);
   overflow: hidden;
@@ -51,6 +54,9 @@ button {
 
 #root {
   min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
@@ -69,7 +75,10 @@ pre {
 .shell {
   display: grid;
   grid-template-rows: auto 1fr;
+  min-height: 100vh;
+  min-height: 100dvh;
   height: 100vh;
+  height: 100dvh;
   gap: 8px;
   padding: 10px;
   overflow: hidden;

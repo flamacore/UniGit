@@ -633,10 +633,11 @@ fn discover_repository_ssh_support() -> GitResult<RepositorySshDiscovery> {
         None => Vec::new(),
     };
 
-    let private_keys = match ssh_directory.as_ref() {
+    let mut private_keys = match ssh_directory.as_ref() {
         Some(path) => discover_private_key_options(path),
         None => Vec::new(),
     };
+    merge_config_identity_key_options(&mut private_keys, &config_hosts);
 
     Ok(RepositorySshDiscovery {
         ssh_directory: ssh_directory.map(|path| path.to_string_lossy().into_owned()),
@@ -787,8 +788,76 @@ fn is_private_key_candidate(path: &Path) -> bool {
 
     match path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()) {
         Some(extension) => matches!(extension.as_str(), "ppk" | "pem" | "key" | "rsa" | "ed25519"),
-        None => matches!(file_name, "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa" | "identity"),
+        None => {
+            if matches!(file_name, "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa" | "identity") {
+                return true;
+            }
+
+            fs::read(path)
+                .ok()
+                .map(|content| {
+                    let sample = String::from_utf8_lossy(&content[..content.len().min(256)]).to_ascii_uppercase();
+                    sample.contains("PRIVATE KEY")
+                })
+                .unwrap_or(false)
+        }
     }
+}
+
+fn merge_config_identity_key_options(
+    private_keys: &mut Vec<RepositorySshKeyOption>,
+    config_hosts: &[RepositorySshConfigHost],
+) {
+    let mut deduped = BTreeMap::new();
+
+    for key in private_keys.iter().cloned() {
+        deduped.insert(normalize_private_key_option_key(&key.path), key);
+    }
+
+    for host in config_hosts {
+        for identity_file in &host.identity_files {
+            let path = PathBuf::from(identity_file);
+            if !path.is_file() {
+                continue;
+            }
+
+            let path_string = path.to_string_lossy().into_owned();
+            let key_kind = if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("ppk"))
+            {
+                "putty"
+            } else {
+                "openssh"
+            };
+
+            deduped.entry(normalize_private_key_option_key(&path_string)).or_insert_with(|| RepositorySshKeyOption {
+                label: path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&path_string)
+                    .to_string(),
+                path: path_string,
+                key_kind: key_kind.to_string(),
+            });
+        }
+    }
+
+    *private_keys = deduped.into_values().collect();
+    private_keys.sort_by(|left, right| left.label.cmp(&right.label));
+}
+
+fn normalize_private_key_option_key(path: &str) -> String {
+    if cfg!(windows) {
+        path.replace('\\', "/").to_ascii_lowercase()
+    } else {
+        path.to_string()
+    }
+}
+
+fn to_git_shell_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn load_repository_ssh_settings(repo_path: &Path) -> GitResult<RepositorySshSettings> {
@@ -1004,7 +1073,7 @@ fn build_git_remote_environment(repo_path: &Path) -> GitResult<Option<GitRemoteE
     let settings = load_repository_ssh_settings(repo_path)?;
     let has_overrides = settings.private_key_path.is_some() || settings.username.is_some() || settings.password.is_some();
 
-    if settings.mode == "auto" && !has_overrides {
+    if settings.mode == "auto" && !has_overrides && !settings.use_user_ssh_config {
         return Ok(None);
     }
 
@@ -1049,6 +1118,7 @@ fn build_git_remote_environment(repo_path: &Path) -> GitResult<Option<GitRemoteE
         ensure_wrapper_script(&wrapper_path, &build_wrapper_command(&executable, &arguments))?;
 
         env_pairs.push(("GIT_SSH".to_string(), wrapper_path.to_string_lossy().into_owned()));
+        env_pairs.push(("GIT_SSH_COMMAND".to_string(), to_git_shell_path(&wrapper_path)));
         env_pairs.push(("GIT_SSH_VARIANT".to_string(), "plink".to_string()));
 
         return Ok(Some(GitRemoteEnvironment {
@@ -1102,6 +1172,7 @@ fn build_git_remote_environment(repo_path: &Path) -> GitResult<Option<GitRemoteE
     let wrapper_path = runtime_dir.join(format!("openssh-{repo_hash}.cmd"));
     ensure_wrapper_script(&wrapper_path, &build_wrapper_command(&executable, &arguments))?;
     env_pairs.push(("GIT_SSH".to_string(), wrapper_path.to_string_lossy().into_owned()));
+    env_pairs.push(("GIT_SSH_COMMAND".to_string(), to_git_shell_path(&wrapper_path)));
 
     Ok(Some(GitRemoteEnvironment {
         env_pairs,
