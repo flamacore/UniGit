@@ -1,3 +1,9 @@
+## [0.8.0](https://github.com/flamacore/UniGit/compare/v0.7.0...v0.8.0) (2026-03-19)
+
+### Features
+
+* add asset preview workflows to the inspector ([a7b77f3](https://github.com/flamacore/UniGit/commit/a7b77f3922daecab89a607470d09c2b040c55524))
+
 ## [0.7.0](https://github.com/flamacore/UniGit/compare/v0.6.0...v0.7.0) (2026-03-18)
 
 ### Features
