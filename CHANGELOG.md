@@ -1,3 +1,9 @@
+## [0.12.0](https://github.com/flamacore/UniGit/compare/v0.11.0...v0.12.0) (2026-03-19)
+
+### Features
+
+* add support for git safe.directory configuration to handle dubious ownership errors ([120176d](https://github.com/flamacore/UniGit/commit/120176da013ef466537e9407ef9e8e486965694a))
+
 ## [0.11.0](https://github.com/flamacore/UniGit/compare/v0.10.1...v0.11.0) (2026-03-19)
 
 ### Features
