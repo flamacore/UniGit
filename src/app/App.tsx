@@ -2095,7 +2095,7 @@ export function App() {
   }, [applyMergeBranchResult, reportAppError, selectedRepository, writeClientLog]);
 
   const runResolveConflicts = useCallback(async (paths: string[], strategy: "ours" | "theirs") => {
-    if (!selectedRepository || !mergeConflictState) {
+    if (!selectedRepository || paths.length === 0) {
       return;
     }
 
@@ -2112,13 +2112,27 @@ export function App() {
         title: "Conflict resolution failed",
         fallback: "Conflict resolution failed.",
         reason,
-        context: `Resolve conflicted files for ${mergeConflictState.branchFullName}.`,
+        context: `Resolve conflicted files for ${snapshot?.currentBranch ?? selectedRepository}.`,
         detail: `${strategy}\n${paths.join("\n")}`,
       });
     } finally {
       setSubmitting(false);
     }
-  }, [mergeConflictState, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, selectedRepository, snapshot?.currentBranch, writeClientLog]);
+
+  const resolveConflictedPathsForSelection = useCallback((selectionKeys: string[]) => {
+    const conflictedPaths = new Set(
+      (snapshot?.files ?? [])
+        .filter((file) => file.conflicted)
+        .map((file) => file.path),
+    );
+
+    return Array.from(
+      new Set(
+        resolveActionPathsForSelection(selectionKeys).filter((path) => conflictedPaths.has(path)),
+      ),
+    );
+  }, [resolveActionPathsForSelection, snapshot?.files]);
 
   const runPush = useCallback(async () => {
     if (!selectedRepository) {
@@ -2392,6 +2406,31 @@ export function App() {
             style={{ left: changeContextMenu.x, top: changeContextMenu.y }}
             onPointerDown={(event) => event.stopPropagation()}
           >
+            {changeContextMenu.item.change.conflicted ? (
+              <>
+                <button
+                  className="ghost-button"
+                  disabled={submitting || resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)).length === 0}
+                  onClick={() => {
+                    void runResolveConflicts(resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)), "ours");
+                    setChangeContextMenu(null);
+                  }}
+                >
+                  {resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)).length > 1 ? "Keep local for selected" : "Keep local (ours)"}
+                </button>
+                <button
+                  className="ghost-button"
+                  disabled={submitting || resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)).length === 0}
+                  onClick={() => {
+                    void runResolveConflicts(resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)), "theirs");
+                    setChangeContextMenu(null);
+                  }}
+                >
+                  {resolveConflictedPathsForSelection(resolveContextSelectionKeys(changeContextMenu.item)).length > 1 ? "Take incoming for selected" : "Take incoming (theirs)"}
+                </button>
+              </>
+            ) : null}
+
             {changeContextMenu.lane === "unstaged" ? (
               <button
                 className="ghost-button"
@@ -2760,6 +2799,26 @@ export function App() {
                     <dd>{previewLoading ? "Loading" : preview?.supportHint ?? "Not loaded"}</dd>
                   </div>
                 </dl>
+
+                {selectedChange.conflicted ? (
+                  <div className="branch-selection-actions">
+                    <span className="pill pill--mixed">Unmerged</span>
+                    <button
+                      className="ghost-button"
+                      disabled={submitting}
+                      onClick={() => void runResolveConflicts([selectedChange.path], "ours")}
+                    >
+                      Keep local (ours)
+                    </button>
+                    <button
+                      className="ghost-button"
+                      disabled={submitting}
+                      onClick={() => void runResolveConflicts([selectedChange.path], "theirs")}
+                    >
+                      Take incoming (theirs)
+                    </button>
+                  </div>
+                ) : null}
 
                 <div
                   ref={isInspectorFullscreen ? inspectorSplitRef : undefined}
