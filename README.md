@@ -54,7 +54,10 @@ Today the app includes:
 Still in progress:
 
 - Richer merge conflict handling
-- Deeper commit graph refinement for very large repositories
+- Handling for popular OAuth logins like GitHub & GitLab
+- Worktree implementation
+- Asset from remote previews
+- Drag & drop systems
 - Broader asset-format coverage and deeper format-specific rendering
 - More advanced history queries and navigation tools
 
