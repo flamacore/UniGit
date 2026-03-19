@@ -12,8 +12,14 @@ It is designed around a dense single-window workflow: inspect changes, manage br
 
 - ### Preview images, Unity materials, and 3D assets inline inside the Git workflow rather than switching out to separate tools
 - ### Compare working tree, staged, and `HEAD` asset states for supported preview types
+- ### Local, app-level local ignore that will keep changes you want to ignore but don't want to change the actual .gitignore
 - ### Work comfortably with Unity-heavy repos, including Unity meta pairing and material-focused inspection flows
 - ### Deliberate destructive actions allowing you to discard local conflicted files while switching/pulling/checking out or other operations
+
+<img width="627" height="463" alt="unigit_ZV3YP462rC" src="https://github.com/user-attachments/assets/82ee0d91-32ce-4cd1-a207-f0bf5729a474" />
+<img width="612" height="447" alt="unigit_WGWal5s5yd" src="https://github.com/user-attachments/assets/ff0a0cdd-6530-4230-8f31-cedd4d765b94" />
+
+
 
 ## What It Does
 
