@@ -1,3 +1,9 @@
+## [0.10.0](https://github.com/flamacore/UniGit/compare/v0.9.0...v0.10.0) (2026-03-19)
+
+### Features
+
+* add fullscreen toggle for changes board with corresponding styles ([4b4a410](https://github.com/flamacore/UniGit/commit/4b4a41025752390db17fff120e2ef7716940d81b))
+
 ## [0.9.0](https://github.com/flamacore/UniGit/compare/v0.8.0...v0.9.0) (2026-03-19)
 
 ### Features
