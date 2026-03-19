@@ -1,7 +1,7 @@
 :root {
   color-scheme: dark;
   font-family: "Segoe UI", "Inter", sans-serif;
-  --ui-zoom: 1;
+  --app-height: 100dvh;
   --bg-0: #050914;
   --bg-1: rgba(10, 16, 28, 0.92);
   --bg-3: rgba(255, 255, 255, 0.04);
@@ -26,17 +26,14 @@
 html,
 body,
 #root {
-  min-height: 100vh;
-  min-height: 100dvh;
-  height: 100%;
+  min-height: var(--app-height);
+  height: var(--app-height);
 }
 
 body {
   margin: 0;
-  min-height: 100vh;
-  min-height: 100dvh;
+  min-height: var(--app-height);
   background: transparent;
-  zoom: var(--ui-zoom);
   overflow: hidden;
   font-size: 13px;
   line-height: 1.35;
@@ -53,10 +50,8 @@ button {
 }
 
 #root {
-  min-height: 100vh;
-  min-height: 100dvh;
-  height: 100vh;
-  height: 100dvh;
+  min-height: var(--app-height);
+  height: var(--app-height);
   overflow: hidden;
 }
 
@@ -75,10 +70,8 @@ pre {
 .shell {
   display: grid;
   grid-template-rows: auto 1fr;
-  min-height: 100vh;
-  min-height: 100dvh;
-  height: 100vh;
-  height: 100dvh;
+  min-height: var(--app-height);
+  height: var(--app-height);
   gap: 8px;
   padding: 10px;
   overflow: hidden;
@@ -713,7 +706,7 @@ h4 {
 
 .content-grid {
   display: grid;
-  grid-template-rows: minmax(220px, 0.9fr) 12px minmax(320px, 1.2fr) auto;
+  grid-template-rows: minmax(220px, 0.9fr) 12px minmax(320px, 1.2fr);
   gap: 8px;
   min-height: 0;
   overflow: hidden;
@@ -2268,14 +2261,3 @@ button:disabled {
   }
 }
 
-@media (min-width: 2200px) {
-  :root {
-    --ui-zoom: 0.88;
-  }
-}
-
-@media (min-width: 3000px) {
-  :root {
-    --ui-zoom: 0.78;
-  }
-}

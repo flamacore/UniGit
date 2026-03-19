@@ -2369,7 +2369,7 @@ export function App() {
         <section
           ref={workspaceSplitRef}
           className="content-grid"
-          style={{ gridTemplateRows: `${workspaceGridTemplateRows} auto` }}
+          style={{ gridTemplateRows: workspaceGridTemplateRows }}
         >
           <section className="panel graph-shell graph-panel--embedded">
             <div
