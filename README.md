@@ -77,3 +77,6 @@ You will also need:
 - TypeScript
 - Rust
 - Vite
+
+### Disclaimer
+About 80% vibe-coded with human oversight & some hand-written core logic on a multiple agentic orchestration workflow. Models utilized: Claude Opus 4.6, GPT 5.4 Codex, Gemini 3 Flash and Claude Sonnet 4.5.
