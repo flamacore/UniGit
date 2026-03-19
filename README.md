@@ -6,16 +6,26 @@
 
 UniGit is a Windows-first desktop Git client built for fast day-to-day work, with a strong focus on game development and Unity-heavy repositories.
 
-It is designed around a dense single-window workflow: inspect changes, manage branches, review history, generate commit messages, and push or pull without bouncing through a pile of dialogs.
+It is designed around a dense single-window workflow: inspect changes, manage branches, review history, generate commit messages, preview assets, and push or pull without bouncing through a pile of dialogs.
+
+## Why It Stands Out
+
+- See exact staged and unstaged changes for the currently selected file directly in the inspector instead of guessing what will actually be committed
+- Preview images, Unity materials, and 3D assets inline inside the Git workflow rather than switching out to separate tools
+- Compare working tree, staged, and `HEAD` asset states for supported preview types
+- Work comfortably with Unity-heavy repos, including Unity meta pairing and material-focused inspection flows
+- Keep everything in one dense window with drag-and-drop staging, branch operations, history, and commit actions side by side
 
 ## What It Does
 
 - Stage and unstage files with drag-and-drop and bulk actions
-- Review exact staged and unstaged diffs in the inspector
+- Review exact staged and unstaged diffs in the inspector, including expanded diff viewing for selected files
 - Browse a canvas-backed commit graph with branch and commit inspection
 - Manage local and remote branches, including switch, force switch, merge, rename, and delete flows
 - Create AI-assisted commit messages from staged changes and local unpushed commit context
-- Preview text, images, and asset metadata for formats like PSD, FBX, GLTF, and GLB
+- Preview text, images, PSD files, Unity `.mat` materials, and 3D assets such as FBX, OBJ, GLTF, and GLB
+- Inspect Unity materials on sphere, box, or cylinder meshes, with preview/text switching and diff-aware workflows
+- Orbit and compare supported 3D model previews with auto-centered preview pivots for awkward source assets
 - Clone repositories, manage remotes, and work from a compact tab-based multi-repo layout
 
 ## Current Status
@@ -27,15 +37,17 @@ Today the app includes:
 - Tauri 2 desktop shell with React, TypeScript, and Rust
 - Git CLI orchestration from the Rust backend
 - Working tree lanes for staged and unstaged changes
-- Commit graph, commit inspector, and file history actions
+- Commit graph, commit inspector, exact file diff inspection, and file history actions
 - Branch management workflows and inline remote-operation feedback
 - AI-powered commit message generation through Ollama, OpenAI, or Claude
+- Asset preview workflows for images, PSD, Unity materials, and common 3D formats
+- Fullscreen inspector tools for deeper file review without leaving the main client
 
 Still in progress:
 
 - Richer merge conflict handling
 - Deeper commit graph refinement for very large repositories
-- Rendered asset previews beyond metadata-first inspection
+- Broader asset-format coverage and deeper format-specific rendering
 - More advanced history queries and navigation tools
 
 ## Getting Started

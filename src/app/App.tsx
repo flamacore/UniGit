@@ -206,6 +206,7 @@ export function App() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [materialPreviewMode, setMaterialPreviewMode] = useState<"preview" | "text">("preview");
+  const [diffDialogOpen, setDiffDialogOpen] = useState(false);
   const [fileHistory, setFileHistory] = useState<FileHistoryEntry[]>([]);
   const [fileHistoryLoading, setFileHistoryLoading] = useState(false);
   const [fileHistoryError, setFileHistoryError] = useState<string | null>(null);
@@ -215,7 +216,6 @@ export function App() {
   const [showPaths, setShowPaths] = useState(true);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
   const [inspectorFractions, setInspectorFractions] = useState({ top: 0.68, bottom: 0.32 });
-  const [previewFractions, setPreviewFractions] = useState({ top: 0.42, bottom: 0.58 });
   const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
@@ -223,7 +223,6 @@ export function App() {
   const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
   const inspectorRef = useRef<HTMLElement | null>(null);
   const inspectorSplitRef = useRef<HTMLDivElement | null>(null);
-  const previewSplitRef = useRef<HTMLDivElement | null>(null);
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
@@ -1393,10 +1392,10 @@ export function App() {
     : "Preview";
   const canToggleMaterialTextPreview = preview?.previewKind === "material" && Boolean(preview?.textExcerpt);
   const showMaterialTextPreview = canToggleMaterialTextPreview && materialPreviewMode === "text";
-  const shouldSplitPreviewPanels = isInspectorFullscreen && !previewLoading && !previewError && hasDiffContent(preview);
 
   useEffect(() => {
     setMaterialPreviewMode("preview");
+    setDiffDialogOpen(false);
   }, [selectedChangePath]);
 
   const resizePanels = useCallback((clientX: number) => {
@@ -1516,34 +1515,6 @@ export function App() {
     });
   }, []);
 
-  const resizePreviewPanels = useCallback((clientY: number) => {
-    const container = previewSplitRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    const bounds = container.getBoundingClientRect();
-    const totalHeight = bounds.height;
-
-    if (!totalHeight) {
-      return;
-    }
-
-    setPreviewFractions(() => {
-      const nextY = clientY - bounds.top;
-      const minTop = 140;
-      const minBottom = 220;
-      const clampedTop = Math.min(Math.max(nextY, minTop), totalHeight - minBottom);
-      const newBottom = totalHeight - clampedTop;
-
-      return {
-        top: clampedTop / totalHeight,
-        bottom: newBottom / totalHeight,
-      };
-    });
-  }, []);
-
   const startResize = useCallback(() => {
     const handlePointerMove = (event: PointerEvent) => {
       resizePanels(event.clientX);
@@ -1600,20 +1571,6 @@ export function App() {
     window.addEventListener("pointerup", handlePointerUp);
   }, [resizeInspectorPanels]);
 
-  const startPreviewResize = useCallback(() => {
-    const handlePointerMove = (event: PointerEvent) => {
-      resizePreviewPanels(event.clientY);
-    };
-
-    const handlePointerUp = () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-    };
-
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-  }, [resizePreviewPanels]);
-
   const lowerGridTemplateColumns = useMemo(() => {
     return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
   }, [panelFractions]);
@@ -1630,16 +1587,24 @@ export function App() {
     return `${inspectorFractions.top}fr 12px ${inspectorFractions.bottom}fr`;
   }, [inspectorFractions]);
 
-  const previewGridTemplateRows = useMemo(() => {
-    return `${previewFractions.top}fr 12px ${previewFractions.bottom}fr`;
-  }, [previewFractions]);
-
-  const diffContent = !previewLoading && !previewError && hasDiffContent(preview) ? (
-    <div className="diff-stack">
+  const renderDiffStack = (expanded: boolean) => !previewLoading && !previewError && hasDiffContent(preview) ? (
+    <div className={clsx("diff-stack", !expanded && "diff-stack--inline")}>
       <div className="preview-panel__header">
         <strong>Exact changes</strong>
         <span className="preview-panel__meta">Git diff</span>
       </div>
+
+      {!expanded ? (
+        <button
+          className="ghost-button diff-stack__open-button"
+          onClick={() => setDiffDialogOpen(true)}
+          aria-label="Open full diff viewer"
+          title="Open full diff viewer"
+        >
+          <Expand size={14} />
+          Open diff
+        </button>
+      ) : null}
 
       {preview?.unstagedDiff ? (
         <div className="diff-card">
@@ -2640,35 +2605,8 @@ export function App() {
                       {previewLoading ? <p className="muted">Loading preview...</p> : null}
                       {previewError ? <p className="muted">{previewError}</p> : null}
 
-                      {shouldSplitPreviewPanels ? (
-                        <div
-                          ref={previewSplitRef}
-                          className="preview-content-split"
-                          style={{ gridTemplateRows: previewGridTemplateRows }}
-                        >
-                          <div className="preview-split-pane panel-scroll">
-                            {diffContent}
-                          </div>
-
-                          <div
-                            className="panel-resizer panel-resizer--horizontal"
-                            role="separator"
-                            aria-orientation="horizontal"
-                            onPointerDown={() => startPreviewResize()}
-                          >
-                            <GripVertical size={14} />
-                          </div>
-
-                          <div className="preview-split-pane panel-scroll">
-                            {previewBodyContent}
-                          </div>
-                        </div>
-                      ) : (
-                        <>
-                          {diffContent}
-                          {previewBodyContent}
-                        </>
-                      )}
+                      {renderDiffStack(false)}
+                      {previewBodyContent}
                     </div>
                   </div>
 
@@ -2942,6 +2880,27 @@ export function App() {
 
       {remoteDialog && remoteDialogOpen ? (
         <RemoteDetailDialog dialog={remoteDialog} onClose={() => setRemoteDialogOpen(false)} />
+      ) : null}
+
+      {selectedChange && preview && hasDiffContent(preview) && diffDialogOpen ? (
+        <div className="dialog-backdrop dialog-backdrop--diff" onClick={() => setDiffDialogOpen(false)}>
+          <section className="panel diff-viewer-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="diff-viewer-dialog__header">
+              <div>
+                <p className="eyebrow">Diff Viewer</p>
+                <h3 title={selectedChange.path}>{selectedChange.path}</h3>
+                <p className="muted">Expanded diff view for detailed inspection.</p>
+              </div>
+              <button className="icon-button" onClick={() => setDiffDialogOpen(false)} aria-label="Close diff viewer" title="Close diff viewer">
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="diff-viewer-dialog__body panel-scroll">
+              {renderDiffStack(true)}
+            </div>
+          </section>
+        </div>
       ) : null}
 
       {branchCreateOpen ? (
