@@ -3017,6 +3017,17 @@ async fn run_git_owned_with_env(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if should_retry_with_safe_directory_fix(&stderr) && ensure_git_safe_directory(repo_path).await? {
+            let _ = append_log(
+                "backend",
+                "git.command.retry",
+                &format!("git -C {repo_display} {command_preview}"),
+                Some("Added repository to git safe.directory after dubious ownership error; retrying command."),
+            );
+
+            return rerun_git_owned_with_env(repo_path, args, overrides).await;
+        }
+
         if should_retry_with_longpaths_fix(&stderr) && ensure_git_longpaths(repo_path).await? {
             let _ = append_log(
                 "backend",
@@ -3112,6 +3123,64 @@ fn should_retry_with_longpaths_fix(stderr: &str) -> bool {
         || normalized.contains("dateiname oder die erweiterung ist zu lang")
         || normalized.contains("filename too long")
         || normalized.contains("path too long")
+}
+
+fn should_retry_with_safe_directory_fix(stderr: &str) -> bool {
+    let normalized = stderr.to_lowercase();
+    normalized.contains("detected dubious ownership") || normalized.contains("safe.directory")
+}
+
+async fn ensure_git_safe_directory(repo_path: &Path) -> GitResult<bool> {
+    let safe_directory = canonical_git_safe_directory(repo_path);
+    let current = run_git_global_owned(vec![
+        "config".into(),
+        "--global".into(),
+        "--get-all".into(),
+        "safe.directory".into(),
+    ])
+    .await
+    .unwrap_or_default();
+
+    let normalized_target = normalize_path_for_git_compare(&safe_directory);
+    if current
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .any(|line| normalize_path_for_git_compare(line) == normalized_target)
+    {
+        return Ok(false);
+    }
+
+    run_git_global_owned(vec![
+        "config".into(),
+        "--global".into(),
+        "--add".into(),
+        "safe.directory".into(),
+        safe_directory,
+    ])
+    .await?;
+
+    Ok(true)
+}
+
+fn canonical_git_safe_directory(repo_path: &Path) -> String {
+    fs::canonicalize(repo_path)
+        .unwrap_or_else(|_| repo_path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn normalize_path_for_git_compare(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.ends_with('/') {
+        normalized.pop();
+    }
+
+    if cfg!(windows) {
+        normalized.make_ascii_lowercase();
+    }
+
+    normalized
 }
 
 async fn ensure_git_longpaths(repo_path: &Path) -> GitResult<bool> {
