@@ -1,6 +1,6 @@
 [package]
 name = "unigit"
-version = "0.10.0"
+version = "0.10.1"
 description = "A premium desktop Git client for game-development workflows."
 authors = ["GitHub Copilot"]
 edition = "2021"
