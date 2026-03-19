@@ -153,12 +153,54 @@ pub struct RepositoryRemote {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct RepositorySshSettings {
+    pub mode: String,
+    pub use_user_ssh_config: bool,
+    pub private_key_path: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySshKeyOption {
+    pub path: String,
+    pub label: String,
+    pub key_kind: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySshConfigHost {
+    pub alias: String,
+    pub host_name: Option<String>,
+    pub user: Option<String>,
+    pub identity_files: Vec<String>,
+    pub identities_only: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySshDiscovery {
+    pub ssh_directory: Option<String>,
+    pub user_config_path: Option<String>,
+    pub config_hosts: Vec<RepositorySshConfigHost>,
+    pub private_keys: Vec<RepositorySshKeyOption>,
+    pub open_ssh_command: Option<String>,
+    pub putty_command: Option<String>,
+    pub pageant_supported: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RepositoryConfig {
     pub repo_path: String,
     pub repo_name: String,
     pub current_branch: String,
     pub detached_head: bool,
     pub remotes: Vec<RepositoryRemote>,
+    pub ssh_settings: RepositorySshSettings,
+    pub ssh_discovery: RepositorySshDiscovery,
 }
 
 #[derive(Debug, Serialize, Clone)]

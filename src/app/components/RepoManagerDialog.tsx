@@ -1,6 +1,6 @@
 import { FolderPlus, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { RepositoryConfig } from "../../features/repositories/api";
+import type { RepositoryConfig, RepositorySshSettings } from "../../features/repositories/api";
 import { formatRepoLabel } from "../utils/formatters";
 import clsx from "clsx";
 import type { AiSettings } from "../utils/aiSettings";
@@ -25,6 +25,8 @@ export type RepoManagerDialogProps = {
   repoConfigError: string | null;
   onSaveRemote: (originalName: string | null, name: string, fetchUrl: string, pushUrl: string) => void;
   onDeleteRemote: (name: string) => void;
+  onSaveSshSettings: (settings: RepositorySshSettings) => void;
+  onPickSshPrivateKey: () => Promise<string | null> | string | null;
   settingsDisabled: boolean;
   aiSettings: AiSettings;
   onAiSettingsChange: (next: AiSettings) => void;
@@ -50,15 +52,19 @@ export function RepoManagerDialog({
   repoConfigError,
   onSaveRemote,
   onDeleteRemote,
+  onSaveSshSettings,
+  onPickSshPrivateKey,
   settingsDisabled,
   aiSettings,
   onAiSettingsChange,
 }: RepoManagerDialogProps) {
   const [draftRemotes, setDraftRemotes] = useState<Array<{ originalName: string | null; name: string; fetchUrl: string; pushUrl: string }>>([]);
+  const [draftSshSettings, setDraftSshSettings] = useState<RepositorySshSettings | null>(null);
 
   useEffect(() => {
     if (!repoConfig) {
       setDraftRemotes([]);
+      setDraftSshSettings(null);
       return;
     }
 
@@ -70,10 +76,14 @@ export function RepoManagerDialog({
         pushUrl: remote.pushUrl ?? remote.fetchUrl ?? "",
       })),
     );
+
+    setDraftSshSettings({ ...repoConfig.sshSettings });
   }, [repoConfig]);
 
+  const sshKeyListId = `repo-ssh-keys-${(selectedRepository ?? "none").replace(/[^a-z0-9_-]/gi, "-")}`;
+
   return (
-    <div className="dialog-backdrop">
+    <div className="dialog-backdrop dialog-backdrop--repo-manager">
       <section className="panel repo-manager-dialog">
         <div className="repo-manager-dialog__header">
           <div>
@@ -88,7 +98,7 @@ export function RepoManagerDialog({
         </div>
 
         <div className="repo-manager-dialog__body">
-          <section className="repo-manager-section">
+          <section className="repo-manager-section repo-manager-section--stretch">
             <div className="repo-manager-section__header">
               <h3>Loaded repositories</h3>
               <button className="ghost-button" onClick={onAddExistingRepository}>
@@ -112,12 +122,12 @@ export function RepoManagerDialog({
             </div>
           </section>
 
-          <section className="repo-manager-section">
+          <section className="repo-manager-section repo-manager-section--stretch">
             <div className="repo-manager-section__header">
               <h3>Clone repository</h3>
             </div>
 
-            <div className="repo-clone-form">
+            <div className="repo-clone-form repo-pane-scroll panel-scroll">
               <label className="repo-form-field">
                 <span>Remote URL</span>
                 <input
@@ -149,7 +159,7 @@ export function RepoManagerDialog({
             </div>
           </section>
 
-          <section className="repo-manager-section">
+          <section className="repo-manager-section repo-manager-section--stretch">
             <div className="repo-manager-section__header">
               <h3>Repository settings</h3>
             </div>
@@ -158,7 +168,7 @@ export function RepoManagerDialog({
             {repoConfigError ? <p className="muted">{repoConfigError}</p> : null}
 
             {!repoConfigLoading && !repoConfigError && repoConfig ? (
-              <div className="repo-config-card">
+              <div className="repo-config-card repo-config-card--stretch panel-scroll">
                 <dl className="repo-config-grid">
                   <div>
                     <dt>Name</dt>
@@ -174,7 +184,7 @@ export function RepoManagerDialog({
                   </div>
                 </dl>
 
-                <div className="repo-config-remotes">
+                <div className="repo-config-remotes repo-config-remotes--scroll panel-scroll">
                   <div className="preview-panel__header">
                     <strong>Remotes</strong>
                     <div className="repo-config-remotes__actions">
@@ -247,12 +257,172 @@ export function RepoManagerDialog({
             ) : null}
           </section>
 
-          <section className="repo-manager-section">
+          <section className="repo-manager-section repo-manager-section--stretch">
+            <div className="repo-manager-section__header">
+              <h3>SSH</h3>
+            </div>
+
+            {repoConfigLoading ? <p className="muted">Loading SSH settings...</p> : null}
+            {repoConfigError ? <p className="muted">SSH settings are unavailable until repository settings load successfully.</p> : null}
+
+            {!repoConfigLoading && !repoConfigError && repoConfig && draftSshSettings ? (
+              <div className="repo-config-card repo-config-card--stretch panel-scroll">
+                <label className="repo-form-field">
+                  <span>SSH client</span>
+                  <select
+                    className="changes-filter"
+                    disabled={settingsDisabled}
+                    value={draftSshSettings.mode}
+                    onChange={(event) => setDraftSshSettings((current) => current ? { ...current, mode: event.target.value as RepositorySshSettings["mode"] } : current)}
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="openssh">OpenSSH</option>
+                    <option value="putty">PuTTY / Pageant</option>
+                  </select>
+                </label>
+
+                <label className="repo-form-field repo-form-field--checkbox">
+                  <input
+                    type="checkbox"
+                    checked={draftSshSettings.useUserSshConfig}
+                    disabled={settingsDisabled}
+                    onChange={(event) => setDraftSshSettings((current) => current ? { ...current, useUserSshConfig: event.target.checked } : current)}
+                  />
+                  <span>Use local .ssh/config when OpenSSH is active</span>
+                </label>
+
+                <label className="repo-form-field">
+                  <span>Username override</span>
+                  <input
+                    className="changes-filter"
+                    disabled={settingsDisabled}
+                    value={draftSshSettings.username ?? ""}
+                    onChange={(event) => setDraftSshSettings((current) => current ? { ...current, username: event.target.value || null } : current)}
+                    placeholder="git"
+                  />
+                </label>
+
+                <label className="repo-form-field">
+                  <span>Private key</span>
+                  <div className="repo-form-field__row">
+                    <input
+                      className="changes-filter"
+                      list={sshKeyListId}
+                      disabled={settingsDisabled}
+                      value={draftSshSettings.privateKeyPath ?? ""}
+                      onChange={(event) => setDraftSshSettings((current) => current ? { ...current, privateKeyPath: event.target.value || null } : current)}
+                      placeholder="Leave empty to use agent or default identity"
+                    />
+                    <button
+                      className="ghost-button"
+                      disabled={settingsDisabled}
+                      onClick={() => {
+                        void Promise.resolve(onPickSshPrivateKey()).then((selectedPath) => {
+                          if (!selectedPath) {
+                            return;
+                          }
+
+                          setDraftSshSettings((current) => current ? { ...current, privateKeyPath: selectedPath } : current);
+                        });
+                      }}
+                    >
+                      Browse
+                    </button>
+                  </div>
+                </label>
+
+                <label className="repo-form-field">
+                  <span>Password / passphrase</span>
+                  <input
+                    className="changes-filter"
+                    type="password"
+                    disabled={settingsDisabled}
+                    value={draftSshSettings.password ?? ""}
+                    onChange={(event) => setDraftSshSettings((current) => current ? { ...current, password: event.target.value || null } : current)}
+                    placeholder="Optional. Stored locally for this repository."
+                  />
+                </label>
+
+                <div className="repo-ssh-discovery">
+                  <p className="muted">
+                    OpenSSH: {repoConfig.sshDiscovery.openSshCommand ?? "Not found"}
+                  </p>
+                  <p className="muted">
+                    PuTTY / plink: {repoConfig.sshDiscovery.puttyCommand ?? "Not found"}
+                  </p>
+                  <p className="muted">
+                    .ssh/config: {repoConfig.sshDiscovery.userConfigPath ?? "Not detected"}
+                  </p>
+                  <p className="muted">
+                    Use remote URLs like git@personal:owner/repo.git when you want OpenSSH host aliases from .ssh/config to select a different GitHub account.
+                  </p>
+                </div>
+
+                {repoConfig.sshDiscovery.configHosts.length ? (
+                  <div className="repo-ssh-meta-block">
+                    <strong>Detected config hosts</strong>
+                    <div className="repo-ssh-chip-list">
+                      {repoConfig.sshDiscovery.configHosts.map((host) => (
+                        <span key={host.alias} className="repo-ssh-chip" title={host.hostName ?? host.alias}>
+                          {host.alias}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {repoConfig.sshDiscovery.privateKeys.length ? (
+                  <>
+                    <datalist id={sshKeyListId}>
+                      {repoConfig.sshDiscovery.privateKeys.map((keyOption) => (
+                        <option key={keyOption.path} value={keyOption.path} label={`${keyOption.label} (${keyOption.keyKind})`} />
+                      ))}
+                    </datalist>
+                    <div className="repo-ssh-meta-block">
+                      <strong>Detected local keys</strong>
+                      <div className="repo-ssh-chip-list">
+                        {repoConfig.sshDiscovery.privateKeys.map((keyOption) => (
+                          <button
+                            key={keyOption.path}
+                            type="button"
+                            className={clsx(
+                              "repo-ssh-chip repo-ssh-chip--button",
+                              draftSshSettings.privateKeyPath === keyOption.path && "repo-ssh-chip--active",
+                            )}
+                            disabled={settingsDisabled}
+                            onClick={() => setDraftSshSettings((current) => current ? { ...current, privateKeyPath: keyOption.path } : current)}
+                            title={keyOption.path}
+                          >
+                            {keyOption.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+
+                <div className="repo-remote-row__actions">
+                  <button className="ghost-button" disabled={settingsDisabled} onClick={() => setDraftSshSettings({ ...repoConfig.sshSettings })}>
+                    Reset
+                  </button>
+                  <button className="ghost-button" disabled={settingsDisabled} onClick={() => onSaveSshSettings(draftSshSettings)}>
+                    Save SSH settings
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {!repoConfigLoading && !repoConfigError && (!repoConfig || !draftSshSettings) ? (
+              <p className="muted">Select a loaded repository to configure SSH for it.</p>
+            ) : null}
+          </section>
+
+          <section className="repo-manager-section repo-manager-section--stretch">
             <div className="repo-manager-section__header">
               <h3>AI commit messages</h3>
             </div>
 
-            <div className="repo-config-card">
+            <div className="repo-config-card repo-config-card--stretch panel-scroll">
               <label className="repo-form-field">
                 <span>Provider</span>
                 <select

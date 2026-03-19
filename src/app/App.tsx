@@ -51,6 +51,7 @@ import {
   FileHistoryEntry,
   FilePreview,
   RepositoryConfig,
+  RepositorySshSettings,
   RepositorySnapshot,
   cloneRepository,
   clearGitIndexLock,
@@ -80,6 +81,7 @@ import {
   renameBranch,
   restoreFileFromCommit,
   saveRepositoryRemote,
+  saveRepositorySshSettings,
   resolveConflictedFiles,
   stageFiles,
   switchBranch,
@@ -992,6 +994,55 @@ export function App() {
         fallback: "Removing remote failed.",
         reason,
         context: `Remove remote ${name}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [reportAppError, selectedRepository, writeClientLog]);
+
+  const pickRepositorySshPrivateKey = useCallback(async () => {
+    if (isTauri()) {
+      const selected = await open({
+        multiple: false,
+        title: "Choose SSH private key",
+      });
+
+      return typeof selected === "string" ? selected : null;
+    }
+
+    return window.prompt("SSH private key path") ?? null;
+  }, []);
+
+  const runSaveRepositorySshSettings = useCallback(async (settings: RepositorySshSettings) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog(
+        "repo.ssh.save",
+        `Saving SSH settings for ${selectedRepository}.`,
+        [
+          `mode=${settings.mode}`,
+          `useUserSshConfig=${settings.useUserSshConfig}`,
+          `privateKeyPath=${settings.privateKeyPath ?? "<default>"}`,
+          `username=${settings.username ?? "<default>"}`,
+        ].join("\n"),
+      );
+      await saveRepositorySshSettings(selectedRepository, settings);
+      const nextConfig = await inspectRepositoryConfig(selectedRepository);
+      setRepoConfig(nextConfig);
+      setStatusMessage("Saved repository SSH settings.");
+    } catch (reason) {
+      reportAppError({
+        scope: "repo.ssh.save.error",
+        title: "Save SSH settings failed",
+        fallback: "Saving repository SSH settings failed.",
+        reason,
+        context: `Save repository SSH settings for ${selectedRepository}.`,
       });
     } finally {
       setSubmitting(false);
@@ -2848,6 +2899,8 @@ export function App() {
             void runSaveRepositoryRemote(originalName, name, fetchUrl, pushUrl)
           }
           onDeleteRemote={(name) => void runDeleteRepositoryRemote(name)}
+          onSaveSshSettings={(settings) => void runSaveRepositorySshSettings(settings)}
+          onPickSshPrivateKey={() => pickRepositorySshPrivateKey()}
           settingsDisabled={submitting}
           aiSettings={aiSettings}
           onAiSettingsChange={setAiSettings}

@@ -40,12 +40,46 @@ export type RepositoryRemote = {
   pushUrl: string | null;
 };
 
+export type RepositorySshSettings = {
+  mode: "auto" | "openssh" | "putty" | string;
+  useUserSshConfig: boolean;
+  privateKeyPath: string | null;
+  username: string | null;
+  password: string | null;
+};
+
+export type RepositorySshKeyOption = {
+  path: string;
+  label: string;
+  keyKind: "openssh" | "putty" | string;
+};
+
+export type RepositorySshConfigHost = {
+  alias: string;
+  hostName: string | null;
+  user: string | null;
+  identityFiles: string[];
+  identitiesOnly: boolean;
+};
+
+export type RepositorySshDiscovery = {
+  sshDirectory: string | null;
+  userConfigPath: string | null;
+  configHosts: RepositorySshConfigHost[];
+  privateKeys: RepositorySshKeyOption[];
+  openSshCommand: string | null;
+  puttyCommand: string | null;
+  pageantSupported: boolean;
+};
+
 export type RepositoryConfig = {
   repoPath: string;
   repoName: string;
   currentBranch: string;
   detachedHead: boolean;
   remotes: RepositoryRemote[];
+  sshSettings: RepositorySshSettings;
+  sshDiscovery: RepositorySshDiscovery;
 };
 
 export type CloneResult = {
@@ -273,6 +307,10 @@ export const saveRepositoryRemote = (
 
 export const deleteRepositoryRemote = (repoPath: string, name: string) => {
   return invoke<string>("delete_repository_remote", { repoPath, name });
+};
+
+export const saveRepositorySshSettings = (repoPath: string, settings: RepositorySshSettings) => {
+  return invoke<RepositorySshSettings>("save_repository_ssh_settings", { repoPath, settings });
 };
 
 export const listCommitHistory = (repoPath: string, limit = 40) => {

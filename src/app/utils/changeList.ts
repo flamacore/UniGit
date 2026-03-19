@@ -134,7 +134,7 @@ export const describeRemoteFailure = (operation: "push" | "pull" | "force-pull" 
     return {
       tone: "error",
       title: "Remote authentication failed",
-      summary: "Git could not authenticate with the remote. Check your SSH key, agent, or remote permissions.",
+      summary: "Git could not authenticate with the remote. Check the repository SSH settings, key/agent state, or remote permissions.",
       detail,
     };
   }

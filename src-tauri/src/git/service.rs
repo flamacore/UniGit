@@ -1,4 +1,6 @@
 use std::{
+    collections::BTreeMap,
+    env,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -8,6 +10,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use serde::{Deserialize, Serialize};
 
 use tauri::command;
 use thiserror::Error;
@@ -18,7 +21,8 @@ use super::models::{
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
     ModelPreviewResource, ModelPreviewSource,
-    RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, UnityColorValue,
+    RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, RepositorySshConfigHost,
+    RepositorySshDiscovery, RepositorySshKeyOption, RepositorySshSettings, UnityColorValue,
     UnityMaterialPreviewSource, UnityMaterialTexturePreview,
 };
 
@@ -67,6 +71,47 @@ struct ParsedUnityTextureSlot {
     guid: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRepositorySshSettings {
+    mode: String,
+    use_user_ssh_config: bool,
+    private_key_path: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRepositorySshSettingsStore {
+    repositories: BTreeMap<String, StoredRepositorySshSettings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRepositorySshSettingsInput {
+    mode: String,
+    use_user_ssh_config: bool,
+    private_key_path: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedSshConfigHostAccumulator {
+    alias: String,
+    host_name: Option<String>,
+    user: Option<String>,
+    identity_files: Vec<String>,
+    identities_only: bool,
+}
+
+#[derive(Debug, Clone)]
+struct GitRemoteEnvironment {
+    env_pairs: Vec<(String, String)>,
+    log_detail: Option<String>,
+}
+
 type GitResult<T> = Result<T, GitServiceError>;
 
 #[command]
@@ -106,6 +151,16 @@ pub async fn save_repository_remote(
 #[command]
 pub async fn delete_repository_remote(repo_path: String, name: String) -> Result<String, String> {
     delete_repository_remote_inner(repo_path, name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn save_repository_ssh_settings(
+    repo_path: String,
+    settings: SaveRepositorySshSettingsInput,
+) -> Result<RepositorySshSettings, String> {
+    save_repository_ssh_settings_inner(repo_path, settings)
         .await
         .map_err(|error| error.to_string())
 }
@@ -390,6 +445,9 @@ async fn inspect_repository_config_inner(repo_path: String) -> GitResult<Reposit
         }
     }
 
+    let ssh_settings = load_repository_ssh_settings(path)?;
+    let ssh_discovery = discover_repository_ssh_support()?;
+
     Ok(RepositoryConfig {
         repo_path: repo_path.clone(),
         repo_name: path
@@ -400,6 +458,8 @@ async fn inspect_repository_config_inner(repo_path: String) -> GitResult<Reposit
         current_branch,
         detached_head,
         remotes,
+        ssh_settings,
+        ssh_discovery,
     })
 }
 
@@ -500,6 +560,565 @@ async fn delete_repository_remote_inner(repo_path: String, name: String) -> GitR
     .await?;
 
     Ok(format!("Removed remote {trimmed_name}."))
+}
+
+async fn save_repository_ssh_settings_inner(
+    repo_path: String,
+    settings: SaveRepositorySshSettingsInput,
+) -> GitResult<RepositorySshSettings> {
+    let path = validate_repository_path(&repo_path)?;
+    let normalized = normalize_repository_ssh_settings(settings)?;
+    persist_repository_ssh_settings(path, &normalized)?;
+    Ok(normalized)
+}
+
+fn normalize_repository_ssh_settings(settings: SaveRepositorySshSettingsInput) -> GitResult<RepositorySshSettings> {
+    let mode = normalize_ssh_mode(&settings.mode);
+    let private_key_path = sanitize_optional_string(settings.private_key_path);
+    let username = sanitize_optional_string(settings.username);
+    let password = sanitize_optional_string(settings.password);
+
+    if let Some(key_path) = private_key_path.as_ref() {
+        let key_candidate = expand_home_prefix(key_path);
+        if !key_candidate.exists() || !key_candidate.is_file() {
+            return Err(GitServiceError::GitCommandFailed(format!(
+                "SSH key '{}' does not exist.",
+                key_candidate.display()
+            )));
+        }
+    }
+
+    Ok(RepositorySshSettings {
+        mode,
+        use_user_ssh_config: settings.use_user_ssh_config,
+        private_key_path,
+        username,
+        password,
+    })
+}
+
+fn default_repository_ssh_settings() -> RepositorySshSettings {
+    RepositorySshSettings {
+        mode: "auto".to_string(),
+        use_user_ssh_config: true,
+        private_key_path: None,
+        username: None,
+        password: None,
+    }
+}
+
+fn normalize_ssh_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "openssh" => "openssh".to_string(),
+        "putty" => "putty".to_string(),
+        _ => "auto".to_string(),
+    }
+}
+
+fn sanitize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|entry| entry.trim().to_string())
+        .filter(|entry| !entry.is_empty())
+}
+
+fn discover_repository_ssh_support() -> GitResult<RepositorySshDiscovery> {
+    let ssh_directory = dirs_next::home_dir().map(|path| path.join(".ssh"));
+    let user_config_path = ssh_directory
+        .as_ref()
+        .map(|path| path.join("config"))
+        .filter(|path| path.is_file());
+
+    let config_hosts = match user_config_path.as_ref() {
+        Some(path) => parse_user_ssh_config(path)?,
+        None => Vec::new(),
+    };
+
+    let private_keys = match ssh_directory.as_ref() {
+        Some(path) => discover_private_key_options(path),
+        None => Vec::new(),
+    };
+
+    Ok(RepositorySshDiscovery {
+        ssh_directory: ssh_directory.map(|path| path.to_string_lossy().into_owned()),
+        user_config_path: user_config_path.map(|path| path.to_string_lossy().into_owned()),
+        config_hosts,
+        private_keys,
+        open_ssh_command: find_executable_path("ssh.exe", &[PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe")])
+            .map(|path| path.to_string_lossy().into_owned()),
+        putty_command: find_executable_path(
+            "plink.exe",
+            &[
+                PathBuf::from(r"C:\Program Files\PuTTY\plink.exe"),
+                PathBuf::from(r"C:\Program Files (x86)\PuTTY\plink.exe"),
+            ],
+        )
+        .map(|path| path.to_string_lossy().into_owned()),
+        pageant_supported: cfg!(windows),
+    })
+}
+
+fn parse_user_ssh_config(config_path: &Path) -> GitResult<Vec<RepositorySshConfigHost>> {
+    let content = fs::read_to_string(config_path).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to read SSH config '{}': {}",
+            config_path.display(),
+            error
+        ))
+    })?;
+
+    let mut hosts: Vec<ParsedSshConfigHostAccumulator> = Vec::new();
+    let mut active_indexes: Vec<usize> = Vec::new();
+
+    for raw_line in content.lines() {
+        let line = raw_line
+            .split('#')
+            .next()
+            .map(str::trim)
+            .unwrap_or_default();
+
+        if line.is_empty() {
+            continue;
+        }
+
+        let mut parts = line.split_whitespace();
+        let Some(keyword) = parts.next() else { continue; };
+        let remainder = parts.collect::<Vec<_>>().join(" ").trim().to_string();
+
+        if remainder.is_empty() {
+            continue;
+        }
+
+        match keyword.to_ascii_lowercase().as_str() {
+            "host" => {
+                active_indexes.clear();
+                for alias in remainder.split_whitespace() {
+                    let trimmed_alias = alias.trim();
+                    if trimmed_alias.is_empty() || trimmed_alias.contains('*') || trimmed_alias.contains('?') {
+                        continue;
+                    }
+
+                    hosts.push(ParsedSshConfigHostAccumulator {
+                        alias: trimmed_alias.to_string(),
+                        host_name: None,
+                        user: None,
+                        identity_files: Vec::new(),
+                        identities_only: false,
+                    });
+                    active_indexes.push(hosts.len() - 1);
+                }
+            }
+            "hostname" => {
+                for index in &active_indexes {
+                    hosts[*index].host_name = Some(remainder.clone());
+                }
+            }
+            "user" => {
+                for index in &active_indexes {
+                    hosts[*index].user = Some(remainder.clone());
+                }
+            }
+            "identityfile" => {
+                let expanded = expand_home_prefix(&remainder).to_string_lossy().into_owned();
+                for index in &active_indexes {
+                    hosts[*index].identity_files.push(expanded.clone());
+                }
+            }
+            "identitiesonly" => {
+                let enabled = matches!(remainder.to_ascii_lowercase().as_str(), "yes" | "true" | "on" | "1");
+                for index in &active_indexes {
+                    hosts[*index].identities_only = enabled;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(hosts
+        .into_iter()
+        .map(|entry| RepositorySshConfigHost {
+            alias: entry.alias,
+            host_name: entry.host_name,
+            user: entry.user,
+            identity_files: entry.identity_files,
+            identities_only: entry.identities_only,
+        })
+        .collect())
+}
+
+fn discover_private_key_options(ssh_directory: &Path) -> Vec<RepositorySshKeyOption> {
+    let Ok(entries) = fs::read_dir(ssh_directory) else {
+        return Vec::new();
+    };
+
+    let mut keys = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| is_private_key_candidate(path))
+        .map(|path| {
+            let path_string = path.to_string_lossy().into_owned();
+            let key_kind = if path.extension().and_then(|value| value.to_str()).is_some_and(|value| value.eq_ignore_ascii_case("ppk")) {
+                "putty"
+            } else {
+                "openssh"
+            };
+
+            RepositorySshKeyOption {
+                label: path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(&path_string)
+                    .to_string(),
+                path: path_string,
+                key_kind: key_kind.to_string(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    keys.sort_by(|left, right| left.label.cmp(&right.label));
+    keys
+}
+
+fn is_private_key_candidate(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    if file_name.ends_with(".pub") {
+        return false;
+    }
+
+    match path.extension().and_then(|value| value.to_str()).map(|value| value.to_ascii_lowercase()) {
+        Some(extension) => matches!(extension.as_str(), "ppk" | "pem" | "key" | "rsa" | "ed25519"),
+        None => matches!(file_name, "id_rsa" | "id_ed25519" | "id_ecdsa" | "id_dsa" | "identity"),
+    }
+}
+
+fn load_repository_ssh_settings(repo_path: &Path) -> GitResult<RepositorySshSettings> {
+    let store = load_repository_ssh_settings_store()?;
+    let key = normalize_repository_settings_key(repo_path);
+
+    Ok(store
+        .repositories
+        .get(&key)
+        .cloned()
+        .map(repository_ssh_settings_from_stored)
+        .unwrap_or_else(default_repository_ssh_settings))
+}
+
+fn persist_repository_ssh_settings(repo_path: &Path, settings: &RepositorySshSettings) -> GitResult<()> {
+    let mut store = load_repository_ssh_settings_store()?;
+    let key = normalize_repository_settings_key(repo_path);
+    store.repositories.insert(key, stored_repository_ssh_settings_from_public(settings));
+    save_repository_ssh_settings_store(&store)
+}
+
+fn repository_ssh_settings_from_stored(settings: StoredRepositorySshSettings) -> RepositorySshSettings {
+    RepositorySshSettings {
+        mode: normalize_ssh_mode(&settings.mode),
+        use_user_ssh_config: settings.use_user_ssh_config,
+        private_key_path: settings.private_key_path,
+        username: settings.username,
+        password: settings.password,
+    }
+}
+
+fn stored_repository_ssh_settings_from_public(settings: &RepositorySshSettings) -> StoredRepositorySshSettings {
+    StoredRepositorySshSettings {
+        mode: normalize_ssh_mode(&settings.mode),
+        use_user_ssh_config: settings.use_user_ssh_config,
+        private_key_path: settings.private_key_path.clone(),
+        username: settings.username.clone(),
+        password: settings.password.clone(),
+    }
+}
+
+fn load_repository_ssh_settings_store() -> GitResult<StoredRepositorySshSettingsStore> {
+    let path = resolve_repository_ssh_settings_store_path();
+    if !path.exists() {
+        return Ok(StoredRepositorySshSettingsStore::default());
+    }
+
+    let raw = fs::read_to_string(&path).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to read repository SSH settings '{}': {}",
+            path.display(),
+            error
+        ))
+    })?;
+
+    serde_json::from_str::<StoredRepositorySshSettingsStore>(&raw).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to parse repository SSH settings '{}': {}",
+            path.display(),
+            error
+        ))
+    })
+}
+
+fn save_repository_ssh_settings_store(store: &StoredRepositorySshSettingsStore) -> GitResult<()> {
+    let path = resolve_repository_ssh_settings_store_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            GitServiceError::GitCommandFailed(format!(
+                "Failed to create settings directory '{}': {}",
+                parent.display(),
+                error
+            ))
+        })?;
+    }
+
+    let serialized = serde_json::to_string_pretty(store).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!("Failed to serialize repository SSH settings: {error}"))
+    })?;
+
+    fs::write(&path, serialized).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to save repository SSH settings '{}': {}",
+            path.display(),
+            error
+        ))
+    })
+}
+
+fn normalize_repository_settings_key(repo_path: &Path) -> String {
+    let canonical = fs::canonicalize(repo_path).unwrap_or_else(|_| repo_path.to_path_buf());
+    let mut value = canonical.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        value.make_ascii_lowercase();
+    }
+    value
+}
+
+fn resolve_repository_ssh_settings_store_path() -> PathBuf {
+    let base = dirs_next::data_local_dir().unwrap_or_else(env::temp_dir);
+    base.join("UniGit").join("settings").join("repository-ssh.json")
+}
+
+fn resolve_runtime_support_dir() -> PathBuf {
+    let base = dirs_next::data_local_dir().unwrap_or_else(env::temp_dir);
+    base.join("UniGit").join("runtime")
+}
+
+fn expand_home_prefix(value: &str) -> PathBuf {
+    if let Some(stripped) = value.strip_prefix("~/") {
+        if let Some(home) = dirs_next::home_dir() {
+            return home.join(stripped);
+        }
+    }
+
+    if value == "~" {
+        if let Some(home) = dirs_next::home_dir() {
+            return home;
+        }
+    }
+
+    PathBuf::from(value)
+}
+
+fn find_executable_path(file_name: &str, fallbacks: &[PathBuf]) -> Option<PathBuf> {
+    if let Some(path_value) = env::var_os("PATH") {
+        for directory in env::split_paths(&path_value) {
+            let candidate = directory.join(file_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    fallbacks.iter().find(|candidate| candidate.is_file()).cloned()
+}
+
+fn quote_cmd_argument(value: &str) -> String {
+    if value.is_empty() {
+        return "\"\"".to_string();
+    }
+
+    let needs_quotes = value.chars().any(|character| {
+        matches!(
+            character,
+            ' ' | '\t' | '&' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '=' | ';' | '!' | '\'' | '+' | ',' | '`' | '~'
+        )
+    });
+
+    if needs_quotes {
+        format!("\"{}\"", value.replace('"', "\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn build_wrapper_command(executable: &Path, arguments: &[String]) -> String {
+    let mut parts = Vec::with_capacity(arguments.len() + 2);
+    parts.push(quote_cmd_argument(&executable.to_string_lossy()));
+    parts.extend(arguments.iter().map(|value| quote_cmd_argument(value)));
+    parts.push("%*".to_string());
+    parts.join(" ")
+}
+
+fn ensure_wrapper_script(path: &Path, command_line: &str) -> GitResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            GitServiceError::GitCommandFailed(format!(
+                "Failed to create runtime directory '{}': {}",
+                parent.display(),
+                error
+            ))
+        })?;
+    }
+
+    let script = format!("@echo off\r\nsetlocal\r\n{command_line}\r\n");
+    fs::write(path, script).map_err(|error| {
+        GitServiceError::GitCommandFailed(format!(
+            "Failed to write SSH wrapper '{}': {}",
+            path.display(),
+            error
+        ))
+    })
+}
+
+fn ensure_ssh_askpass_script() -> GitResult<PathBuf> {
+    let path = resolve_runtime_support_dir().join("ssh-askpass.cmd");
+    let command_line = r#"powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::Out.Write($env:UNIGIT_SSH_PASSWORD)""#;
+    ensure_wrapper_script(&path, command_line)?;
+    Ok(path)
+}
+
+fn infer_ssh_client_mode(settings: &RepositorySshSettings) -> &'static str {
+    match settings.mode.as_str() {
+        "openssh" => "openssh",
+        "putty" => "putty",
+        _ => {
+            if settings
+                .private_key_path
+                .as_deref()
+                .and_then(|value| Path::new(value).extension().and_then(|ext| ext.to_str()))
+                .is_some_and(|value| value.eq_ignore_ascii_case("ppk"))
+            {
+                "putty"
+            } else {
+                "openssh"
+            }
+        }
+    }
+}
+
+fn build_git_remote_environment(repo_path: &Path) -> GitResult<Option<GitRemoteEnvironment>> {
+    let settings = load_repository_ssh_settings(repo_path)?;
+    let has_overrides = settings.private_key_path.is_some() || settings.username.is_some() || settings.password.is_some();
+
+    if settings.mode == "auto" && !has_overrides {
+        return Ok(None);
+    }
+
+    let client_mode = infer_ssh_client_mode(&settings);
+    let runtime_dir = resolve_runtime_support_dir();
+    let repo_key = normalize_repository_settings_key(repo_path);
+    let repo_hash = format!("{:016x}", seahash_like(&repo_key));
+    let mut env_pairs = vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string())];
+
+    if client_mode == "putty" {
+        let executable = find_executable_path(
+            "plink.exe",
+            &[
+                PathBuf::from(r"C:\Program Files\PuTTY\plink.exe"),
+                PathBuf::from(r"C:\Program Files (x86)\PuTTY\plink.exe"),
+            ],
+        )
+        .ok_or_else(|| GitServiceError::GitCommandFailed("PuTTY plink.exe was not found on PATH or in the default install locations.".to_string()))?;
+
+        let mut arguments = vec!["-batch".to_string(), "-agent".to_string()];
+
+        if let Some(username) = settings.username.as_deref() {
+            arguments.push("-l".to_string());
+            arguments.push(username.to_string());
+        }
+
+        if let Some(key_path) = settings.private_key_path.as_deref() {
+            arguments.push("-i".to_string());
+            arguments.push(expand_home_prefix(key_path).to_string_lossy().into_owned());
+        }
+
+        if settings.password.is_some() {
+            arguments.push("-pw".to_string());
+            arguments.push("%UNIGIT_SSH_PASSWORD%".to_string());
+            env_pairs.push((
+                "UNIGIT_SSH_PASSWORD".to_string(),
+                settings.password.clone().unwrap_or_default(),
+            ));
+        }
+
+        let wrapper_path = runtime_dir.join(format!("plink-{repo_hash}.cmd"));
+        ensure_wrapper_script(&wrapper_path, &build_wrapper_command(&executable, &arguments))?;
+
+        env_pairs.push(("GIT_SSH".to_string(), wrapper_path.to_string_lossy().into_owned()));
+        env_pairs.push(("GIT_SSH_VARIANT".to_string(), "plink".to_string()));
+
+        return Ok(Some(GitRemoteEnvironment {
+            env_pairs,
+            log_detail: Some(format!(
+                "sshMode=putty config={} key={} user={}",
+                settings.use_user_ssh_config,
+                settings.private_key_path.as_deref().unwrap_or("<default>"),
+                settings.username.as_deref().unwrap_or("<default>")
+            )),
+        }));
+    }
+
+    let executable = find_executable_path("ssh.exe", &[PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe")])
+        .ok_or_else(|| GitServiceError::GitCommandFailed("OpenSSH ssh.exe was not found on PATH or in C:\\Windows\\System32\\OpenSSH.".to_string()))?;
+    let mut arguments = Vec::new();
+
+    if settings.use_user_ssh_config {
+        let config_path = dirs_next::home_dir().map(|path| path.join(".ssh").join("config"));
+        if let Some(path) = config_path.filter(|path| path.is_file()) {
+            arguments.push("-F".to_string());
+            arguments.push(path.to_string_lossy().into_owned());
+        }
+    }
+
+    if let Some(username) = settings.username.as_deref() {
+        arguments.push("-o".to_string());
+        arguments.push(format!("User={username}"));
+    }
+
+    if let Some(key_path) = settings.private_key_path.as_deref() {
+        arguments.push("-i".to_string());
+        arguments.push(expand_home_prefix(key_path).to_string_lossy().into_owned());
+        arguments.push("-o".to_string());
+        arguments.push("IdentitiesOnly=yes".to_string());
+    }
+
+    if settings.password.is_some() {
+        let askpass_path = ensure_ssh_askpass_script()?;
+        env_pairs.push(("SSH_ASKPASS".to_string(), askpass_path.to_string_lossy().into_owned()));
+        env_pairs.push(("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()));
+        env_pairs.push((
+            "UNIGIT_SSH_PASSWORD".to_string(),
+            settings.password.clone().unwrap_or_default(),
+        ));
+    } else {
+        arguments.push("-o".to_string());
+        arguments.push("BatchMode=yes".to_string());
+    }
+
+    let wrapper_path = runtime_dir.join(format!("openssh-{repo_hash}.cmd"));
+    ensure_wrapper_script(&wrapper_path, &build_wrapper_command(&executable, &arguments))?;
+    env_pairs.push(("GIT_SSH".to_string(), wrapper_path.to_string_lossy().into_owned()));
+
+    Ok(Some(GitRemoteEnvironment {
+        env_pairs,
+        log_detail: Some(format!(
+            "sshMode=openssh config={} key={} user={}",
+            settings.use_user_ssh_config,
+            settings.private_key_path.as_deref().unwrap_or("<default>"),
+            settings.username.as_deref().unwrap_or("<default>")
+        )),
+    }))
+}
+
+fn seahash_like(value: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
 }
 
 async fn list_commit_history_inner(repo_path: String, limit: usize) -> GitResult<Vec<CommitSummary>> {
@@ -1546,7 +2165,7 @@ async fn rename_branch_inner(repo_path: String, current_name: String, next_name:
 
         if !remote_name.is_empty() && !remote_branch.is_empty() {
             let remote_sync_result = async {
-                run_git_owned(
+                run_git_remote_owned(
                     path,
                     vec![
                         "push".into(),
@@ -1556,7 +2175,7 @@ async fn rename_branch_inner(repo_path: String, current_name: String, next_name:
                 )
                 .await?;
 
-                let _ = run_git_owned(
+                let _ = run_git_remote_owned(
                     path,
                     vec!["push".into(), remote_name.to_string(), "--delete".into(), remote_branch.clone()],
                 )
@@ -1609,7 +2228,7 @@ async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<
             return Err(GitServiceError::GitCommandFailed("Remote branch is malformed.".to_string()));
         }
 
-        run_git_owned(
+        run_git_remote_owned(
             path,
             vec!["push".into(), remote_name.to_string(), "--delete".into(), branch_name.clone()],
         )
@@ -1708,7 +2327,7 @@ async fn resolve_conflicted_files_inner(repo_path: String, paths: Vec<String>, s
 
 async fn push_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
-    let output = match run_git_owned(path, vec!["push".into()]).await {
+    let output = match run_git_remote_owned(path, vec!["push".into()]).await {
         Ok(output) => output,
         Err(GitServiceError::GitCommandFailed(message)) if is_missing_upstream_error(&message) => {
             let branch_name = current_local_branch_name(path).await?;
@@ -1811,7 +2430,7 @@ async fn current_local_branch_name(repo_path: &Path) -> GitResult<String> {
 }
 
 async fn push_branch_with_upstream(repo_path: &Path, remote_name: &str, branch_name: &str) -> GitResult<String> {
-    let output = run_git_owned(
+    let output = run_git_remote_owned(
         repo_path,
         vec!["push".into(), "--set-upstream".into(), remote_name.to_string(), branch_name.to_string()],
     )
@@ -1833,7 +2452,7 @@ fn is_missing_upstream_error(message: &str) -> bool {
 
 async fn fetch_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
-    let output = run_git_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
+    let output = run_git_remote_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
     let trimmed = output.trim();
 
     if trimmed.is_empty() {
@@ -1847,9 +2466,9 @@ async fn pull_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
     let (ahead, behind) = resolve_upstream_divergence(path).await?;
     let output = if ahead > 0 && behind > 0 {
-        run_git_owned(path, vec!["pull".into(), "--no-rebase".into()]).await?
+        run_git_remote_owned(path, vec!["pull".into(), "--no-rebase".into()]).await?
     } else {
-        run_git_owned(path, vec!["pull".into(), "--ff-only".into()]).await?
+        run_git_remote_owned(path, vec!["pull".into(), "--ff-only".into()]).await?
     };
     let trimmed = output.trim();
 
@@ -1882,7 +2501,7 @@ async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
         return Err(GitServiceError::GitCommandFailed("No upstream branch is configured for the current branch.".to_string()));
     }
 
-    run_git_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
+    run_git_remote_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
     let overlapping_paths = list_upstream_touched_paths(path, &upstream).await?;
 
     if !overlapping_paths.is_empty() {
@@ -2219,6 +2838,11 @@ where
     run_git_owned(repo_path, owned_args).await
 }
 
+async fn run_git_remote_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String> {
+    let overrides = build_git_remote_environment(repo_path)?;
+    run_git_owned_with_env(repo_path, args, overrides).await
+}
+
 async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
     let command_preview = args.join(" ");
     let _ = append_log("backend", "git.command.start", &format!("git {command_preview}"), None);
@@ -2247,23 +2871,46 @@ async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
 }
 
 async fn run_git_owned(repo_path: &Path, args: Vec<String>) -> GitResult<String> {
+    run_git_owned_with_env(repo_path, args, None).await
+}
+
+async fn run_git_owned_with_env(
+    repo_path: &Path,
+    args: Vec<String>,
+    overrides: Option<GitRemoteEnvironment>,
+) -> GitResult<String> {
     let command_preview = args.join(" ");
     let repo_display = repo_path.display().to_string();
-    let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), None);
+    let log_detail = overrides
+        .as_ref()
+        .and_then(|value| value.log_detail.as_deref())
+        .map(ToString::to_string);
+    let _ = append_log(
+        "backend",
+        "git.command.start",
+        &format!("git -C {repo_display} {command_preview}"),
+        log_detail.as_deref(),
+    );
 
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
-            _ => GitServiceError::GitCommandFailed(error.to_string()),
-        })?;
+        .stderr(Stdio::piped());
+
+    if let Some(value) = overrides {
+        for (key, env_value) in value.env_pairs {
+            command.env(key, env_value);
+        }
+    }
+
+    let output = command.output().await.map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+        _ => GitServiceError::GitCommandFailed(error.to_string()),
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
