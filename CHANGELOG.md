@@ -1,3 +1,9 @@
+## [0.12.1](https://github.com/flamacore/UniGit/compare/v0.12.0...v0.12.1) (2026-03-19)
+
+### Bug Fixes
+
+* Enhance conflict resolution UI and logic for better user experience ([732bd66](https://github.com/flamacore/UniGit/commit/732bd664ecc1efffa890395de84e4c33ab2b2f60))
+
 ## [0.12.0](https://github.com/flamacore/UniGit/compare/v0.11.0...v0.12.0) (2026-03-19)
 
 ### Features
