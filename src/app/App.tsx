@@ -246,7 +246,10 @@ export function App() {
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
   const lastAutoRefreshAtRef = useRef(0);
+  const gitActivityStartedAtRef = useRef(0);
+  const gitActivityHideTimeoutRef = useRef<number | null>(null);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
+  const [gitActivityShown, setGitActivityShown] = useState(false);
 
   const {
     changeContextMenu,
@@ -355,6 +358,14 @@ export function App() {
       setRemoteDialogOpen(false);
     }
   }, [remoteDialog]);
+
+  useEffect(() => {
+    return () => {
+      if (gitActivityHideTimeoutRef.current) {
+        window.clearTimeout(gitActivityHideTimeoutRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if ((snapshot?.counts.conflicted ?? 0) === 0) {
@@ -1759,6 +1770,72 @@ export function App() {
     return `${inspectorFractions.top}fr 12px ${inspectorFractions.bottom}fr`;
   }, [inspectorFractions]);
 
+  const gitActivityRequestedVisible = loading
+    || submitting
+    || graphLoading
+    || commitDetailLoading
+    || repoConfigLoading
+    || previewLoading
+    || fileHistoryLoading
+    || errorRecoveryBusy;
+
+  const gitActivityLabel = useMemo(() => {
+    if (errorRecoveryBusy) {
+      return "Repairing repository...";
+    }
+
+    if (submitting) {
+      return "Running Git command...";
+    }
+
+    if (loading) {
+      return "Refreshing repository...";
+    }
+
+    if (repoConfigLoading) {
+      return "Loading repository settings...";
+    }
+
+    if (graphLoading) {
+      return "Loading history...";
+    }
+
+    if (commitDetailLoading) {
+      return "Loading commit detail...";
+    }
+
+    if (previewLoading) {
+      return "Loading preview...";
+    }
+
+    if (fileHistoryLoading) {
+      return "Loading file history...";
+    }
+
+    return "Working...";
+  }, [commitDetailLoading, errorRecoveryBusy, fileHistoryLoading, graphLoading, loading, previewLoading, repoConfigLoading, submitting]);
+
+  useEffect(() => {
+    if (gitActivityHideTimeoutRef.current) {
+      window.clearTimeout(gitActivityHideTimeoutRef.current);
+      gitActivityHideTimeoutRef.current = null;
+    }
+
+    if (gitActivityRequestedVisible) {
+      gitActivityStartedAtRef.current = Date.now();
+      setGitActivityShown(true);
+      return;
+    }
+
+    const elapsed = Date.now() - gitActivityStartedAtRef.current;
+    const remaining = Math.max(0, 700 - elapsed);
+
+    gitActivityHideTimeoutRef.current = window.setTimeout(() => {
+      setGitActivityShown(false);
+      gitActivityHideTimeoutRef.current = null;
+    }, remaining);
+  }, [gitActivityRequestedVisible]);
+
   const renderDiffStack = (expanded: boolean) => !previewLoading && !previewError && hasDiffContent(preview) ? (
     <div className={clsx("diff-stack", !expanded && "diff-stack--inline")}>
       <div className="preview-panel__header">
@@ -2274,6 +2351,14 @@ export function App() {
 
   return (
     <div className="shell">
+      <div
+        className={clsx("git-activity-bar", gitActivityShown && "git-activity-bar--active")}
+        aria-hidden={!gitActivityShown}
+      >
+        <div className="git-activity-bar__label">{gitActivityLabel}</div>
+        <div className="git-activity-bar__track" />
+        <div className="git-activity-bar__indicator" />
+      </div>
       <header className="chrome panel">
         <div className="chrome__row">
           <div className="brand-block brand-block--compact">

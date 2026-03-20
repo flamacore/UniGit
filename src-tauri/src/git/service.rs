@@ -3812,7 +3812,7 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_porcelain_path, is_git_lfs_pointer_bytes, sanitize_path_list};
+    use super::{decode_porcelain_path, infer_unity_shader_family, is_git_lfs_pointer_bytes, parse_unity_material, sanitize_path_list};
 
     #[test]
     fn decode_porcelain_path_unquotes_space_wrapped_paths() {
@@ -3844,6 +3844,38 @@ mod tests {
     #[test]
     fn ignores_regular_binary_payloads_for_lfs_detection() {
         assert!(!is_git_lfs_pointer_bytes(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"));
+    }
+
+    #[test]
+    fn infers_lit_for_urp_material_with_declared_base_map() {
+        let source = r#"
+m_Name: testMaterial
+m_Shader: {fileID: 4800000, guid: 933532a4fcc9baf4fa0491de14d08ed7, type: 3}
+m_SavedProperties:
+  m_TexEnvs:
+  - _BaseMap:
+      m_Texture: {fileID: 2800000, guid: 19c714b595a159a4589ebadae30c41eb, type: 3}
+      m_Scale: {x: 1, y: 1}
+      m_Offset: {x: 0, y: 0}
+  - _MainTex:
+      m_Texture: {fileID: 2800000, guid: 19c714b595a159a4589ebadae30c41eb, type: 3}
+      m_Scale: {x: 1, y: 1}
+      m_Offset: {x: 0, y: 0}
+  - _EmissionMap:
+      m_Texture: {fileID: 0}
+      m_Scale: {x: 1, y: 1}
+      m_Offset: {x: 0, y: 0}
+  m_Ints: []
+  m_Floats:
+  - _Metallic: 0
+  - _Smoothness: 0.5
+  m_Colors:
+  - _EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+"#;
+
+        let material = parse_unity_material(source).expect("material should parse");
+        assert_eq!(material.texture_slots.len(), 3);
+        assert_eq!(infer_unity_shader_family(&material, &[]), "lit");
     }
 }
 
@@ -4727,10 +4759,17 @@ fn find_repo_asset_path_by_guid(repo_root: &Path, guid: &str) -> GitResult<Optio
 }
 
 fn infer_unity_shader_family(material: &ParsedUnityMaterial, textures: &[UnityMaterialTexturePreview]) -> String {
-    let has_base_map = textures.iter().any(|texture| matches!(texture.property_name.as_str(), "_BaseMap" | "_MainTex" | "_BaseColorMap"));
+    let has_base_map = has_unity_texture_slot(material, &["_BaseMap", "_MainTex", "_BaseColorMap"])
+        || textures.iter().any(|texture| matches!(texture.property_name.as_str(), "_BaseMap" | "_MainTex" | "_BaseColorMap"));
     let has_metallic = material.float_values.contains_key("_Metallic");
     let has_smoothness = material.float_values.contains_key("_Smoothness") || material.float_values.contains_key("_Glossiness");
-    let has_emission = material.color_values.contains_key("_EmissionColor") || textures.iter().any(|texture| texture.property_name == "_EmissionMap");
+    let has_emission = material
+        .color_values
+        .get("_EmissionColor")
+        .or_else(|| material.color_values.get("_EmissiveColor"))
+        .is_some_and(unity_color_has_visible_energy)
+        || has_unity_texture_slot(material, &["_EmissionMap", "_EmissiveColorMap"])
+        || textures.iter().any(|texture| matches!(texture.property_name.as_str(), "_EmissionMap" | "_EmissiveColorMap"));
 
     if has_base_map && has_metallic && has_smoothness {
         return "lit".to_string();
@@ -4741,6 +4780,14 @@ fn infer_unity_shader_family(material: &ParsedUnityMaterial, textures: &[UnityMa
     }
 
     "custom".to_string()
+}
+
+fn has_unity_texture_slot(material: &ParsedUnityMaterial, keys: &[&str]) -> bool {
+    material.texture_slots.iter().any(|slot| slot.guid.is_some() && keys.iter().any(|key| slot.property_name == *key))
+}
+
+fn unity_color_has_visible_energy(color: &UnityColorValue) -> bool {
+    color.r > 0.0001 || color.g > 0.0001 || color.b > 0.0001
 }
 
 fn infer_unity_shader_label(material: &ParsedUnityMaterial, shader_family: &str) -> String {

@@ -74,7 +74,76 @@ pre {
   height: var(--app-height);
   gap: 8px;
   padding: 10px;
+  position: relative;
   overflow: hidden;
+}
+
+.git-activity-bar {
+  position: absolute;
+  right: 18px;
+  bottom: 16px;
+  width: min(320px, calc(100% - 36px));
+  height: 28px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 140ms ease, transform 140ms ease;
+  z-index: 30;
+}
+
+.git-activity-bar--active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.git-activity-bar__label {
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  padding: 5px 10px;
+  border: 1px solid rgba(121, 164, 255, 0.24);
+  border-radius: 999px;
+  background: rgba(8, 13, 23, 0.92);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  white-space: nowrap;
+}
+
+.git-activity-bar__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(121, 164, 255, 0.14), rgba(72, 211, 197, 0.1));
+  overflow: hidden;
+}
+
+.git-activity-bar__indicator {
+  position: absolute;
+  left: -34%;
+  bottom: 0;
+  width: 34%;
+  min-width: 132px;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(121, 164, 255, 0.9), rgba(72, 211, 197, 0.95));
+  box-shadow: 0 0 16px rgba(72, 211, 197, 0.42);
+  animation: git-activity-slide 1.15s ease-in-out infinite alternate;
+}
+
+@keyframes git-activity-slide {
+  from {
+    transform: translateX(0%);
+  }
+
+  to {
+    transform: translateX(460%);
+  }
 }
 
 .panel {
