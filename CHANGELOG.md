@@ -1,3 +1,5 @@
+## [0.13.1](https://github.com/flamacore/UniGit/compare/v0.13.0...v0.13.1) (2026-03-20)
+
 ## [0.13.0](https://github.com/flamacore/UniGit/compare/v0.12.1...v0.13.0) (2026-03-20)
 
 ### Features
