@@ -1,3 +1,9 @@
+## [0.13.0](https://github.com/flamacore/UniGit/compare/v0.12.1...v0.13.0) (2026-03-20)
+
+### Features
+
+* add pull branch functionality and enhance branch tracking details ([d275772](https://github.com/flamacore/UniGit/commit/d2757725eb57856ca3f48c334dd50c31c001226a))
+
 ## [0.12.1](https://github.com/flamacore/UniGit/compare/v0.12.0...v0.12.1) (2026-03-19)
 
 ### Bug Fixes
