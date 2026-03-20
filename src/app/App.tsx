@@ -79,6 +79,7 @@ import {
   mergeBranch,
   MergeBranchResult,
   pullRepository,
+  pullBranch,
   pushRepository,
   renameBranch,
   restoreFileFromCommit,
@@ -2202,6 +2203,40 @@ export function App() {
     }
   }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
 
+  const runPullBranch = useCallback(async (fullName: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    setRemoteDialog(null);
+
+    try {
+      writeClientLog("git.branch.pull", `Pull requested for branch ${fullName}.`, selectedRepository);
+      const result = await pullBranch(selectedRepository, fullName);
+      setStatusMessage(result || "Branch pull completed.");
+      showRemoteDialog({
+        tone: "info",
+        title: "Branch pull completed",
+        summary: result || "The selected local branch was updated from its tracked remote without switching to it.",
+      }, {
+        scope: "git.branch.pull.success",
+        context: `Pull branch ${fullName} for ${selectedRepository}.`,
+      });
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      const message = getReasonMessage(reason, "Branch pull failed.");
+      setError(null);
+      showRemoteDialog(describeRemoteFailure("pull", message), {
+        scope: "git.branch.pull.error",
+        context: `Pull branch ${fullName} for ${selectedRepository}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
+
   const runForcePull = useCallback(async () => {
     if (!selectedRepository) {
       return;
@@ -2528,6 +2563,7 @@ export function App() {
                 selectedBranchFullName={selectedBranchFullName}
                 onSelectBranch={setSelectedBranchFullName}
                 onSwitchBranch={(fullName) => void runSwitchBranch(fullName)}
+                onPullBranch={(fullName) => void runPullBranch(fullName)}
                 onForceSwitchBranch={(fullName) => void runForceSwitchBranch(fullName)}
                 onMergeBranch={(fullName) => void runMergeBranch(fullName)}
                 onRenameBranch={(currentName, nextName) => void runRenameBranch(currentName, nextName)}

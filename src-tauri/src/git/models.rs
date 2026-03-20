@@ -130,6 +130,8 @@ pub struct BranchEntry {
     pub remote_name: Option<String>,
     pub tracking_name: Option<String>,
     pub tracking_state: Option<String>,
+    pub ahead_count: usize,
+    pub behind_count: usize,
     pub is_current: bool,
     pub commit_hash: String,
     pub subject: String,

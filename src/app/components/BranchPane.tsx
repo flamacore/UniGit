@@ -13,6 +13,7 @@ export type BranchPaneProps = {
   selectedBranchFullName: string | null;
   onSelectBranch: (fullName: string) => void;
   onSwitchBranch: (fullName: string) => void;
+  onPullBranch: (fullName: string) => void;
   onForceSwitchBranch: (fullName: string) => void;
   onMergeBranch: (fullName: string) => void;
   onRenameBranch: (currentName: string, nextName: string) => void;
@@ -30,6 +31,7 @@ export function BranchPane({
   selectedBranchFullName,
   onSelectBranch,
   onSwitchBranch,
+  onPullBranch,
   onForceSwitchBranch,
   onMergeBranch,
   onRenameBranch,
@@ -159,6 +161,11 @@ export function BranchPane({
                     </span>
                   ) : <span className="branch-tree-toggle branch-tree-toggle--spacer" />}
                   <strong title={branch.name}>{branch.name}</strong>
+                  {branch.branchKind === "local" && branch.behindCount > 0 ? (
+                    <span className="pill pill--warning" title={`${branch.behindCount} commit${branch.behindCount === 1 ? "" : "s"} available to pull`}>
+                      {branch.behindCount}
+                    </span>
+                  ) : null}
                   <span className={clsx("pill", branch.branchKind === "remote" ? "pill--accent" : "pill--default")}>
                     {branch.branchKind}
                   </span>
@@ -168,6 +175,11 @@ export function BranchPane({
 
               {selectedBranchFullName === branch.fullName ? (
                 <div className="branch-row__actions">
+                  {branch.branchKind === "local" && branch.trackingName ? (
+                    <button className="ghost-button" disabled={disabled || branch.isCurrent || branch.behindCount === 0} onClick={(event) => { stopRowButton(event); onPullBranch(branch.fullName); }}>
+                      Pull
+                    </button>
+                  ) : null}
                   <button className="ghost-button" disabled={disabled} onClick={(event) => { stopRowButton(event); onSwitchBranch(branch.fullName); }}>
                     Switch
                   </button>
@@ -288,6 +300,18 @@ export function BranchPane({
               >
                 Switch to
               </button>
+              {contextMenu.branch.branchKind === "local" && contextMenu.branch.trackingName ? (
+                <button
+                  className="ghost-button"
+                  disabled={disabled || contextMenu.branch.isCurrent || contextMenu.branch.behindCount === 0}
+                  onClick={() => {
+                    onPullBranch(contextMenu.branch.fullName);
+                    setContextMenu(null);
+                  }}
+                >
+                  Pull branch
+                </button>
+              ) : null}
               <button
                 className="ghost-button"
                 disabled={disabled}

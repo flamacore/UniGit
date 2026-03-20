@@ -1875,6 +1875,12 @@ h4 {
   flex-wrap: wrap;
 }
 
+.pill--warning {
+  border: 1px solid rgba(255, 208, 120, 0.2);
+  background: rgba(173, 114, 28, 0.22);
+  color: #ffe1a3;
+}
+
 .selection-conflict-banner {
   margin-bottom: 8px;
   padding: 10px 12px;

@@ -373,6 +373,13 @@ pub async fn pull_repository(repo_path: String) -> Result<String, String> {
 }
 
 #[command]
+pub async fn pull_branch(repo_path: String, full_name: String) -> Result<String, String> {
+    pull_branch_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn force_pull_repository(repo_path: String) -> Result<String, String> {
     force_pull_repository_inner(repo_path)
         .await
@@ -1286,7 +1293,7 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
         vec![
             "for-each-ref".into(),
             "--sort=-committerdate".into(),
-            "--format=%(refname)	%(refname:short)	%(objectname:short)	%(subject)	%(upstream:short)	%(upstream:trackshort)	%(HEAD)".into(),
+            "--format=%(refname)	%(refname:short)	%(objectname:short)	%(subject)	%(upstream:short)	%(upstream:trackshort)	%(upstream:track,nobracket)	%(HEAD)".into(),
             "refs/heads".into(),
             "refs/remotes".into(),
         ],
@@ -1317,7 +1324,16 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string);
+            let tracking_detail = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
             let is_current = parts.next().unwrap_or_default().trim() == "*";
+            let (ahead_count, behind_count) = tracking_detail
+                .as_deref()
+                .map(parse_tracking_counts)
+                .unwrap_or((0, 0));
 
             let (branch_kind, remote_name) = if let Some(rest) = full_name.strip_prefix("refs/remotes/") {
                 let remote = rest.split('/').next().map(ToString::to_string);
@@ -1333,12 +1349,29 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 remote_name,
                 tracking_name,
                 tracking_state,
+                ahead_count,
+                behind_count,
                 is_current,
                 commit_hash,
                 subject,
             })
         })
         .collect())
+}
+
+fn parse_tracking_counts(value: &str) -> (usize, usize) {
+    let mut ahead = 0;
+    let mut behind = 0;
+
+    for segment in value.split(',').map(str::trim) {
+        if let Some(raw) = segment.strip_prefix("ahead ") {
+            ahead = raw.parse::<usize>().unwrap_or(0);
+        } else if let Some(raw) = segment.strip_prefix("behind ") {
+            behind = raw.parse::<usize>().unwrap_or(0);
+        }
+    }
+
+    (ahead, behind)
 }
 
 async fn list_commit_graph_inner(
@@ -2590,6 +2623,88 @@ async fn pull_repository_inner(repo_path: String) -> GitResult<String> {
     }
 }
 
+async fn pull_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let branch_name = full_name
+        .trim()
+        .strip_prefix("refs/heads/")
+        .ok_or_else(|| GitServiceError::GitCommandFailed("Only local branches can be pulled directly.".to_string()))?
+        .trim()
+        .to_string();
+
+    if branch_name.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Branch reference cannot be empty.".to_string()));
+    }
+
+    let current_branch = current_local_branch_name(path).await.ok();
+    if current_branch.as_deref() == Some(branch_name.as_str()) {
+        return pull_repository_inner(repo_path).await;
+    }
+
+    let upstream_short = run_git_owned(
+        path,
+        vec![
+            "for-each-ref".into(),
+            "--format=%(upstream:short)".into(),
+            format!("refs/heads/{branch_name}"),
+        ],
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    if upstream_short.is_empty() {
+        return Err(GitServiceError::GitCommandFailed(format!(
+            "No upstream branch is configured for {branch_name}."
+        )));
+    }
+
+    let upstream_full = run_git_owned(
+        path,
+        vec![
+            "for-each-ref".into(),
+            "--format=%(upstream)".into(),
+            format!("refs/heads/{branch_name}"),
+        ],
+    )
+    .await?
+    .trim()
+    .to_string();
+
+    let remote_name = upstream_short.split('/').next().unwrap_or_default().trim().to_string();
+    if remote_name.is_empty() {
+        return Err(GitServiceError::GitCommandFailed(format!(
+            "Could not determine remote for upstream branch {upstream_short}."
+        )));
+    }
+
+    let remote_branch_name = upstream_full
+        .strip_prefix(&format!("refs/remotes/{remote_name}/"))
+        .ok_or_else(|| GitServiceError::GitCommandFailed(format!(
+            "Could not determine remote branch ref for {upstream_short}."
+        )))?
+        .trim()
+        .to_string();
+
+    let output = run_git_remote_owned(
+        path,
+        vec![
+            "fetch".into(),
+            remote_name.clone(),
+            format!("+refs/heads/{remote_branch_name}:refs/remotes/{remote_name}/{remote_branch_name}"),
+            format!("refs/heads/{remote_branch_name}:refs/heads/{branch_name}"),
+        ],
+    )
+    .await?;
+
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        Ok(format!("Pulled {branch_name} from {upstream_short} without switching."))
+    } else {
+        Ok(format!("Pulled {branch_name} from {upstream_short} without switching.\n{trimmed}"))
+    }
+}
+
 async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
     let upstream = run_git_owned(
@@ -2877,13 +2992,66 @@ fn sanitize_path_list(paths: Vec<String>) -> Vec<String> {
     let mut unique = std::collections::BTreeSet::new();
 
     for path in paths {
-        let trimmed = path.trim().replace('\\', "/");
+        let trimmed = decode_porcelain_path(path.trim()).replace('\\', "/");
         if !trimmed.is_empty() {
             unique.insert(trimmed);
         }
     }
 
     unique.into_iter().collect()
+}
+
+fn decode_porcelain_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() < 2 || !trimmed.starts_with('"') || !trimmed.ends_with('"') {
+        return trimmed.to_string();
+    }
+
+    let inner = &trimmed[1..trimmed.len() - 1];
+    let mut decoded = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            decoded.push(ch);
+            continue;
+        }
+
+        match chars.next() {
+            Some('\\') => decoded.push('\\'),
+            Some('"') => decoded.push('"'),
+            Some('n') => decoded.push('\n'),
+            Some('r') => decoded.push('\r'),
+            Some('t') => decoded.push('\t'),
+            Some(octal @ '0'..='7') => {
+                let mut value = octal.to_digit(8).unwrap_or(0);
+
+                for _ in 0..2 {
+                    let Some(next) = chars.peek().copied() else {
+                        break;
+                    };
+
+                    if !matches!(next, '0'..='7') {
+                        break;
+                    }
+
+                    chars.next();
+                    value = value * 8 + next.to_digit(8).unwrap_or(0);
+                }
+
+                if let Some(decoded_char) = char::from_u32(value) {
+                    decoded.push(decoded_char);
+                }
+            }
+            Some(other) => {
+                decoded.push('\\');
+                decoded.push(other);
+            }
+            None => decoded.push('\\'),
+        }
+    }
+
+    decoded
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {
@@ -3393,6 +3561,63 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
     Ok(stdout)
 }
 
+async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, input: Vec<u8>) -> GitResult<Vec<u8>> {
+    let command_preview = args.join(" ");
+    let repo_display = repo_path.display().to_string();
+    let _ = append_log(
+        "backend",
+        "git.command.start",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&format!("stdin bytes={} (binary stdout expected)", input.len())),
+    );
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
+            _ => GitServiceError::GitCommandFailed(error.to_string()),
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(&input)
+            .await
+            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .await
+        .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let _ = append_log(
+            "backend",
+            "git.command.error",
+            &format!("git -C {repo_display} {command_preview}"),
+            Some(&stderr),
+        );
+        return Err(GitServiceError::GitCommandFailed(stderr));
+    }
+
+    let _ = append_log(
+        "backend",
+        "git.command.success",
+        &format!("git -C {repo_display} {command_preview}"),
+        Some(&format!("{} binary bytes returned", output.stdout.len())),
+    );
+
+    Ok(output.stdout)
+}
+
 fn append_log(source: &str, scope: &str, message: &str, detail: Option<&str>) -> std::io::Result<()> {
     let _guard = LOG_LOCK.get_or_init(|| Mutex::new(())).lock().expect("log mutex poisoned");
     let log_path = resolve_log_path()?;
@@ -3522,7 +3747,7 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
         let index_status = line.chars().nth(0).unwrap_or(' ');
         let worktree_status = line.chars().nth(1).unwrap_or(' ');
         let raw_path = &line[3..];
-        let path = raw_path.rsplit(" -> ").next().unwrap_or(raw_path).to_string();
+        let path = decode_porcelain_path(raw_path.rsplit(" -> ").next().unwrap_or(raw_path));
 
         let untracked = index_status == '?' && worktree_status == '?';
         let ignored = index_status == '!' && worktree_status == '!';
@@ -3583,6 +3808,43 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
     }
 
     (current_branch, detached_head, ahead, behind, files, counts)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_porcelain_path, is_git_lfs_pointer_bytes, sanitize_path_list};
+
+    #[test]
+    fn decode_porcelain_path_unquotes_space_wrapped_paths() {
+        assert_eq!(
+            decode_porcelain_path("\"Assets/TinyWizard/UI/Background/bg main menu.png.meta\""),
+            "Assets/TinyWizard/UI/Background/bg main menu.png.meta"
+        );
+    }
+
+    #[test]
+    fn decode_porcelain_path_decodes_common_escapes() {
+        assert_eq!(decode_porcelain_path("\"folder\\\\file\\tname\""), "folder\\file\tname");
+    }
+
+    #[test]
+    fn sanitize_path_list_normalizes_quoted_paths() {
+        assert_eq!(
+            sanitize_path_list(vec![" \"Assets\\Some Folder\\file.txt\" ".to_string()]),
+            vec!["Assets/Some Folder/file.txt".to_string()]
+        );
+    }
+
+    #[test]
+    fn detects_git_lfs_pointer_bytes() {
+        let pointer = b"version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 1747405\n";
+        assert!(is_git_lfs_pointer_bytes(pointer));
+    }
+
+    #[test]
+    fn ignores_regular_binary_payloads_for_lfs_detection() {
+        assert!(!is_git_lfs_pointer_bytes(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"));
+    }
 }
 
 fn map_status_code(code: char) -> &'static str {
@@ -4015,8 +4277,8 @@ async fn read_model_external_resource_bytes(
             let resolved = resolve_repo_file(repo_root, relative_path)?;
             Ok(Some(fs::read(resolved).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?))
         }
-        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}")).await,
-        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await,
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}"), relative_path).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}"), relative_path).await,
     }
 }
 
@@ -4043,7 +4305,7 @@ async fn collect_image_preview_sources(
         ));
     }
 
-    if let Some(staged_bytes) = git_show_optional_bytes(repo_root, format!(":{relative_path}")).await? {
+    if let Some(staged_bytes) = git_show_optional_bytes(repo_root, format!(":{relative_path}"), relative_path).await? {
         if (staged_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
             sources.push(build_image_preview_source(
                 "staged",
@@ -4056,7 +4318,7 @@ async fn collect_image_preview_sources(
         }
     }
 
-    if let Some(head_bytes) = git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await? {
+    if let Some(head_bytes) = git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}"), relative_path).await? {
         if (head_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
             sources.push(build_image_preview_source(
                 "head",
@@ -4201,8 +4463,8 @@ async fn read_preview_blob(
         PreviewBlobSource::WorkingTree => Ok(Some(
             fs::read(resolved_path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?,
         )),
-        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}")).await,
-        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}")).await,
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}"), relative_path).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}"), relative_path).await,
     }
 }
 
@@ -4418,8 +4680,8 @@ async fn read_material_texture_bytes(
             let resolved = resolve_repo_file(repo_root, relative_texture_path)?;
             Ok(Some(fs::read(resolved).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?))
         }
-        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_texture_path}")).await,
-        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_texture_path}")).await,
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_texture_path}"), relative_texture_path).await,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_texture_path}"), relative_texture_path).await,
     }
 }
 
@@ -4543,12 +4805,50 @@ fn build_unity_material_asset_summary(source: &UnityMaterialPreviewSource) -> As
     }
 }
 
-async fn git_show_optional_bytes(repo_root: &Path, object_spec: String) -> GitResult<Option<Vec<u8>>> {
+async fn git_show_optional_bytes(repo_root: &Path, object_spec: String, relative_path: &str) -> GitResult<Option<Vec<u8>>> {
     match run_git_bytes_owned(repo_root, vec!["show".into(), object_spec]).await {
-        Ok(bytes) => Ok(Some(bytes)),
+        Ok(bytes) => hydrate_lfs_preview_bytes(repo_root, relative_path, bytes).await.map(Some),
         Err(GitServiceError::GitCommandFailed(message)) if is_missing_git_object_error(&message) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+async fn hydrate_lfs_preview_bytes(repo_root: &Path, relative_path: &str, bytes: Vec<u8>) -> GitResult<Vec<u8>> {
+    if !is_git_lfs_pointer_bytes(&bytes) {
+        return Ok(bytes);
+    }
+
+    match run_git_bytes_owned_with_input(
+        repo_root,
+        vec!["lfs".into(), "smudge".into(), "--".into(), relative_path.to_string()],
+        bytes.clone(),
+    )
+    .await
+    {
+        Ok(smudged) if !smudged.is_empty() && !is_git_lfs_pointer_bytes(&smudged) => Ok(smudged),
+        Ok(_) => Ok(bytes),
+        Err(GitServiceError::GitCommandFailed(message)) => {
+            let _ = append_log(
+                "backend",
+                "git.lfs.preview.warn",
+                &format!("Failed to smudge LFS preview blob for {relative_path}"),
+                Some(&message),
+            );
+            Ok(bytes)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_git_lfs_pointer_bytes(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+
+    let normalized = text.replace("\r\n", "\n");
+    normalized.starts_with("version https://git-lfs.github.com/spec/v1\n")
+        && normalized.contains("\noid sha256:")
+        && normalized.contains("\nsize ")
 }
 
 fn is_missing_git_object_error(message: &str) -> bool {

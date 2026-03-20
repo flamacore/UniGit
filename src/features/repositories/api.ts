@@ -120,6 +120,8 @@ export type BranchEntry = {
   remoteName: string | null;
   trackingName: string | null;
   trackingState: string | null;
+  aheadCount: number;
+  behindCount: number;
   isCurrent: boolean;
   commitHash: string;
   subject: string;
@@ -424,6 +426,10 @@ export const fetchRepository = (repoPath: string) => {
 
 export const pullRepository = (repoPath: string) => {
   return invoke<string>("pull_repository", { repoPath });
+};
+
+export const pullBranch = (repoPath: string, fullName: string) => {
+  return invoke<string>("pull_branch", { repoPath, fullName });
 };
 
 export const forcePullRepository = (repoPath: string) => {
