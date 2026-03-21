@@ -56,9 +56,11 @@ export type AppErrorState = {
   logPath?: string | null;
   repoPath?: string | null;
   recoveryAction?: {
-    kind: "clear-index-lock";
+    kind: "clear-index-lock" | "retry-branch-switch";
     label: string;
     description: string;
+    branchFullName?: string;
+    force?: boolean;
   } | null;
 };
 

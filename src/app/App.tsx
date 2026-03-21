@@ -170,6 +170,32 @@ const getReasonMessage = (reason: unknown, fallback: string) => {
   return fallback;
 };
 
+const isLockedFileCheckoutError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("failed to remove")
+    && (normalized.includes("invalid argument") || normalized.includes("permission denied") || normalized.includes("access is denied"))
+  ) || normalized.includes("could not unlink");
+};
+
+const describeLockedFileCheckout = (fullName: string, message: string) => {
+  const match = message.match(/failed to remove\s+(.+?):\s+/i);
+  const blockedPath = match?.[1]?.trim() ?? null;
+  const branchLabel = fullName.replace(/^refs\/heads\//, "").replace(/^refs\/remotes\//, "");
+
+  return {
+    title: "Branch switch blocked by a locked file",
+    summary: blockedPath
+      ? `Git could not replace ${blockedPath} while switching to ${branchLabel}. Another process is probably holding that file open.`
+      : `Git could not replace a file while switching to ${branchLabel}. Another process is probably holding it open.`,
+    extraDetail: [
+      blockedPath ? `Blocked path: ${blockedPath}` : null,
+      "This usually happens on Windows when Unity, the editor, the running game, or another process has a DLL or asset loaded.",
+      "Close the process using the file, then run the retry action.",
+    ].filter(Boolean).join("\n"),
+  };
+};
+
 export function App() {
   const {
     repositories,
@@ -574,25 +600,57 @@ export function App() {
   }, [applyGraphPage, graphOrder, graphScope, selectedChangePath, selectedCommitHash, selectedRepository, selectionAnchorPath, showRemoteDialog, writeClientLog]);
 
   const runErrorRecoveryAction = useCallback(async () => {
-    if (!error?.recoveryAction || error.recoveryAction.kind !== "clear-index-lock" || !error.repoPath) {
+    if (!error?.recoveryAction || !error.repoPath) {
       return;
     }
 
     setErrorRecoveryBusy(true);
 
     try {
-      const result = await clearGitIndexLock(error.repoPath);
-      setStatusMessage(result);
-      writeClientLog("git.index-lock.clear", result, error.repoPath);
-      setError(null);
-      await refreshRepository();
+      if (error.recoveryAction.kind === "clear-index-lock") {
+        const result = await clearGitIndexLock(error.repoPath);
+        setStatusMessage(result);
+        writeClientLog("git.index-lock.clear", result, error.repoPath);
+        setError(null);
+        await refreshRepository();
+        return;
+      }
+
+      if (error.recoveryAction.kind === "retry-branch-switch" && error.recoveryAction.branchFullName) {
+        const result = error.recoveryAction.force
+          ? await forceSwitchBranch(error.repoPath, error.recoveryAction.branchFullName)
+          : await switchBranch(error.repoPath, error.recoveryAction.branchFullName);
+        setStatusMessage(result);
+        writeClientLog(
+          error.recoveryAction.force ? "git.branch.force-switch.retry" : "git.branch.switch.retry",
+          result,
+          error.repoPath,
+        );
+        setMergeConflictState(null);
+        setError(null);
+        await refreshRepository({ fetchRemote: true });
+      }
     } catch (reason) {
       reportAppError({
-        scope: "git.index-lock.clear.error",
-        title: "Remove lock file failed",
-        fallback: "Automatic lock file cleanup failed.",
+        scope: error.recoveryAction.kind === "clear-index-lock"
+          ? "git.index-lock.clear.error"
+          : error.recoveryAction.force
+            ? "git.branch.force-switch.retry.error"
+            : "git.branch.switch.retry.error",
+        title: error.recoveryAction.kind === "clear-index-lock"
+          ? "Remove lock file failed"
+          : error.recoveryAction.force
+            ? "Retry force switch failed"
+            : "Retry branch switch failed",
+        fallback: error.recoveryAction.kind === "clear-index-lock"
+          ? "Automatic lock file cleanup failed."
+          : error.recoveryAction.force
+            ? "Retrying the force switch failed."
+            : "Retrying the branch switch failed.",
         reason,
-        context: `Remove stale .git/index.lock for ${error.repoPath}.`,
+        context: error.recoveryAction.kind === "clear-index-lock"
+          ? `Remove stale .git/index.lock for ${error.repoPath}.`
+          : `${error.recoveryAction.force ? "Retry force switch" : "Retry branch switch"} ${error.recoveryAction.branchFullName ?? ""}.`,
       });
     } finally {
       setErrorRecoveryBusy(false);
@@ -1984,17 +2042,49 @@ export function App() {
       setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      reportAppError({
-        scope: "git.branch.switch.error",
-        title: "Branch switch failed",
-        fallback: "Branch switch failed.",
-        reason,
-        context: `Switch branch ${fullName}.`,
-      });
+      const message = getReasonMessage(reason, "Branch switch failed.");
+      if (isLockedFileCheckoutError(message)) {
+        const lockedFile = describeLockedFileCheckout(fullName, message);
+        const occurredAt = new Date().toISOString();
+        const fullDetail = [
+          `Time: ${occurredAt}`,
+          selectedRepository ? `Repository: ${selectedRepository}` : null,
+          `Action: Switch branch ${fullName}.`,
+          `Context:\n${lockedFile.extraDetail}`,
+          `Summary: ${lockedFile.summary}`,
+          `Error detail:\n${message}`,
+          logFilePath ? `Log file:\n${logFilePath}` : null,
+        ].filter(Boolean).join("\n\n");
+
+        setError({
+          title: lockedFile.title,
+          summary: lockedFile.summary,
+          detail: fullDetail,
+          occurredAt,
+          logPath: logFilePath,
+          repoPath: selectedRepository,
+          recoveryAction: {
+            kind: "retry-branch-switch",
+            label: "Retry switch",
+            description: "After closing the process that is using the locked file, run the branch switch again.",
+            branchFullName: fullName,
+            force: false,
+          },
+        });
+        writeClientLog("git.branch.switch.locked-file", lockedFile.title, fullDetail);
+      } else {
+        reportAppError({
+          scope: "git.branch.switch.error",
+          title: "Branch switch failed",
+          fallback: "Branch switch failed.",
+          reason,
+          context: `Switch branch ${fullName}.`,
+        });
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+  }, [logFilePath, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runForceSwitchBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
@@ -2011,17 +2101,49 @@ export function App() {
       setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      reportAppError({
-        scope: "git.branch.force-switch.error",
-        title: "Force switch failed",
-        fallback: "Force switch failed.",
-        reason,
-        context: `Force switch branch ${fullName}.`,
-      });
+      const message = getReasonMessage(reason, "Force switch failed.");
+      if (isLockedFileCheckoutError(message)) {
+        const lockedFile = describeLockedFileCheckout(fullName, message);
+        const occurredAt = new Date().toISOString();
+        const fullDetail = [
+          `Time: ${occurredAt}`,
+          selectedRepository ? `Repository: ${selectedRepository}` : null,
+          `Action: Force switch branch ${fullName}.`,
+          `Context:\n${lockedFile.extraDetail}`,
+          `Summary: ${lockedFile.summary}`,
+          `Error detail:\n${message}`,
+          logFilePath ? `Log file:\n${logFilePath}` : null,
+        ].filter(Boolean).join("\n\n");
+
+        setError({
+          title: lockedFile.title,
+          summary: lockedFile.summary,
+          detail: fullDetail,
+          occurredAt,
+          logPath: logFilePath,
+          repoPath: selectedRepository,
+          recoveryAction: {
+            kind: "retry-branch-switch",
+            label: "Retry force switch",
+            description: "After closing the process that is using the locked file, run the force switch again.",
+            branchFullName: fullName,
+            force: true,
+          },
+        });
+        writeClientLog("git.branch.force-switch.locked-file", lockedFile.title, fullDetail);
+      } else {
+        reportAppError({
+          scope: "git.branch.force-switch.error",
+          title: "Force switch failed",
+          fallback: "Force switch failed.",
+          reason,
+          context: `Force switch branch ${fullName}.`,
+        });
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+  }, [logFilePath, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runCreateBranch = useCallback(async () => {
     if (!selectedRepository) {
