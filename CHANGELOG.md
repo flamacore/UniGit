@@ -1,3 +1,9 @@
+## [0.14.0](https://github.com/flamacore/UniGit/compare/v0.13.1...v0.14.0) (2026-03-21)
+
+### Features
+
+* enhance error handling for locked file scenarios during branch switching ([93e4b42](https://github.com/flamacore/UniGit/commit/93e4b428f9dce235c7231b2d69ba75bb59259e64))
+
 ## [0.13.1](https://github.com/flamacore/UniGit/compare/v0.13.0...v0.13.1) (2026-03-20)
 
 ## [0.13.0](https://github.com/flamacore/UniGit/compare/v0.12.1...v0.13.0) (2026-03-20)
