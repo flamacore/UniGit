@@ -1,3 +1,9 @@
+## [0.14.1](https://github.com/flamacore/UniGit/compare/v0.14.0...v0.14.1) (2026-03-23)
+
+### Bug Fixes
+
+* improve path handling in apply_path_operation for better git command execution ([5b87525](https://github.com/flamacore/UniGit/commit/5b875255eb14b121cd938d9e2855ff2158045763))
+
 ## [0.14.0](https://github.com/flamacore/UniGit/compare/v0.13.1...v0.14.0) (2026-03-21)
 
 ### Features
