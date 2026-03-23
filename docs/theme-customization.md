@@ -29,7 +29,7 @@ Example:
 }
 ```
 
-A larger paste-ready example is available at [docs/examples/aurora-glass-theme.json](docs/examples/aurora-glass-theme.json).
+A larger paste-ready example is available at [docs/examples/aurora-glass-theme.json](examples/aurora-glass-theme.json).
 
 Important:
 
