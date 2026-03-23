@@ -30,7 +30,7 @@ export const themeOptions: ThemeOption[] = [
   {
     id: "liquid-glass",
     label: "Liquid Glass",
-    description: "A translucent Apple-inspired glass treatment with bright, frosted surfaces.",
+    description: "A dark, translucent glass theme with layered highlights and deeper frosted surfaces.",
   },
   {
     id: "custom",

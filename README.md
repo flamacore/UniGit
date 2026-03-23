@@ -75,6 +75,10 @@ You will also need:
 - Git available on your system `PATH`
 - A Windows environment for the current primary development target
 
+## Theming
+
+Theme customization notes and a reference preset CSS file are available in [docs/theme-customization.md](docs/theme-customization.md).
+
 ## Tech Stack
 
 - Tauri 2

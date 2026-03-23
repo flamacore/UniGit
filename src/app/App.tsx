@@ -449,7 +449,7 @@ export function App() {
     const nextVariables = parseCustomThemeVariables(themeSettings);
 
     root.dataset.theme = presetId;
-    root.style.colorScheme = presetId === "dark" ? "dark" : "light";
+    root.style.colorScheme = presetId === "light" ? "light" : "dark";
 
     for (const key of appliedThemeVariableKeysRef.current) {
       if (!(key in nextVariables)) {
