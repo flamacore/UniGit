@@ -1,3 +1,9 @@
+## [0.15.1](https://github.com/flamacore/UniGit/compare/v0.15.0...v0.15.1) (2026-03-23)
+
+### Bug Fixes
+
+* add theme customization documentation and example CSS preset ([d970fc0](https://github.com/flamacore/UniGit/commit/d970fc099d4e924b4b2d6dd8d15791538ec7e555))
+
 ## [0.15.0](https://github.com/flamacore/UniGit/compare/v0.14.1...v0.15.0) (2026-03-23)
 
 ### Features
