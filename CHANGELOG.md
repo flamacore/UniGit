@@ -1,3 +1,9 @@
+## [0.15.0](https://github.com/flamacore/UniGit/compare/v0.14.1...v0.15.0) (2026-03-23)
+
+### Features
+
+* add theme settings management with support for custom themes ([235c12a](https://github.com/flamacore/UniGit/commit/235c12a5b4cf4fc291998606737d95cf862ac71c))
+
 ## [0.14.1](https://github.com/flamacore/UniGit/compare/v0.14.0...v0.14.1) (2026-03-23)
 
 ### Bug Fixes
