@@ -4,6 +4,12 @@ import type { RepositoryConfig, RepositorySshSettings } from "../../features/rep
 import { formatRepoLabel } from "../utils/formatters";
 import clsx from "clsx";
 import type { AiSettings } from "../utils/aiSettings";
+import {
+  defaultThemeSettings,
+  presetThemeOptions,
+  themeOptions,
+  type ThemeSettings,
+} from "../utils/themeSettings";
 
 export type RepoManagerDialogProps = {
   repositories: string[];
@@ -30,6 +36,9 @@ export type RepoManagerDialogProps = {
   settingsDisabled: boolean;
   aiSettings: AiSettings;
   onAiSettingsChange: (next: AiSettings) => void;
+  themeSettings: ThemeSettings;
+  onThemeSettingsChange: (next: ThemeSettings) => void;
+  themeValidationError: string | null;
 };
 
 export function RepoManagerDialog({
@@ -57,6 +66,9 @@ export function RepoManagerDialog({
   settingsDisabled,
   aiSettings,
   onAiSettingsChange,
+  themeSettings,
+  onThemeSettingsChange,
+  themeValidationError,
 }: RepoManagerDialogProps) {
   const [draftRemotes, setDraftRemotes] = useState<Array<{ originalName: string | null; name: string; fetchUrl: string; pushUrl: string }>>([]);
   const [draftSshSettings, setDraftSshSettings] = useState<RepositorySshSettings | null>(null);
@@ -415,6 +427,108 @@ export function RepoManagerDialog({
             {!repoConfigLoading && !repoConfigError && (!repoConfig || !draftSshSettings) ? (
               <p className="muted">Select a loaded repository to configure SSH for it.</p>
             ) : null}
+          </section>
+
+          <section className="repo-manager-section repo-manager-section--stretch">
+            <div className="repo-manager-section__header">
+              <h3>Appearance</h3>
+            </div>
+
+            <div className="repo-config-card repo-config-card--stretch panel-scroll">
+              <label className="repo-form-field">
+                <span>Theme</span>
+                <select
+                  className="changes-filter"
+                  disabled={settingsDisabled}
+                  value={themeSettings.selectedThemeId}
+                  onChange={(event) => onThemeSettingsChange({
+                    ...themeSettings,
+                    selectedThemeId: event.target.value as ThemeSettings["selectedThemeId"],
+                  })}
+                >
+                  {themeOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.id === "custom" ? `Custom${themeSettings.customThemeName.trim() ? ` (${themeSettings.customThemeName.trim()})` : ""}` : option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <p className="muted">
+                {themeOptions.find((option) => option.id === themeSettings.selectedThemeId)?.description}
+              </p>
+
+              {themeSettings.selectedThemeId === "custom" ? (
+                <div className="repo-theme-editor">
+                  <label className="repo-form-field">
+                    <span>Custom theme name</span>
+                    <input
+                      className="changes-filter"
+                      disabled={settingsDisabled}
+                      value={themeSettings.customThemeName}
+                      onChange={(event) => onThemeSettingsChange({
+                        ...themeSettings,
+                        customThemeName: event.target.value,
+                      })}
+                      placeholder="My theme"
+                    />
+                  </label>
+
+                  <label className="repo-form-field">
+                    <span>Base preset</span>
+                    <select
+                      className="changes-filter"
+                      disabled={settingsDisabled}
+                      value={themeSettings.customBaseThemeId}
+                      onChange={(event) => onThemeSettingsChange({
+                        ...themeSettings,
+                        customBaseThemeId: event.target.value as ThemeSettings["customBaseThemeId"],
+                      })}
+                    >
+                      {presetThemeOptions.map((option) => (
+                        <option key={option.id} value={option.id}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="repo-form-field">
+                    <span>CSS variable overrides (JSON)</span>
+                    <textarea
+                      className="changes-filter repo-theme-editor__code"
+                      disabled={settingsDisabled}
+                      rows={10}
+                      value={themeSettings.customVariablesText}
+                      onChange={(event) => onThemeSettingsChange({
+                        ...themeSettings,
+                        customVariablesText: event.target.value,
+                      })}
+                      placeholder={defaultThemeSettings.customVariablesText}
+                    />
+                  </label>
+
+                  <div className="repo-theme-hints">
+                    <p className="muted">Use CSS variable names such as --accent, --panel-bg-start, --text-1, or --app-background.</p>
+                    <p className="muted">Values must be valid CSS strings, for example "#0ea5e9", "rgba(255,255,255,0.55)", or "linear-gradient(...)".</p>
+                    {themeValidationError ? <p className="repo-theme-error">{themeValidationError}</p> : null}
+                  </div>
+
+                  <div className="repo-remote-row__actions">
+                    <button
+                      className="ghost-button"
+                      disabled={settingsDisabled}
+                      onClick={() => onThemeSettingsChange({
+                        ...themeSettings,
+                        customThemeName: defaultThemeSettings.customThemeName,
+                        customBaseThemeId: defaultThemeSettings.customBaseThemeId,
+                        customVariablesText: defaultThemeSettings.customVariablesText,
+                      })}
+                    >
+                      Reset custom theme
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </section>
 
           <section className="repo-manager-section repo-manager-section--stretch">

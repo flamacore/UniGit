@@ -94,6 +94,14 @@ import { useRepositoryStore } from "../features/repositories/store/useRepository
 import { isTauri } from "../lib/tauri";
 import { generateAiCommitMessage } from "./utils/aiCommitMessage";
 import { getAiSettingsValidationError, loadAiSettings, persistAiSettings, type AiSettings } from "./utils/aiSettings";
+import {
+  getThemeSettingsValidationError,
+  loadThemeSettings,
+  parseCustomThemeVariables,
+  persistThemeSettings,
+  resolveThemePresetId,
+  type ThemeSettings,
+} from "./utils/themeSettings";
 
 type BranchDeleteDialogState = {
   branch: BranchEntry;
@@ -225,6 +233,7 @@ export function App() {
   const [historyFilter, setHistoryFilter] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
   const [aiSettings, setAiSettings] = useState<AiSettings>(() => loadAiSettings());
+  const [themeSettings, setThemeSettings] = useState<ThemeSettings>(() => loadThemeSettings());
   const [aiGeneratingCommitMessage, setAiGeneratingCommitMessage] = useState(false);
   const [selectedCommitHash, setSelectedCommitHash] = useState<string | null>(null);
   const [commitDetail, setCommitDetail] = useState<CommitDetail | null>(null);
@@ -274,6 +283,7 @@ export function App() {
   const lastAutoRefreshAtRef = useRef(0);
   const gitActivityStartedAtRef = useRef(0);
   const gitActivityHideTimeoutRef = useRef<number | null>(null);
+  const appliedThemeVariableKeysRef = useRef<string[]>([]);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [gitActivityShown, setGitActivityShown] = useState(false);
 
@@ -424,6 +434,35 @@ export function App() {
   useEffect(() => {
     persistAiSettings(aiSettings);
   }, [aiSettings]);
+
+  useEffect(() => {
+    persistThemeSettings(themeSettings);
+  }, [themeSettings]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const root = document.documentElement;
+    const presetId = resolveThemePresetId(themeSettings);
+    const nextVariables = parseCustomThemeVariables(themeSettings);
+
+    root.dataset.theme = presetId;
+    root.style.colorScheme = presetId === "dark" ? "dark" : "light";
+
+    for (const key of appliedThemeVariableKeysRef.current) {
+      if (!(key in nextVariables)) {
+        root.style.removeProperty(key);
+      }
+    }
+
+    for (const [key, value] of Object.entries(nextVariables)) {
+      root.style.setProperty(key, value);
+    }
+
+    appliedThemeVariableKeysRef.current = Object.keys(nextVariables);
+  }, [themeSettings]);
 
   const reportAppError = useCallback((options: {
     scope: string;
@@ -3352,6 +3391,9 @@ export function App() {
           settingsDisabled={submitting}
           aiSettings={aiSettings}
           onAiSettingsChange={setAiSettings}
+          themeSettings={themeSettings}
+          onThemeSettingsChange={setThemeSettings}
+          themeValidationError={getThemeSettingsValidationError(themeSettings)}
         />
       ) : null}
 
