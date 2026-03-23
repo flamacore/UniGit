@@ -2057,20 +2057,41 @@ async fn apply_commit_file_patch_inner(
 
 async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bool) -> GitResult<()> {
     let path = validate_repository_path(&repo_path)?;
+    let normalized_paths = sanitize_path_list(paths);
 
-    if paths.is_empty() {
+    if normalized_paths.is_empty() {
         return Ok(());
     }
 
-    let mut args: Vec<String> = if unstage {
-        vec!["reset".into(), "HEAD".into(), "--".into()]
+    let args: Vec<String> = if unstage {
+        vec![
+            "reset".into(),
+            "--pathspec-from-file=-".into(),
+            "--pathspec-file-nul".into(),
+            "HEAD".into(),
+        ]
     } else {
-        vec!["add".into(), "--".into()]
+        vec![
+            "add".into(),
+            "--pathspec-from-file=-".into(),
+            "--pathspec-file-nul".into(),
+        ]
     };
 
-    args.extend(paths);
+    run_git_owned_with_input(path, args, encode_pathspec_input(&normalized_paths))
+        .await
+        .map(|_| ())
+}
 
-    run_git_owned(path, args).await.map(|_| ())
+fn encode_pathspec_input(paths: &[String]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for path in paths {
+        bytes.extend_from_slice(path.as_bytes());
+        bytes.push(0);
+    }
+
+    bytes
 }
 
 async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult<()> {
