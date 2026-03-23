@@ -29,6 +29,8 @@ Example:
 }
 ```
 
+A larger paste-ready example is available at [docs/examples/aurora-glass-theme.json](docs/examples/aurora-glass-theme.json).
+
 Important:
 
 - Custom themes in the current UI override CSS variables only.
@@ -147,6 +149,18 @@ Use `dark` unless the theme is genuinely light, because native scrollbars and fo
 
 An example preset file is available at [docs/examples/aurora-glass-theme.css](docs/examples/aurora-glass-theme.css).
 
+## Example JSON Theme
+
+An example JSON override file is available at [docs/examples/aurora-glass-theme.json](docs/examples/aurora-glass-theme.json).
+
+That file is designed to be pasted into the app's `Custom` theme textarea.
+
+It shows:
+
+- A complete variable-only version of the Aurora Glass look
+- Real gradient, shadow, blur, and surface values in JSON form
+- A format that matches the validation rules in the app
+
 That file shows:
 
 - A complete `:root[data-theme="aurora-glass"]` variable block
@@ -156,4 +170,5 @@ That file shows:
 Note:
 
 - The example CSS file is for contributors adding a built-in theme or for future import tooling.
-- End users currently paste JSON variable overrides into the app, not raw CSS.
+- The example JSON file is for end users customizing the app today.
+- The example CSS file can do more than JSON because selector-specific rules like `.panel` or `.graph-viewport` cannot be represented in the current custom theme editor.
