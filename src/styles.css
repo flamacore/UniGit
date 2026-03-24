@@ -2016,6 +2016,10 @@ h4 {
   justify-content: space-between;
 }
 
+.branch-prune-menu-wrap {
+  position: relative;
+}
+
 .branch-card,
 .branch-action-dialog,
 .conflict-dialog,
@@ -2164,6 +2168,36 @@ h4 {
   border-radius: 24px;
 }
 
+.branch-prune-dialog {
+  width: min(720px, 100%);
+}
+
+.branch-prune-dialog__body,
+.branch-prune-dialog__targets {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.branch-prune-dialog__body {
+  margin-top: 4px;
+}
+
+.branch-prune-dialog__inline {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(120px, 180px);
+  gap: 10px;
+}
+
+.branch-prune-dialog__targets {
+  gap: 8px;
+  padding-left: 24px;
+}
+
+.branch-prune-dialog__rule {
+  font-weight: 600;
+}
+
 .branch-action-dialog__checkbox,
 .conflict-dialog__row {
   display: flex;
@@ -2217,6 +2251,17 @@ h4 {
   border: 1px solid var(--line);
   background: linear-gradient(180deg, var(--surface-menu-start), var(--surface-menu-end));
   box-shadow: var(--panel-shadow);
+}
+
+.branch-prune-menu {
+  top: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  min-width: 240px;
+}
+
+.branch-prune-menu .ghost-button {
+  justify-content: flex-start;
 }
 
 .graph-panel--fullscreen {

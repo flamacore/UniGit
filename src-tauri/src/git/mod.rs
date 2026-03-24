@@ -3,6 +3,7 @@ mod service;
 
 pub use service::{
 	add_paths_to_gitignore, apply_commit_file_patch, create_commit, delete_branch,
+	conditional_prune_branches, hard_prune_local_branches,
 	create_branch, force_switch_branch, merge_branch, resolve_conflicted_files,
 	discard_paths, export_file_from_commit,
 	inspect_commit_detail, inspect_file_preview, inspect_repository,

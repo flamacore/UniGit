@@ -18,6 +18,7 @@ import { Suspense, lazy, type MouseEvent, useCallback, useEffect, useMemo, useRe
 import { BranchPane } from "./components/BranchPane";
 import { BranchCreateDialog } from "./components/BranchCreateDialog";
 import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
+import { BranchPruneDialog, type BranchPruneDialogValue } from "./components/BranchPruneDialog";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { ConflictResolutionDialog } from "./components/ConflictResolutionDialog";
 import { DropLane } from "./components/DropLane";
@@ -43,6 +44,7 @@ import {
   addPathsToGitignore,
   applyCommitFilePatch,
   BranchEntry,
+  ConditionalBranchPruneInput,
   CloneResult,
   CommitDetail,
   CommitGraphOrder,
@@ -62,10 +64,12 @@ import {
   discardPaths,
   deleteRepositoryRemote,
   deleteBranch,
+  conditionalPruneBranches,
   exportFileFromCommit,
   fetchRepository,
   forceSwitchBranch,
   forcePullRepository,
+  hardPruneLocalBranches,
   inspectCommitDetail,
   inspectCommitMessageContext,
   inspectFilePreview,
@@ -120,6 +124,21 @@ type MergeConflictState = {
   branchLabel: string;
   conflictedFiles: string[];
 };
+
+const createDefaultBranchPruneDialogValue = (): BranchPruneDialogValue => ({
+  ageEnabled: false,
+  ageValue: "90",
+  ageUnit: "days",
+  mergedEnabled: false,
+  mergedIntoMain: true,
+  mergedIntoMaster: true,
+  mergedIntoDev: true,
+  folderEnabled: false,
+  folderPrefixesText: "feature, task, bug",
+  regexEnabled: false,
+  regexPattern: "^(feature|task|bug)/",
+  target: "both",
+});
 
 const buildRemoteBranchRef = (trackingName: string | null) => {
   return trackingName ? `refs/remotes/${trackingName}` : null;
@@ -221,6 +240,7 @@ export function App() {
   const [branchCreateName, setBranchCreateName] = useState("");
   const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
   const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
+  const [branchPruneDialog, setBranchPruneDialog] = useState<BranchPruneDialogValue | null>(null);
   const [mergeDiscardDialog, setMergeDiscardDialog] = useState<MergeDiscardDialogState | null>(null);
   const [mergeConflictState, setMergeConflictState] = useState<MergeConflictState | null>(null);
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
@@ -2296,6 +2316,109 @@ export function App() {
     }
   }, [branchDeleteDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
+  const runSoftPruneBranches = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    setRemoteDialog(null);
+
+    try {
+      writeClientLog("git.branch.prune.soft", `Soft prune requested for ${selectedRepository}.`);
+      const result = await fetchRepository(selectedRepository);
+      setStatusMessage(result === "Fetch completed." ? "Soft prune completed." : `Soft prune completed. ${result}`);
+      await refreshRepository();
+    } catch (reason) {
+      const message = getReasonMessage(reason, "Soft prune failed.");
+      setError(null);
+      showRemoteDialog(describeRemoteFailure("fetch", message), {
+        scope: "git.branch.prune.soft.error",
+        context: `Soft prune for ${selectedRepository}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
+
+  const runLocalHardPruneBranches = useCallback(async () => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.prune.hard-local", `Local hard prune requested for ${selectedRepository}.`);
+      const result = await hardPruneLocalBranches(selectedRepository);
+      setStatusMessage(result);
+      await refreshRepository();
+    } catch (reason) {
+      reportAppError({
+        scope: "git.branch.prune.hard-local.error",
+        title: "Local hard prune failed",
+        fallback: "Local hard prune failed.",
+        reason,
+        context: `Local hard prune for ${selectedRepository}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runConditionalPruneBranches = useCallback(async () => {
+    if (!selectedRepository || !branchPruneDialog) {
+      return;
+    }
+
+    const input: ConditionalBranchPruneInput = {
+      mergedIntoBranches: branchPruneDialog.mergedEnabled
+        ? [
+          branchPruneDialog.mergedIntoMain ? "main" : null,
+          branchPruneDialog.mergedIntoMaster ? "master" : null,
+          branchPruneDialog.mergedIntoDev ? "dev" : null,
+        ].filter((value): value is string => Boolean(value))
+        : [],
+      folderPrefixes: branchPruneDialog.folderEnabled
+        ? branchPruneDialog.folderPrefixesText.split(",").map((value) => value.trim()).filter(Boolean)
+        : [],
+      regexPattern: branchPruneDialog.regexEnabled ? branchPruneDialog.regexPattern.trim() || undefined : undefined,
+      target: branchPruneDialog.target,
+    };
+
+    if (branchPruneDialog.ageEnabled) {
+      const parsedAgeValue = Number(branchPruneDialog.ageValue.trim());
+      if (Number.isFinite(parsedAgeValue) && parsedAgeValue > 0) {
+        input.ageValue = parsedAgeValue;
+        input.ageUnit = branchPruneDialog.ageUnit;
+      }
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.prune.conditional", `Conditional prune requested for ${selectedRepository}.`, JSON.stringify(input, null, 2));
+      const result = await conditionalPruneBranches(selectedRepository, input);
+      setStatusMessage(result);
+      setBranchPruneDialog(null);
+      await refreshRepository();
+    } catch (reason) {
+      reportAppError({
+        scope: "git.branch.prune.conditional.error",
+        title: "Conditional prune failed",
+        fallback: "Conditional prune failed.",
+        reason,
+        context: `Conditional prune for ${selectedRepository}.`,
+        detail: JSON.stringify(input, null, 2),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [branchPruneDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
   const runMergeBranch = useCallback(async (fullName: string, discardLocalChanges = false) => {
     if (!selectedRepository) {
       return;
@@ -2814,6 +2937,9 @@ export function App() {
                 onMergeBranch={(fullName) => void runMergeBranch(fullName)}
                 onRenameBranch={(currentName, nextName) => void runRenameBranch(currentName, nextName)}
                 onRequestDeleteBranch={openDeleteBranchDialog}
+                onSoftPrune={() => void runSoftPruneBranches()}
+                onLocalHardPrune={() => void runLocalHardPruneBranches()}
+                onOpenConditionalPrune={() => setBranchPruneDialog(createDefaultBranchPruneDialogValue())}
                 onOpenCreateBranch={() => {
                   setBranchCreateName("");
                   setBranchCreateDiscardChanges(false);
@@ -3468,6 +3594,16 @@ export function App() {
           onChangeDeleteRemote={(value) => setBranchDeleteDialog((current) => current ? { ...current, deleteRemote: value } : current)}
           onClose={() => setBranchDeleteDialog(null)}
           onConfirm={() => void runConfirmDeleteBranch()}
+        />
+      ) : null}
+
+      {branchPruneDialog ? (
+        <BranchPruneDialog
+          value={branchPruneDialog}
+          disabled={submitting}
+          onChange={setBranchPruneDialog}
+          onClose={() => setBranchPruneDialog(null)}
+          onConfirm={() => void runConditionalPruneBranches()}
         />
       ) : null}
 

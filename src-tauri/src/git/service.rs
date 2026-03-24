@@ -6,10 +6,11 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Mutex, OnceLock},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use tauri::command;
@@ -110,6 +111,44 @@ struct ParsedSshConfigHostAccumulator {
 struct GitRemoteEnvironment {
     env_pairs: Vec<(String, String)>,
     log_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConditionalBranchPruneInput {
+    age_value: Option<u64>,
+    age_unit: Option<String>,
+    merged_into_branches: Vec<String>,
+    folder_prefixes: Vec<String>,
+    regex_pattern: Option<String>,
+    target: String,
+}
+
+#[derive(Debug, Clone)]
+struct BranchPruneCandidate {
+    full_name: String,
+    name: String,
+    branch_kind: String,
+    tracking_name: Option<String>,
+    is_current: bool,
+    comparable_name: String,
+    committed_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedConditionalBranchPruneInput {
+    max_age_seconds: Option<u64>,
+    merged_into_branches: Vec<String>,
+    folder_prefixes: Vec<String>,
+    regex: Option<Regex>,
+    target: BranchPruneTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchPruneTarget {
+    Local,
+    Remote,
+    Both,
 }
 
 type GitResult<T> = Result<T, GitServiceError>;
@@ -305,6 +344,20 @@ pub async fn rename_branch(repo_path: String, current_name: String, next_name: S
 #[command]
 pub async fn delete_branch(repo_path: String, full_name: String) -> Result<String, String> {
     delete_branch_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn hard_prune_local_branches(repo_path: String) -> Result<String, String> {
+    hard_prune_local_branches_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn conditional_prune_branches(repo_path: String, input: ConditionalBranchPruneInput) -> Result<String, String> {
+    conditional_prune_branches_inner(repo_path, input)
         .await
         .map_err(|error| error.to_string())
 }
@@ -2369,10 +2422,14 @@ async fn rename_branch_inner(repo_path: String, current_name: String, next_name:
 
 async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
+    delete_branch_reference(path, full_name.trim()).await
+}
+
+async fn delete_branch_reference(repo_path: &Path, full_name: &str) -> GitResult<String> {
     let trimmed = full_name.trim();
 
     if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
-        run_git_owned(path, vec!["branch".into(), "-D".into(), local_name.to_string()]).await?;
+        run_git_owned(repo_path, vec!["branch".into(), "-D".into(), local_name.to_string()]).await?;
         return Ok(format!("Deleted local branch {local_name}."));
     }
 
@@ -2386,7 +2443,7 @@ async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<
         }
 
         run_git_remote_owned(
-            path,
+            repo_path,
             vec!["push".into(), remote_name.to_string(), "--delete".into(), branch_name.clone()],
         )
         .await?;
@@ -2395,6 +2452,174 @@ async fn delete_branch_inner(repo_path: String, full_name: String) -> GitResult<
     }
 
     Err(GitServiceError::GitCommandFailed("Unsupported branch reference.".to_string()))
+}
+
+async fn hard_prune_local_branches_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    fetch_prune_tags(path).await?;
+
+    let branches = list_branch_prune_candidates(path).await?;
+    let remote_short_names = branches
+        .iter()
+        .filter(|branch| branch.branch_kind == "remote")
+        .map(|branch| branch.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let remote_comparable_names = branches
+        .iter()
+        .filter(|branch| branch.branch_kind == "remote")
+        .map(|branch| branch.comparable_name.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    let stale_local_branches = branches
+        .iter()
+        .filter(|branch| branch.branch_kind == "local")
+        .filter(|branch| {
+            if let Some(tracking_name) = branch.tracking_name.as_deref() {
+                !remote_short_names.contains(tracking_name)
+            } else {
+                !remote_comparable_names.contains(branch.comparable_name.as_str())
+            }
+        })
+        .map(|branch| branch.name.clone())
+        .collect::<Vec<_>>();
+
+    if stale_local_branches.is_empty() {
+        return Ok("Local hard prune found no local branches that were missing on the remote.".to_string());
+    }
+
+    let stale_set = stale_local_branches.iter().cloned().collect::<std::collections::HashSet<_>>();
+
+    if let Some(current_branch_name) = branches
+        .iter()
+        .find(|branch| branch.branch_kind == "local" && branch.is_current)
+        .map(|branch| branch.name.clone())
+    {
+        if stale_set.contains(current_branch_name.as_str()) {
+            move_head_away_from_branch(path, &current_branch_name, &branches, &stale_set).await?;
+        }
+    }
+
+    for branch_name in &stale_local_branches {
+        force_delete_local_branch_ref(path, branch_name).await?;
+    }
+
+    Ok(format!(
+        "Local hard prune removed {} local branch(es): {}.",
+        stale_local_branches.len(),
+        summarize_branch_names(&stale_local_branches)
+    ))
+}
+
+async fn conditional_prune_branches_inner(repo_path: String, input: ConditionalBranchPruneInput) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    fetch_prune_tags(path).await?;
+
+    let normalized = normalize_conditional_prune_input(input)?;
+    let branches = list_branch_prune_candidates(path).await?;
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let protected_base_names = normalized
+        .merged_into_branches
+        .iter()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
+    let merge_base_refs = branches
+        .iter()
+        .filter(|branch| protected_base_names.contains(branch.comparable_name.as_str()))
+        .map(|branch| branch.full_name.clone())
+        .collect::<Vec<_>>();
+
+    let mut local_matches = Vec::new();
+    let mut remote_matches = Vec::new();
+
+    for branch in &branches {
+        if branch.branch_kind == "local" && branch.is_current {
+            continue;
+        }
+
+        if protected_base_names.contains(branch.comparable_name.as_str()) {
+            continue;
+        }
+
+        let branch_target = if branch.branch_kind == "local" {
+            BranchPruneTarget::Local
+        } else {
+            BranchPruneTarget::Remote
+        };
+
+        if !matches_prune_target(normalized.target, branch_target) {
+            continue;
+        }
+
+        if !branch_matches_non_merge_criteria(branch, &normalized, now_unix) {
+            continue;
+        }
+
+        if !normalized.merged_into_branches.is_empty()
+            && !branch_is_merged_into_any(path, branch, &merge_base_refs).await?
+        {
+            continue;
+        }
+
+        if branch.branch_kind == "local" {
+            local_matches.push(branch.name.clone());
+        } else {
+            remote_matches.push(branch.full_name.clone());
+        }
+    }
+
+    if local_matches.is_empty() && remote_matches.is_empty() {
+        return Ok("Conditional prune matched no branches.".to_string());
+    }
+
+    let local_match_set = local_matches.iter().cloned().collect::<std::collections::HashSet<_>>();
+
+    if !local_matches.is_empty() {
+        if let Some(current_branch_name) = branches
+            .iter()
+            .find(|branch| branch.branch_kind == "local" && branch.is_current)
+            .map(|branch| branch.name.clone())
+        {
+            if local_match_set.contains(current_branch_name.as_str()) {
+                move_head_away_from_branch(path, &current_branch_name, &branches, &local_match_set).await?;
+            }
+        }
+    }
+
+    for branch_name in &local_matches {
+        force_delete_local_branch_ref(path, branch_name).await?;
+    }
+
+    for full_name in &remote_matches {
+        delete_branch_reference(path, full_name).await?;
+    }
+
+    let mut summary_parts = Vec::new();
+
+    if !local_matches.is_empty() {
+        summary_parts.push(format!(
+            "removed {} local branch(es): {}",
+            local_matches.len(),
+            summarize_branch_names(&local_matches)
+        ));
+    }
+
+    if !remote_matches.is_empty() {
+        let remote_labels = remote_matches
+            .iter()
+            .map(|full_name| pretty_branch_label(full_name))
+            .collect::<Vec<_>>();
+        summary_parts.push(format!(
+            "removed {} remote branch(es): {}",
+            remote_matches.len(),
+            summarize_branch_names(&remote_labels)
+        ));
+    }
+
+    Ok(format!("Conditional prune {}.", summary_parts.join(" and ")))
 }
 
 async fn merge_branch_inner(repo_path: String, full_name: String, discard_local_changes: bool) -> GitResult<MergeBranchResult> {
@@ -2775,6 +3000,289 @@ async fn discard_all_local_state(repo_path: &Path) -> GitResult<()> {
     run_git_owned(repo_path, vec!["reset".into(), "--hard".into(), "HEAD".into()]).await?;
     run_git_owned(repo_path, vec!["clean".into(), "-fd".into()]).await?;
     Ok(())
+}
+
+async fn fetch_prune_tags(repo_path: &Path) -> GitResult<()> {
+    run_git_remote_owned(repo_path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
+    Ok(())
+}
+
+async fn list_branch_prune_candidates(repo_path: &Path) -> GitResult<Vec<BranchPruneCandidate>> {
+    let output = run_git_owned(
+        repo_path,
+        vec![
+            "for-each-ref".into(),
+            "--sort=-committerdate".into(),
+            "--format=%(refname)\t%(refname:short)\t%(objectname)\t%(committerdate:unix)\t%(upstream:short)\t%(HEAD)".into(),
+            "refs/heads".into(),
+            "refs/remotes".into(),
+        ],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let full_name = parts.next()?.to_string();
+            let name = parts.next()?.to_string();
+
+            if full_name.ends_with("/HEAD") {
+                return None;
+            }
+
+            let _commit_hash = parts.next().unwrap_or_default().trim().to_string();
+            let committed_at_unix = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "0")
+                .and_then(|value| value.parse::<u64>().ok());
+            let tracking_name = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let is_current = parts.next().unwrap_or_default().trim() == "*";
+
+            let (branch_kind, comparable_name) = if let Some(rest) = full_name.strip_prefix("refs/remotes/") {
+                let mut segments = rest.split('/');
+                let _remote_name = segments.next();
+                let comparable_name = segments.collect::<Vec<_>>().join("/");
+                ("remote".to_string(), comparable_name)
+            } else {
+                ("local".to_string(), name.clone())
+            };
+
+            Some(BranchPruneCandidate {
+                full_name,
+                name,
+                branch_kind,
+                tracking_name,
+                is_current,
+                comparable_name,
+                committed_at_unix,
+            })
+        })
+        .collect())
+}
+
+fn normalize_conditional_prune_input(input: ConditionalBranchPruneInput) -> GitResult<NormalizedConditionalBranchPruneInput> {
+    let merged_into_branches = input
+        .merged_into_branches
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let folder_prefixes = input
+        .folder_prefixes
+        .into_iter()
+        .map(|value| value.trim().trim_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let regex_pattern = input
+        .regex_pattern
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let regex = match regex_pattern {
+        Some(pattern) => Some(Regex::new(&pattern).map_err(|error| GitServiceError::GitCommandFailed(format!("Regex pattern is invalid: {error}")))?),
+        None => None,
+    };
+    let target = match input.target.trim() {
+        "local" => BranchPruneTarget::Local,
+        "remote" => BranchPruneTarget::Remote,
+        "both" | "" => BranchPruneTarget::Both,
+        _ => {
+            return Err(GitServiceError::GitCommandFailed(
+                "Conditional prune target must be local, remote, or both.".to_string(),
+            ))
+        }
+    };
+    let max_age_seconds = match (input.age_value, input.age_unit.as_deref().map(str::trim)) {
+        (Some(value), Some("days")) if value > 0 => Some(value.saturating_mul(86_400)),
+        (Some(value), Some("months")) if value > 0 => Some(value.saturating_mul(30 * 86_400)),
+        (Some(value), Some("years")) if value > 0 => Some(value.saturating_mul(365 * 86_400)),
+        (Some(_), Some(_)) => {
+            return Err(GitServiceError::GitCommandFailed(
+                "Conditional prune age unit must be days, months, or years.".to_string(),
+            ))
+        }
+        _ => None,
+    };
+
+    if max_age_seconds.is_none() && merged_into_branches.is_empty() && folder_prefixes.is_empty() && regex.is_none() {
+        return Err(GitServiceError::GitCommandFailed(
+            "Choose at least one conditional prune rule before running it.".to_string(),
+        ));
+    }
+
+    Ok(NormalizedConditionalBranchPruneInput {
+        max_age_seconds,
+        merged_into_branches,
+        folder_prefixes,
+        regex,
+        target,
+    })
+}
+
+fn matches_prune_target(selected_target: BranchPruneTarget, branch_target: BranchPruneTarget) -> bool {
+    selected_target == BranchPruneTarget::Both || selected_target == branch_target
+}
+
+fn branch_matches_non_merge_criteria(
+    branch: &BranchPruneCandidate,
+    input: &NormalizedConditionalBranchPruneInput,
+    now_unix: u64,
+) -> bool {
+    if let Some(max_age_seconds) = input.max_age_seconds {
+        let Some(committed_at_unix) = branch.committed_at_unix else {
+            return false;
+        };
+
+        if now_unix.saturating_sub(committed_at_unix) < max_age_seconds {
+            return false;
+        }
+    }
+
+    if !input.folder_prefixes.is_empty()
+        && !input
+            .folder_prefixes
+            .iter()
+            .any(|prefix| branch.comparable_name == *prefix || branch.comparable_name.starts_with(&format!("{prefix}/")))
+    {
+        return false;
+    }
+
+    if let Some(regex) = input.regex.as_ref() {
+        if !regex.is_match(&branch.comparable_name) {
+            return false;
+        }
+    }
+
+    true
+}
+
+async fn branch_is_merged_into_any(repo_path: &Path, branch: &BranchPruneCandidate, merge_base_refs: &[String]) -> GitResult<bool> {
+    if merge_base_refs.is_empty() {
+        return Ok(false);
+    }
+
+    for base_ref in merge_base_refs {
+        if base_ref == &branch.full_name {
+            continue;
+        }
+
+        let output = run_git_capture_owned(
+            repo_path,
+            vec![
+                "merge-base".into(),
+                "--is-ancestor".into(),
+                branch.full_name.clone(),
+                base_ref.clone(),
+            ],
+        )
+        .await?;
+
+        if output.success {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+async fn move_head_away_from_branch(
+    repo_path: &Path,
+    current_branch_name: &str,
+    branches: &[BranchPruneCandidate],
+    deleting_local_branches: &std::collections::HashSet<String>,
+) -> GitResult<()> {
+    let _ = discard_all_local_state(repo_path).await;
+
+    if let Ok(commit_hash) = run_git_owned(
+        repo_path,
+        vec!["rev-parse".into(), "--verify".into(), format!("refs/heads/{current_branch_name}")],
+    )
+    .await
+    {
+        let trimmed = commit_hash.trim();
+        if !trimmed.is_empty()
+            && run_git_owned(
+                repo_path,
+                vec!["checkout".into(), "--detach".into(), "-f".into(), trimmed.to_string()],
+            )
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    if let Some(fallback_branch) = choose_fallback_local_branch(branches, deleting_local_branches, current_branch_name) {
+        if run_git_owned(repo_path, vec!["checkout".into(), "-f".into(), fallback_branch.clone()]).await.is_ok() {
+            return Ok(());
+        }
+
+        run_git_owned(
+            repo_path,
+            vec!["symbolic-ref".into(), "HEAD".into(), format!("refs/heads/{fallback_branch}")],
+        )
+        .await?;
+
+        return Ok(());
+    }
+
+    Err(GitServiceError::GitCommandFailed(format!(
+        "Could not move HEAD away from {current_branch_name} before pruning it."
+    )))
+}
+
+fn choose_fallback_local_branch(
+    branches: &[BranchPruneCandidate],
+    deleting_local_branches: &std::collections::HashSet<String>,
+    current_branch_name: &str,
+) -> Option<String> {
+    for preferred in ["main", "master", "dev"] {
+        if preferred != current_branch_name
+            && branches.iter().any(|branch| {
+                branch.branch_kind == "local"
+                    && branch.name == preferred
+                    && !deleting_local_branches.contains(branch.name.as_str())
+            })
+        {
+            return Some(preferred.to_string());
+        }
+    }
+
+    branches
+        .iter()
+        .find(|branch| {
+            branch.branch_kind == "local"
+                && branch.name != current_branch_name
+                && !deleting_local_branches.contains(branch.name.as_str())
+        })
+        .map(|branch| branch.name.clone())
+}
+
+async fn force_delete_local_branch_ref(repo_path: &Path, local_name: &str) -> GitResult<()> {
+    let full_ref = format!("refs/heads/{local_name}");
+
+    if run_git_owned(repo_path, vec!["update-ref".into(), "-d".into(), full_ref]).await.is_ok() {
+        return Ok(());
+    }
+
+    run_git_owned(repo_path, vec!["branch".into(), "-D".into(), local_name.to_string()]).await?;
+    Ok(())
+}
+
+fn summarize_branch_names(names: &[String]) -> String {
+    let sample = names.iter().take(6).cloned().collect::<Vec<_>>();
+
+    if names.len() > sample.len() {
+        format!("{} and {} more", sample.join(", "), names.len() - sample.len())
+    } else {
+        sample.join(", ")
+    }
 }
 
 async fn list_conflicted_files(repo_path: &Path) -> GitResult<Vec<String>> {

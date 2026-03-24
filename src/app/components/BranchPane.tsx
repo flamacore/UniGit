@@ -18,6 +18,9 @@ export type BranchPaneProps = {
   onMergeBranch: (fullName: string) => void;
   onRenameBranch: (currentName: string, nextName: string) => void;
   onRequestDeleteBranch: (branch: BranchEntry) => void;
+  onSoftPrune: () => void;
+  onLocalHardPrune: () => void;
+  onOpenConditionalPrune: () => void;
   onOpenCreateBranch: () => void;
   hasMergeConflict: boolean;
   disabled: boolean;
@@ -36,6 +39,9 @@ export function BranchPane({
   onMergeBranch,
   onRenameBranch,
   onRequestDeleteBranch,
+  onSoftPrune,
+  onLocalHardPrune,
+  onOpenConditionalPrune,
   onOpenCreateBranch,
   hasMergeConflict,
   disabled,
@@ -44,6 +50,7 @@ export function BranchPane({
   const [contextMenu, setContextMenu] = useState<BranchContextMenuState | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => new Set(["local", "remote", "local/root", "remote/root"]));
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [pruneMenuOpen, setPruneMenuOpen] = useState(false);
 
   const localTree = useMemo(() => buildBranchTree(localBranches, "local"), [localBranches]);
   const remoteTree = useMemo(() => buildBranchTree(remoteBranches, "remote"), [remoteBranches]);
@@ -58,7 +65,7 @@ export function BranchPane({
   }, []);
 
   useEffect(() => {
-    if (!contextMenu) {
+    if (!contextMenu && !pruneMenuOpen) {
       return;
     }
 
@@ -68,11 +75,12 @@ export function BranchPane({
       }
 
       setContextMenu(null);
+      setPruneMenuOpen(false);
     };
 
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [contextMenu]);
+  }, [contextMenu, pruneMenuOpen]);
 
   const toggleFullscreen = useCallback(async () => {
     if (!rootRef.current) {
@@ -102,6 +110,7 @@ export function BranchPane({
   const openContextMenu = (event: MouseEvent<HTMLElement>, branch: BranchEntry) => {
     event.preventDefault();
     onSelectBranch(branch.fullName);
+    setPruneMenuOpen(false);
 
     const bounds = rootRef.current?.getBoundingClientRect();
     setContextMenu({
@@ -144,6 +153,7 @@ export function BranchPane({
                 onClick={() => {
                   onSelectBranch(branch.fullName);
                   setContextMenu(null);
+                    setPruneMenuOpen(false);
                 }}
                 onContextMenu={(event) => openContextMenu(event, branch)}
               >
@@ -217,7 +227,10 @@ export function BranchPane({
             <button
               className="branch-folder-row"
               style={{ paddingLeft: `${10 + depth * 18}px` }}
-              onClick={() => toggleNode(node.id)}
+              onClick={() => {
+                toggleNode(node.id);
+                setPruneMenuOpen(false);
+              }}
             >
               <span className="branch-tree-toggle">
                 {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
@@ -260,6 +273,30 @@ export function BranchPane({
           <h3>{selectedBranchFullName ? (localBranches.concat(remoteBranches).find((branch) => branch.fullName === selectedBranchFullName)?.name ?? "Branch view") : "Branch view"}</h3>
         </div>
         <div className="branch-panel__header-actions">
+          <div className="branch-prune-menu-wrap">
+            <button className="ghost-button" disabled={disabled} onClick={() => setPruneMenuOpen((current) => !current)}>
+              Prune branches
+              <ChevronDown size={15} />
+            </button>
+            {pruneMenuOpen ? (
+              <div className="branch-context-menu branch-prune-menu">
+                <button className="ghost-button" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onSoftPrune(); }}>
+                  Soft prune
+                </button>
+                <button
+                  className="ghost-button ghost-button--danger"
+                  disabled={disabled}
+                  title="Force-remove local branches that no longer exist on any remote, even if the local branch is dirty, diverged, broken, or otherwise unhealthy. This never deletes anything on the remote."
+                  onClick={() => { setPruneMenuOpen(false); onLocalHardPrune(); }}
+                >
+                  Local hard prune
+                </button>
+                <button className="ghost-button" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onOpenConditionalPrune(); }}>
+                  Prune Conditional...
+                </button>
+              </div>
+            ) : null}
+          </div>
           <button className="ghost-button" disabled={disabled} onClick={onOpenCreateBranch}>
             <Plus size={15} />
             New branch

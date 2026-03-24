@@ -127,6 +127,15 @@ export type BranchEntry = {
   subject: string;
 };
 
+export type ConditionalBranchPruneInput = {
+  ageValue?: number;
+  ageUnit?: "days" | "months" | "years";
+  mergedIntoBranches: string[];
+  folderPrefixes: string[];
+  regexPattern?: string;
+  target: "local" | "remote" | "both";
+};
+
 export type MergeBranchResult = {
   status: "merged" | "conflicts";
   message: string;
@@ -362,6 +371,14 @@ export const renameBranch = (repoPath: string, currentName: string, nextName: st
 
 export const deleteBranch = (repoPath: string, fullName: string) => {
   return invoke<string>("delete_branch", { repoPath, fullName });
+};
+
+export const hardPruneLocalBranches = (repoPath: string) => {
+  return invoke<string>("hard_prune_local_branches", { repoPath });
+};
+
+export const conditionalPruneBranches = (repoPath: string, input: ConditionalBranchPruneInput) => {
+  return invoke<string>("conditional_prune_branches", { repoPath, input });
 };
 
 export const mergeBranch = (repoPath: string, fullName: string, discardLocalChanges = false) => {
