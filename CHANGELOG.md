@@ -1,3 +1,9 @@
+## [0.16.0](https://github.com/flamacore/UniGit/compare/v0.15.1...v0.16.0) (2026-03-24)
+
+### Features
+
+* add conditional branch pruning functionality ([13258e0](https://github.com/flamacore/UniGit/commit/13258e062096f44565f96faf2af20c35e2afcc9d))
+
 ## [0.15.1](https://github.com/flamacore/UniGit/compare/v0.15.0...v0.15.1) (2026-03-23)
 
 ### Bug Fixes
