@@ -1,3 +1,9 @@
+## [0.16.1](https://github.com/flamacore/UniGit/compare/v0.16.0...v0.16.1) (2026-03-27)
+
+### Bug Fixes
+
+* optimize path handling in discard_paths_inner function ([3aecdfe](https://github.com/flamacore/UniGit/commit/3aecdfe17b4b5810576c64ab651599d5f7a76838))
+
 ## [0.16.0](https://github.com/flamacore/UniGit/compare/v0.15.1...v0.16.0) (2026-03-24)
 
 ### Features
