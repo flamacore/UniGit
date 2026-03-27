@@ -2155,15 +2155,23 @@ async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult
         return Ok(());
     }
 
-    let untracked_output = run_git_owned(
-        path,
-        {
-            let mut args = vec!["ls-files".into(), "--others".into(), "--exclude-standard".into(), "--".into()];
-            args.extend(normalized_paths.iter().cloned());
-            args
-        },
-    )
-    .await?;
+    let mut untracked_output = String::new();
+    for chunk in split_git_path_argument_batches(&normalized_paths) {
+        let output = run_git_owned(
+            path,
+            {
+                let mut args = vec!["ls-files".into(), "--others".into(), "--exclude-standard".into(), "--".into()];
+                args.extend(chunk.iter().cloned());
+                args
+            },
+        )
+        .await?;
+
+        if !untracked_output.is_empty() && !output.is_empty() && !untracked_output.ends_with('\n') {
+            untracked_output.push('\n');
+        }
+        untracked_output.push_str(&output);
+    }
 
     let untracked_paths = untracked_output
         .lines()
@@ -2179,21 +2187,26 @@ async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult
         .collect::<Vec<_>>();
 
     if !tracked_paths.is_empty() {
-        let mut restore_args = vec![
-            "restore".into(),
-            "--source=HEAD".into(),
-            "--staged".into(),
-            "--worktree".into(),
-            "--".into(),
-        ];
-        restore_args.extend(tracked_paths);
-        run_git_owned(path, restore_args).await?;
+        for chunk in split_git_path_argument_batches(&tracked_paths) {
+            let mut restore_args = vec![
+                "restore".into(),
+                "--source=HEAD".into(),
+                "--staged".into(),
+                "--worktree".into(),
+                "--".into(),
+            ];
+            restore_args.extend(chunk.iter().cloned());
+            run_git_owned(path, restore_args).await?;
+        }
     }
 
     if !untracked_paths.is_empty() {
-        let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
-        clean_args.extend(untracked_paths.into_iter());
-        run_git_owned(path, clean_args).await?;
+        let untracked_paths = untracked_paths.into_iter().collect::<Vec<_>>();
+        for chunk in split_git_path_argument_batches(&untracked_paths) {
+            let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
+            clean_args.extend(chunk.iter().cloned());
+            run_git_owned(path, clean_args).await?;
+        }
     }
 
     Ok(())
@@ -3530,6 +3543,39 @@ fn sanitize_path_list(paths: Vec<String>) -> Vec<String> {
     unique.into_iter().collect()
 }
 
+fn split_git_path_argument_batches(paths: &[String]) -> Vec<&[String]> {
+    const MAX_GIT_PATH_ARGUMENT_BYTES: usize = 24 * 1024;
+    const MAX_GIT_PATH_ARGUMENT_COUNT: usize = 256;
+
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut current_bytes = 0;
+    let mut current_count = 0;
+
+    for (index, path) in paths.iter().enumerate() {
+        let path_bytes = path.len() + 1;
+        let should_split = current_count > 0
+            && (current_bytes + path_bytes > MAX_GIT_PATH_ARGUMENT_BYTES
+                || current_count >= MAX_GIT_PATH_ARGUMENT_COUNT);
+
+        if should_split {
+            batches.push(&paths[start..index]);
+            start = index;
+            current_bytes = 0;
+            current_count = 0;
+        }
+
+        current_bytes += path_bytes;
+        current_count += 1;
+    }
+
+    if start < paths.len() {
+        batches.push(&paths[start..]);
+    }
+
+    batches
+}
+
 fn decode_porcelain_path(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.len() < 2 || !trimmed.starts_with('"') || !trimmed.ends_with('"') {
@@ -3707,10 +3753,28 @@ async fn run_git_owned_with_env(
         }
     }
 
-    let output = command.output().await.map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
-        _ => GitServiceError::GitCommandFailed(error.to_string()),
-    })?;
+    let output = match command.output().await {
+        Ok(output) => output,
+        Err(error) => {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Err(GitServiceError::GitUnavailable);
+            }
+
+            let message = error.to_string();
+            if should_retry_with_longpaths_fix(&message) && ensure_git_longpaths(repo_path).await? {
+                let _ = append_log(
+                    "backend",
+                    "git.command.retry",
+                    &format!("git -C {repo_display} {command_preview}"),
+                    Some("Enabled core.longpaths=true after Windows path-length launch failure; retrying command."),
+                );
+
+                return rerun_git_owned_with_env(repo_path, args, overrides).await;
+            }
+
+            return Err(GitServiceError::GitCommandFailed(message));
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
