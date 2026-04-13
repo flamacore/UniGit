@@ -2979,34 +2979,64 @@ async fn force_pull_repository_inner(repo_path: String) -> GitResult<String> {
     }
 
     run_git_remote_owned(path, vec!["fetch".into(), "--prune".into(), "--tags".into()]).await?;
-    let overlapping_paths = list_upstream_touched_paths(path, &upstream).await?;
+    let merge_args = vec!["merge".into(), "--no-edit".into(), "-X".into(), "theirs".into(), upstream.clone()];
+    let initial_merge = run_git_capture_owned(path, merge_args.clone()).await?;
+    let initial_detail = combine_command_output(&initial_merge.stdout, &initial_merge.stderr);
 
-    if !overlapping_paths.is_empty() {
-        let mut restore_args = vec![
-            "restore".into(),
-            "--source=HEAD".into(),
-            "--staged".into(),
-            "--worktree".into(),
-            "--".into(),
-        ];
-        restore_args.extend(overlapping_paths.iter().cloned());
-        run_git_owned(path, restore_args).await?;
-
-        let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
-        clean_args.extend(overlapping_paths.iter().cloned());
-        run_git_owned(path, clean_args).await?;
+    if initial_merge.success {
+        let trimmed = initial_detail.trim();
+        return Ok(if trimmed.is_empty() {
+            format!("Force pull completed from {upstream}.")
+        } else {
+            trimmed.to_string()
+        });
     }
 
-    run_git_owned(
-        path,
-        vec!["merge".into(), "--no-edit".into(), "-X".into(), "theirs".into(), upstream.clone()],
-    )
-    .await?;
+    if !is_local_change_merge_block(initial_detail.as_str()) {
+        return Err(GitServiceError::GitCommandFailed(if initial_detail.is_empty() {
+            format!("Force pull from {upstream} failed.")
+        } else {
+            initial_detail
+        }));
+    }
 
-    Ok(format!(
-        "Force pull completed from {upstream}. Discarded local state for {} upstream-touched path(s) and kept unrelated local-only changes.",
-        overlapping_paths.len()
-    ))
+    let discard_paths = {
+        let overwrite_paths = extract_merge_overwrite_paths(&initial_detail);
+        if overwrite_paths.is_empty() {
+            list_upstream_touched_paths(path, &upstream).await?
+        } else {
+            overwrite_paths
+        }
+    };
+
+    if !discard_paths.is_empty() {
+        discard_paths_inner(repo_path.clone(), discard_paths.clone()).await?;
+    }
+
+    let retry_merge = run_git_capture_owned(path, merge_args).await?;
+    let retry_detail = combine_command_output(&retry_merge.stdout, &retry_merge.stderr);
+
+    if !retry_merge.success {
+        return Err(GitServiceError::GitCommandFailed(if retry_detail.is_empty() {
+            format!("Force pull from {upstream} failed after discarding local state.")
+        } else {
+            retry_detail
+        }));
+    }
+
+    let trimmed = retry_detail.trim();
+    Ok(if trimmed.is_empty() {
+        format!(
+            "Force pull completed from {upstream}. Discarded local state for {} merge-blocking path(s).",
+            discard_paths.len()
+        )
+    } else {
+        format!(
+            "Force pull completed from {upstream}. Discarded local state for {} merge-blocking path(s).\n{}",
+            discard_paths.len(),
+            trimmed
+        )
+    })
 }
 
 async fn discard_all_local_state(repo_path: &Path) -> GitResult<()> {
@@ -3473,6 +3503,42 @@ fn is_local_change_merge_block(message: &str) -> bool {
     let normalized = message.to_lowercase();
     normalized.contains("would be overwritten by merge")
         || normalized.contains("please commit your changes or stash them before you merge")
+}
+
+fn extract_merge_overwrite_paths(message: &str) -> Vec<String> {
+    let normalized = message.to_lowercase();
+    let Some(start_index) = normalized.find("would be overwritten by merge") else {
+        return Vec::new();
+    };
+
+    let mut collecting = false;
+    let mut paths = Vec::new();
+
+    for line in message[start_index..].lines().skip(1) {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if collecting {
+                break;
+            }
+
+            continue;
+        }
+
+        let lowered = trimmed.to_lowercase();
+        if lowered.starts_with("please commit your changes")
+            || lowered == "aborting"
+            || lowered.starts_with("updating ")
+            || lowered.starts_with("merge with strategy")
+        {
+            break;
+        }
+
+        collecting = true;
+        paths.push(trimmed.to_string());
+    }
+
+    sanitize_path_list(paths)
 }
 
 fn combine_command_output(stdout: &str, stderr: &str) -> String {

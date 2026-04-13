@@ -6,6 +6,7 @@ export type DropLaneProps = {
   title: string;
   icon: JSX.Element;
   items: ChangeListItem[];
+  highlightedPaths?: ReadonlySet<string>;
   actionLabel: string;
   dropAction: "stage" | "unstage";
   disabled: boolean;
@@ -34,6 +35,7 @@ export function DropLane({
   title,
   icon,
   items,
+  highlightedPaths,
   actionLabel,
   dropAction,
   disabled,
@@ -124,12 +126,15 @@ export function DropLane({
 
       <div className="lane__list">
         {items.map((item) => {
+          const hasAttention = item.actionPaths.some((path) => highlightedPaths?.has(path));
+
           return (
             <article
               key={`${title}-${item.selectionKey}`}
               className={clsx(
                 "change-card",
                 `change-card--${item.marker.tone}`,
+                hasAttention && "change-card--attention",
                 selectedPaths.includes(item.selectionKey) && "change-card--selected",
                 primarySelectedPath === item.selectionKey && "change-card--focused",
                 item.isMeta && "change-card--meta",
@@ -150,6 +155,13 @@ export function DropLane({
               onClick={(event) => onSelect(item.selectionKey, event, orderedPaths)}
               onContextMenu={(event) => onOpenContextMenu(item, dropAction === "stage" ? "staged" : "unstaged", event)}
             >
+              {hasAttention ? (
+                <span
+                  className="change-card__attention-dot"
+                  title="This local change blocks pull and is preselected for discard."
+                  aria-label="This local change blocks pull and is preselected for discard."
+                />
+              ) : null}
               <div className="change-card__main">
                 <span
                   className={clsx("change-marker", `change-marker--${item.marker.tone}`)}

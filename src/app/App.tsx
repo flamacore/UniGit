@@ -31,13 +31,16 @@ import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
   AppErrorState,
   ChangeSortKey,
+  InlineNoticeState,
   RemoteDialogState,
 } from "./types";
 import {
   describeRemoteFailure,
+  extractMergeOverwritePaths,
   getDiffLineClassName,
   getStatusTone,
   hasDiffContent,
+  summarizeInlineNotice,
 } from "./utils/changeList";
 import { formatFileSize, formatRelativeTime, formatRepoLabel, formatUnixTimestamp } from "./utils/formatters";
 import {
@@ -123,6 +126,12 @@ type MergeConflictState = {
   branchFullName: string;
   branchLabel: string;
   conflictedFiles: string[];
+};
+
+type PullOverwriteState = {
+  paths: string[];
+  source: "pull" | "pull-branch";
+  branchLabel?: string;
 };
 
 const createDefaultBranchPruneDialogValue = (): BranchPruneDialogValue => ({
@@ -264,9 +273,11 @@ export function App() {
   const [error, setError] = useState<AppErrorState | null>(null);
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorRecoveryBusy, setErrorRecoveryBusy] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusMessage, setStatusMessageState] = useState<InlineNoticeState | null>(null);
+  const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
+  const [pullOverwriteState, setPullOverwriteState] = useState<PullOverwriteState | null>(null);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
   const [repoConfig, setRepoConfig] = useState<RepositoryConfig | null>(null);
   const [repoConfigLoading, setRepoConfigLoading] = useState(false);
@@ -307,6 +318,35 @@ export function App() {
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [gitActivityShown, setGitActivityShown] = useState(false);
 
+  const setStatusMessage = useCallback((message: string | null, fallbackTitle = "Operation update") => {
+    if (!message) {
+      setStatusMessageState(null);
+      setStatusDialogOpen(false);
+      return;
+    }
+
+    const occurredAt = new Date().toISOString();
+    const notice = summarizeInlineNotice(message, fallbackTitle);
+    const fullDetail = [
+      `Time: ${occurredAt}`,
+      selectedRepository ? `Repository: ${selectedRepository}` : null,
+      `Summary: ${notice.summary}`,
+      notice.detail ? `Detail:\n${notice.detail}` : null,
+      logFilePath ? `Log file:\n${logFilePath}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    setStatusMessageState({
+      tone: "info",
+      title: notice.title,
+      summary: notice.summary,
+      detail: notice.detail,
+      occurredAt,
+      logPath: logFilePath,
+      fullDetail,
+    });
+    setStatusDialogOpen(false);
+  }, [logFilePath, selectedRepository]);
+
   const {
     changeContextMenu,
     handleSelectChange,
@@ -345,6 +385,23 @@ export function App() {
     pairMetaFiles,
     setStatusMessage,
   });
+
+  const pullOverwritePathSet = useMemo(
+    () => new Set(pullOverwriteState?.paths ?? []),
+    [pullOverwriteState],
+  );
+
+  const overwriteSelectionKeys = useMemo(() => {
+    if (pullOverwritePathSet.size === 0) {
+      return [];
+    }
+
+    return Array.from(new Set(
+      [...unstagedChanges, ...stagedChanges]
+        .filter((item) => item.actionPaths.some((path) => pullOverwritePathSet.has(path)))
+        .map((item) => item.selectionKey),
+    ));
+  }, [pullOverwritePathSet, stagedChanges, unstagedChanges]);
 
   const applyGraphPage = useCallback((page: CommitGraphPage, mode: "replace" | "append") => {
     setCommitGraph((currentRows) => {
@@ -959,6 +1016,48 @@ export function App() {
   }, [selectedRepository, showRepoManager]);
 
   useEffect(() => {
+    if (!selectedRepository) {
+      setPullOverwriteState(null);
+    }
+  }, [selectedRepository]);
+
+  useEffect(() => {
+    if (overwriteSelectionKeys.length === 0) {
+      return;
+    }
+
+    setSelectedChangePaths(overwriteSelectionKeys);
+    setSelectedChangePath(overwriteSelectionKeys[0] ?? null);
+    setSelectionAnchorPath(overwriteSelectionKeys[0] ?? null);
+  }, [overwriteSelectionKeys, setSelectedChangePath, setSelectedChangePaths, setSelectionAnchorPath]);
+
+  useEffect(() => {
+    if (!pullOverwriteState) {
+      return;
+    }
+
+    const visiblePaths = new Set(snapshot?.files.map((file) => file.path) ?? []);
+    const remainingPaths = pullOverwriteState.paths.filter((path) => visiblePaths.has(path));
+
+    if (remainingPaths.length === 0) {
+      setPullOverwriteState(null);
+      return;
+    }
+
+    if (remainingPaths.length !== pullOverwriteState.paths.length) {
+      setPullOverwriteState((current) => current ? { ...current, paths: remainingPaths } : current);
+    }
+  }, [pullOverwriteState, snapshot?.files]);
+
+  const rememberPullOverwritePaths = useCallback((message: string, source: PullOverwriteState["source"], branchLabel?: string) => {
+    const paths = extractMergeOverwritePaths(message);
+    if (paths.length > 0) {
+      setChangeQuery("");
+    }
+    setPullOverwriteState(paths.length > 0 ? { paths, source, branchLabel } : null);
+  }, []);
+
+  useEffect(() => {
     if (notificationsHovered) {
       return;
     }
@@ -985,7 +1084,7 @@ export function App() {
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, remoteDialogOpen, statusMessage]);
+  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, remoteDialogOpen, setStatusMessage, statusMessage]);
 
 
   const pickRepository = useCallback(async () => {
@@ -1103,6 +1202,15 @@ export function App() {
     try {
       writeClientLog("git.discard", `Discarding ${paths.length} change path(s).`, paths.join("\n"));
       await discardPaths(selectedRepository, paths);
+      setPullOverwriteState((current) => {
+        if (!current) {
+          return current;
+        }
+
+        const discarded = new Set(paths);
+        const remaining = current.paths.filter((path) => !discarded.has(path));
+        return remaining.length > 0 ? { ...current, paths: remaining } : null;
+      });
       setStatusMessage(`Discarded ${paths.length} path${paths.length > 1 ? "s" : ""}.`);
       setSelectedChangePath(null);
       setSelectedChangePaths([]);
@@ -2542,6 +2650,7 @@ export function App() {
     try {
       writeClientLog("git.pull", `Pull requested for ${selectedRepository}.`);
       const result = await pullRepository(selectedRepository);
+      setPullOverwriteState(null);
       setStatusMessage(result || "Pull completed.");
       showRemoteDialog({
         tone: "info",
@@ -2555,6 +2664,11 @@ export function App() {
     } catch (reason) {
       const message = getReasonMessage(reason, "Pull failed.");
       setError(null);
+      if (isMergeOverwriteError(message)) {
+        rememberPullOverwritePaths(message, "pull");
+      } else {
+        setPullOverwriteState(null);
+      }
       showRemoteDialog(describeRemoteFailure("pull", message), {
         scope: "git.pull.error",
         context: `Pull repository ${selectedRepository}.`,
@@ -2562,7 +2676,7 @@ export function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
+  }, [refreshRepository, rememberPullOverwritePaths, selectedRepository, showRemoteDialog, writeClientLog]);
 
   const runPullBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
@@ -2576,6 +2690,7 @@ export function App() {
     try {
       writeClientLog("git.branch.pull", `Pull requested for branch ${fullName}.`, selectedRepository);
       const result = await pullBranch(selectedRepository, fullName);
+      setPullOverwriteState(null);
       setStatusMessage(result || "Branch pull completed.");
       showRemoteDialog({
         tone: "info",
@@ -2589,6 +2704,11 @@ export function App() {
     } catch (reason) {
       const message = getReasonMessage(reason, "Branch pull failed.");
       setError(null);
+      if (isMergeOverwriteError(message)) {
+        rememberPullOverwritePaths(message, "pull-branch", resolveBranchNameFromRef(fullName));
+      } else {
+        setPullOverwriteState(null);
+      }
       showRemoteDialog(describeRemoteFailure("pull", message), {
         scope: "git.branch.pull.error",
         context: `Pull branch ${fullName} for ${selectedRepository}.`,
@@ -2596,7 +2716,7 @@ export function App() {
     } finally {
       setSubmitting(false);
     }
-  }, [refreshRepository, selectedRepository, showRemoteDialog, writeClientLog]);
+  }, [refreshRepository, rememberPullOverwritePaths, selectedRepository, showRemoteDialog, writeClientLog]);
 
   const runForcePull = useCallback(async () => {
     if (!selectedRepository) {
@@ -2610,6 +2730,7 @@ export function App() {
     try {
       writeClientLog("git.force-pull", `Force pull requested for ${selectedRepository}.`);
       const result = await forcePullRepository(selectedRepository);
+      setPullOverwriteState(null);
       setStatusMessage(result);
       setError(null);
       showRemoteDialog({
@@ -2796,11 +2917,24 @@ export function App() {
         ) : null}
         {statusMessage ? (
           <div
-            className="banner"
+            className="banner remote-dialog"
             onMouseEnter={() => setNotificationsHovered(true)}
             onMouseLeave={() => setNotificationsHovered(false)}
           >
-            {statusMessage}
+            <div className="remote-dialog__header">
+              <div className="error-banner__copy">
+                <strong>{statusMessage.title}</strong>
+                <span title={statusMessage.summary}>{statusMessage.summary}</span>
+              </div>
+              <div className="error-banner__actions">
+                <button className="ghost-button" onClick={() => setStatusDialogOpen(true)}>
+                  View details
+                </button>
+                <button className="icon-button" onClick={() => setStatusMessage(null)} aria-label="Dismiss status" title="Dismiss status">
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
 
@@ -3066,6 +3200,7 @@ export function App() {
                 title="Unstaged"
                 icon={<Undo2 size={16} />}
                 items={unstagedChanges}
+                highlightedPaths={pullOverwritePathSet}
                 actionLabel="Stage"
                 dropAction="unstage"
                 disabled={submitting}
@@ -3115,6 +3250,7 @@ export function App() {
                 title="Staged"
                 icon={<Upload size={16} />}
                 items={stagedChanges}
+                highlightedPaths={pullOverwritePathSet}
                 actionLabel="Unstage"
                 dropAction="stage"
                 disabled={submitting}
@@ -3549,6 +3685,10 @@ export function App() {
 
       {remoteDialog && remoteDialogOpen ? (
         <RemoteDetailDialog dialog={remoteDialog} onClose={() => setRemoteDialogOpen(false)} />
+      ) : null}
+
+      {statusMessage && statusDialogOpen ? (
+        <RemoteDetailDialog dialog={statusMessage} onClose={() => setStatusDialogOpen(false)} />
       ) : null}
 
       {selectedChange && preview && hasDiffContent(preview) && diffDialogOpen ? (

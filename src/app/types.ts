@@ -31,6 +31,16 @@ export type ChangeListItem = {
   };
 };
 
+export type InlineNoticeState = {
+  tone: "error" | "info";
+  title: string;
+  summary: string;
+  detail?: string;
+  occurredAt?: string;
+  logPath?: string | null;
+  fullDetail?: string;
+};
+
 export type LocalIgnoreMap = Record<string, string[]>;
 
 export type HiddenLocalEntry = {

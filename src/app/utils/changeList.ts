@@ -29,6 +29,73 @@ const getRawGitMessage = (message: string) => {
   return message.replace(/^Git command failed:\s*/i, "").trim();
 };
 
+export const extractMergeOverwritePaths = (message: string) => {
+  const detail = getRawGitMessage(message);
+  const normalized = detail.toLowerCase();
+  const startIndex = normalized.indexOf("would be overwritten by merge");
+
+  if (startIndex === -1) {
+    return [];
+  }
+
+  const lines = detail.slice(startIndex).split(/\r?\n/).slice(1);
+  const paths: string[] = [];
+  let collecting = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      if (collecting) {
+        break;
+      }
+
+      continue;
+    }
+
+    const lowered = trimmed.toLowerCase();
+    if (
+      lowered.startsWith("please commit your changes")
+      || lowered === "aborting"
+      || lowered.startsWith("updating ")
+      || lowered.startsWith("merge with strategy")
+    ) {
+      break;
+    }
+
+    collecting = true;
+    paths.push(normalizePath(trimmed));
+  }
+
+  return Array.from(new Set(paths));
+};
+
+export const summarizeInlineNotice = (message: string, fallbackTitle = "Operation update") => {
+  const detail = message.trim();
+  const lines = detail.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const firstLine = lines[0] ?? fallbackTitle;
+  const title = firstLine.length > 72 ? `${firstLine.slice(0, 69).trimEnd()}...` : firstLine;
+
+  if (lines.length <= 1 && firstLine.length <= 180) {
+    return {
+      title: fallbackTitle,
+      summary: firstLine,
+      detail,
+    };
+  }
+
+  const summarySource = lines.length > 1
+    ? `${firstLine} ${lines.slice(1).join(" ")}`
+    : firstLine;
+  const summary = summarySource.length > 180 ? `${summarySource.slice(0, 177).trimEnd()}...` : summarySource;
+
+  return {
+    title,
+    summary,
+    detail,
+  };
+};
+
 export const normalizePath = (path: string) => path.replace(/\\/g, "/");
 
 export const isMetaFile = (path: string) => normalizePath(path).endsWith(".meta");
