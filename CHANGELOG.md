@@ -1,3 +1,9 @@
+## [0.17.0](https://github.com/flamacore/UniGit/compare/v0.16.1...v0.17.0) (2026-04-13)
+
+### Features
+
+* implement pull overwrite handling and enhance status messaging ([259b778](https://github.com/flamacore/UniGit/commit/259b7785268d91e7fdc8812dba959d77bef75775))
+
 ## [0.16.1](https://github.com/flamacore/UniGit/compare/v0.16.0...v0.16.1) (2026-03-27)
 
 ### Bug Fixes
