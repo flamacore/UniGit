@@ -365,6 +365,10 @@ export const createBranch = (repoPath: string, name: string, startPoint?: string
   return invoke<string>("create_branch", { repoPath, name, startPoint, discardChanges });
 };
 
+export const detachHeadToCommit = (repoPath: string, commitHash: string) => {
+  return invoke<string>("detach_head_to_commit", { repoPath, commitHash });
+};
+
 export const renameBranch = (repoPath: string, currentName: string, nextName: string) => {
   return invoke<string>("rename_branch", { repoPath, currentName, nextName });
 };

@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
+  type MouseEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -80,8 +81,16 @@ type CommitGraphCanvasProps = {
   onLoadMore: () => void;
   hasMore: boolean;
   loading: boolean;
+  disabled: boolean;
   selectedCommitHash: string | null;
   onSelectCommit: (commitHash: string) => void;
+  onRequestDetachHead: (row: CommitGraphRow) => void;
+};
+
+type CommitGraphContextMenuState = {
+  row: CommitGraphRow;
+  x: number;
+  y: number;
 };
 
 export function CommitGraphCanvas({
@@ -95,8 +104,10 @@ export function CommitGraphCanvas({
   onLoadMore,
   hasMore,
   loading,
+  disabled,
   selectedCommitHash,
   onSelectCommit,
+  onRequestDetachHead,
 }: CommitGraphCanvasProps) {
   const rootRef = useRef<HTMLElement | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -108,6 +119,7 @@ export function CommitGraphCanvas({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [contextMenu, setContextMenu] = useState<CommitGraphContextMenuState | null>(null);
 
   useEffect(() => {
     loadingRef.current = loading;
@@ -121,6 +133,23 @@ export function CommitGraphCanvas({
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (rootRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      setContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [contextMenu]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -338,6 +367,7 @@ export function CommitGraphCanvas({
       return;
     }
 
+    setContextMenu(null);
     setScrollTop(viewport.scrollTop);
 
     const nearBottom = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - rowHeight * 10;
@@ -347,10 +377,24 @@ export function CommitGraphCanvas({
     }
   }, [hasMore, onLoadMore, rowHeight]);
 
+  const openContextMenu = useCallback((event: MouseEvent<HTMLDivElement>, row: CommitGraphRow) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectCommit(row.hash);
+
+    const bounds = rootRef.current?.getBoundingClientRect();
+    setContextMenu({
+      row,
+      x: bounds ? event.clientX - bounds.left : 16,
+      y: bounds ? event.clientY - bounds.top : 16,
+    });
+  }, [onSelectCommit]);
+
   return (
     <section
       ref={rootRef}
       className={clsx("panel graph-panel", isFullscreen && "graph-panel--fullscreen")}
+      onClick={() => setContextMenu(null)}
     >
       <div className="board__header graph-panel__header">
         <h3>Commit graph</h3>
@@ -460,7 +504,11 @@ export function CommitGraphCanvas({
                   key={row.hash}
                   className={clsx("graph-row", selectedCommitHash === row.hash && "graph-row--selected")}
                   style={{ height: rowHeight } as CSSProperties}
-                  onClick={() => onSelectCommit(row.hash)}
+                  onClick={() => {
+                    setContextMenu(null);
+                    onSelectCommit(row.hash);
+                  }}
+                  onContextMenu={(event) => openContextMenu(event, row)}
                 >
                   <div className="graph-row__main">
                     {uniqueRefs.length ? (
@@ -502,6 +550,25 @@ export function CommitGraphCanvas({
           </div>
         </div>
       </div>
+
+      {contextMenu ? (
+        <div
+          className="graph-context-menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="ghost-button"
+            disabled={disabled}
+            onClick={() => {
+              onRequestDetachHead(contextMenu.row);
+              setContextMenu(null);
+            }}
+          >
+            Detach HEAD here...
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }

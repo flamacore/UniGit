@@ -1966,6 +1966,7 @@ h4 {
 }
 
 .graph-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2257,6 +2258,20 @@ h4 {
 }
 
 .branch-context-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--surface-menu-start), var(--surface-menu-end));
+  box-shadow: var(--panel-shadow);
+}
+
+.graph-context-menu {
   position: absolute;
   z-index: 20;
   min-width: 180px;

@@ -21,6 +21,7 @@ import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
 import { BranchPruneDialog, type BranchPruneDialogValue } from "./components/BranchPruneDialog";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
 import { ConflictResolutionDialog } from "./components/ConflictResolutionDialog";
+import { DetachHeadDialog } from "./components/DetachHeadDialog";
 import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
@@ -65,6 +66,7 @@ import {
   createBranch,
   createCommit,
   discardPaths,
+  detachHeadToCommit,
   deleteRepositoryRemote,
   deleteBranch,
   conditionalPruneBranches,
@@ -120,6 +122,14 @@ type BranchDeleteDialogState = {
 type MergeDiscardDialogState = {
   branchFullName: string;
   branchLabel: string;
+};
+
+type DetachHeadDialogState = {
+  commitHash: string;
+  shortHash: string;
+  subject: string;
+  createBranch: boolean;
+  branchName: string;
 };
 
 type MergeConflictState = {
@@ -248,6 +258,7 @@ export function App() {
   const [branchCreateOpen, setBranchCreateOpen] = useState(false);
   const [branchCreateName, setBranchCreateName] = useState("");
   const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
+  const [detachHeadDialog, setDetachHeadDialog] = useState<DetachHeadDialogState | null>(null);
   const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
   const [branchPruneDialog, setBranchPruneDialog] = useState<BranchPruneDialogValue | null>(null);
   const [mergeDiscardDialog, setMergeDiscardDialog] = useState<MergeDiscardDialogState | null>(null);
@@ -1757,6 +1768,18 @@ export function App() {
     return selectedCommitBranches.find((branch) => branch.fullName === selectedCommitBranchFullName) ?? selectedCommitBranches[0] ?? null;
   }, [selectedCommitBranchFullName, selectedCommitBranches]);
 
+  const openDetachHeadDialog = useCallback((commit: CommitGraphRow) => {
+    setSelectedCommitHash(commit.hash);
+    setSelectedChangePath(null);
+    setDetachHeadDialog({
+      commitHash: commit.hash,
+      shortHash: commit.shortHash,
+      subject: commit.subject,
+      createBranch: false,
+      branchName: "",
+    });
+  }, [setSelectedChangePath]);
+
   const filteredHistory = useMemo(() => {
     if (!historyFilter.trim()) {
       return commitGraph;
@@ -2349,6 +2372,57 @@ export function App() {
       setSubmitting(false);
     }
   }, [branchCreateDiscardChanges, branchCreateName, branches, refreshRepository, reportAppError, selectedBranchFullName, selectedRepository, writeClientLog]);
+
+  const runDetachHead = useCallback(async () => {
+    if (!selectedRepository || !detachHeadDialog) {
+      return;
+    }
+
+    const {
+      branchName,
+      commitHash,
+      createBranch: shouldCreateBranch,
+      shortHash,
+    } = detachHeadDialog;
+    const nextBranchName = branchName.trim();
+
+    if (shouldCreateBranch && !nextBranchName) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      let result = "";
+
+      if (shouldCreateBranch) {
+        writeClientLog("git.commit.branch-from-commit", `Creating branch ${nextBranchName} from ${shortHash}.`, commitHash);
+        result = await createBranch(selectedRepository, nextBranchName, commitHash);
+      } else {
+        writeClientLog("git.commit.detach", `Detaching HEAD at ${shortHash}.`, commitHash);
+        result = await detachHeadToCommit(selectedRepository, commitHash);
+      }
+
+      setStatusMessage(result, shouldCreateBranch ? "Branch created from commit" : "Detached HEAD");
+      setDetachHeadDialog(null);
+      setMergeConflictState(null);
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      reportAppError({
+        scope: shouldCreateBranch ? "git.commit.branch-from-commit.error" : "git.commit.detach.error",
+        title: shouldCreateBranch ? "Create branch from commit failed" : "Detach HEAD failed",
+        fallback: shouldCreateBranch ? "Create branch from commit failed." : "Detach HEAD failed.",
+        reason,
+        context: shouldCreateBranch
+          ? `Create branch ${nextBranchName} from commit ${shortHash}.`
+          : `Detach HEAD at commit ${shortHash}.`,
+        detail: commitHash,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [detachHeadDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
   const runRenameBranch = useCallback(async (currentName: string, nextName: string) => {
     if (!selectedRepository) {
@@ -3103,11 +3177,13 @@ export function App() {
                 onLoadMore={() => void loadMoreGraph()}
                 hasMore={graphHasMore}
                 loading={graphLoading}
+                disabled={submitting}
                 selectedCommitHash={selectedCommitHash}
                 onSelectCommit={(commitHash) => {
                   setSelectedCommitHash(commitHash);
                   setSelectedChangePath(null);
                 }}
+                onRequestDetachHead={openDetachHeadDialog}
               />
             </div>
           </section>
@@ -3722,6 +3798,24 @@ export function App() {
           onChangeDiscard={setBranchCreateDiscardChanges}
           onClose={() => setBranchCreateOpen(false)}
           onSubmit={() => void runCreateBranch()}
+        />
+      ) : null}
+
+      {detachHeadDialog ? (
+        <DetachHeadDialog
+          shortHash={detachHeadDialog.shortHash}
+          subject={detachHeadDialog.subject}
+          createBranch={detachHeadDialog.createBranch}
+          branchName={detachHeadDialog.branchName}
+          disabled={submitting}
+          onChangeCreateBranch={(value) => setDetachHeadDialog((current) => current ? {
+            ...current,
+            createBranch: value,
+            branchName: value ? current.branchName : "",
+          } : current)}
+          onChangeBranchName={(value) => setDetachHeadDialog((current) => current ? { ...current, branchName: value } : current)}
+          onClose={() => setDetachHeadDialog(null)}
+          onSubmit={() => void runDetachHead()}
         />
       ) : null}
 

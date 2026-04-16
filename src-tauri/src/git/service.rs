@@ -335,6 +335,13 @@ pub async fn create_branch(repo_path: String, name: String, start_point: Option<
 }
 
 #[command]
+pub async fn detach_head_to_commit(repo_path: String, commit_hash: String) -> Result<String, String> {
+    detach_head_to_commit_inner(repo_path, commit_hash)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn rename_branch(repo_path: String, current_name: String, next_name: String) -> Result<String, String> {
     rename_branch_inner(repo_path, current_name, next_name)
         .await
@@ -2298,6 +2305,34 @@ async fn create_branch_inner(repo_path: String, name: String, start_point: Optio
     }
 
     Ok(result)
+}
+
+async fn detach_head_to_commit_inner(repo_path: String, commit_hash: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = commit_hash.trim();
+
+    if trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Commit hash cannot be empty.".to_string()));
+    }
+
+    let resolved = run_git_owned(
+        path,
+        vec!["rev-parse".into(), "--verify".into(), format!("{trimmed}^{{commit}}")],
+    )
+    .await?;
+    let full_hash = resolved.trim().to_string();
+
+    run_git_remote_owned(
+        path,
+        vec!["checkout".into(), "--detach".into(), full_hash.clone()],
+    )
+    .await?;
+
+    let short_hash = run_git_owned(path, vec!["rev-parse".into(), "--short".into(), full_hash])
+        .await
+        .unwrap_or_else(|_| trimmed.to_string());
+
+    Ok(format!("Detached HEAD at {}.", short_hash.trim()))
 }
 
 async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool) -> GitResult<String> {
