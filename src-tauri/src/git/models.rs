@@ -123,6 +123,15 @@ pub struct FileHistoryEntry {
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    pub reference: String,
+    pub short_hash: String,
+    pub created_at: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchEntry {
     pub full_name: String,
     pub name: String,

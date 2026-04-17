@@ -180,6 +180,13 @@ export type FileHistoryEntry = {
   decorations: string;
 };
 
+export type StashEntry = {
+  reference: string;
+  shortHash: string;
+  createdAt: string;
+  message: string;
+};
+
 export type FilePreview = {
   relativePath: string;
   fileName: string;
@@ -353,6 +360,10 @@ export const listBranches = (repoPath: string) => {
   return invoke<BranchEntry[]>("list_branches", { repoPath });
 };
 
+export const listStashes = (repoPath: string) => {
+  return invoke<StashEntry[]>("list_stashes", { repoPath });
+};
+
 export const switchBranch = (repoPath: string, fullName: string) => {
   return invoke<string>("switch_branch", { repoPath, fullName });
 };
@@ -467,6 +478,18 @@ export const getLogFilePath = () => {
 
 export const clearGitIndexLock = (repoPath: string) => {
   return invoke<string>("clear_git_index_lock", { repoPath });
+};
+
+export const stashPaths = (repoPath: string, paths: string[]) => {
+  return invoke<string>("stash_paths", { repoPath, paths });
+};
+
+export const applyStash = (repoPath: string, reference: string) => {
+  return invoke<string>("apply_stash", { repoPath, reference });
+};
+
+export const dropStash = (repoPath: string, reference: string) => {
+  return invoke<string>("drop_stash", { repoPath, reference });
 };
 
 export const stageFiles = (repoPath: string, paths: string[]) => {

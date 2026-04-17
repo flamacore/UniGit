@@ -25,6 +25,7 @@ import { DetachHeadDialog } from "./components/DetachHeadDialog";
 import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
+import { StashDialog } from "./components/StashDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
 import { RemoteDetailDialog } from "./components/RemoteDetailDialog";
@@ -47,6 +48,7 @@ import { formatFileSize, formatRelativeTime, formatRepoLabel, formatUnixTimestam
 import {
   addPathsToGitignore,
   applyCommitFilePatch,
+  applyStash,
   BranchEntry,
   ConditionalBranchPruneInput,
   CloneResult,
@@ -68,6 +70,7 @@ import {
   discardPaths,
   detachHeadToCommit,
   deleteRepositoryRemote,
+  dropStash,
   deleteBranch,
   conditionalPruneBranches,
   exportFileFromCommit,
@@ -85,6 +88,7 @@ import {
   listFileHistory,
   listCommitGraph,
   logClientEvent,
+  listStashes,
   mergeBranch,
   MergeBranchResult,
   pullRepository,
@@ -95,7 +99,9 @@ import {
   saveRepositoryRemote,
   saveRepositorySshSettings,
   resolveConflictedFiles,
+  StashEntry,
   stageFiles,
+  stashPaths,
   switchBranch,
   unstageFiles,
 } from "../features/repositories/api";
@@ -289,6 +295,9 @@ export function App() {
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
   const [pullOverwriteState, setPullOverwriteState] = useState<PullOverwriteState | null>(null);
+  const [stashDialogOpen, setStashDialogOpen] = useState(false);
+  const [stashEntries, setStashEntries] = useState<StashEntry[]>([]);
+  const [stashLoading, setStashLoading] = useState(false);
   const [repoManagerOpen, setRepoManagerOpen] = useState(false);
   const [repoConfig, setRepoConfig] = useState<RepositoryConfig | null>(null);
   const [repoConfigLoading, setRepoConfigLoading] = useState(false);
@@ -400,6 +409,11 @@ export function App() {
   const pullOverwritePathSet = useMemo(
     () => new Set(pullOverwriteState?.paths ?? []),
     [pullOverwriteState],
+  );
+
+  const selectedChangeActionPaths = useMemo(
+    () => resolveActionPathsForSelection(selectedChangePaths),
+    [resolveActionPathsForSelection, selectedChangePaths],
   );
 
   const overwriteSelectionKeys = useMemo(() => {
@@ -635,6 +649,39 @@ export function App() {
   }, [logFilePath, selectedRepository, writeClientLog]);
 
   const showRepoManager = repoManagerOpen || repositories.length === 0;
+
+  const loadStashes = useCallback(async (options?: { reportErrors?: boolean }) => {
+    if (!selectedRepository) {
+      setStashEntries([]);
+      return;
+    }
+
+    setStashLoading(true);
+
+    try {
+      const entries = await listStashes(selectedRepository);
+      setStashEntries(entries);
+    } catch (reason) {
+      setStashEntries([]);
+
+      if (options?.reportErrors !== false) {
+        reportAppError({
+          scope: "git.stash.list.error",
+          title: "Load stashes failed",
+          fallback: "Loading stashes failed.",
+          reason,
+          context: `Load stashes for ${selectedRepository}.`,
+        });
+      }
+    } finally {
+      setStashLoading(false);
+    }
+  }, [reportAppError, selectedRepository]);
+
+  const openStashDialog = useCallback(() => {
+    setStashDialogOpen(true);
+    void loadStashes();
+  }, [loadStashes]);
 
   const refreshRepository = useCallback(async (options?: { fetchRemote?: boolean }) => {
     if (!selectedRepository) {
@@ -1239,6 +1286,42 @@ export function App() {
       setSubmitting(false);
     }
   }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runStashSelected = useCallback(async () => {
+    if (!selectedRepository || selectedChangeActionPaths.length === 0) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog(
+        "git.stash.push.selected",
+        `Stashing ${selectedChangeActionPaths.length} selected path(s).`,
+        selectedChangeActionPaths.join("\n"),
+      );
+      const result = await stashPaths(selectedRepository, selectedChangeActionPaths);
+      setStatusMessage(result || `Stashed ${selectedChangeActionPaths.length} selected path${selectedChangeActionPaths.length === 1 ? "" : "s"}.`);
+      setSelectedChangePath(null);
+      setSelectedChangePaths([]);
+      await refreshRepository();
+      if (stashDialogOpen) {
+        await loadStashes({ reportErrors: false });
+      }
+    } catch (reason) {
+      reportAppError({
+        scope: "git.stash.push.selected.error",
+        title: "Stash selected failed",
+        fallback: "Stashing selected changes failed.",
+        reason,
+        context: `Stash ${selectedChangeActionPaths.length} selected path(s).`,
+        detail: selectedChangeActionPaths.join("\n"),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [loadStashes, refreshRepository, reportAppError, selectedChangeActionPaths, selectedRepository, setSelectedChangePath, setSelectedChangePaths, stashDialogOpen, writeClientLog]);
 
   const runDiscardAllUnstaged = useCallback(async () => {
     if (!selectedRepository || unstagedChanges.length === 0) {
@@ -2373,6 +2456,59 @@ export function App() {
     }
   }, [branchCreateDiscardChanges, branchCreateName, branches, refreshRepository, reportAppError, selectedBranchFullName, selectedRepository, writeClientLog]);
 
+  const runApplyStash = useCallback(async (reference: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.stash.apply", `Re-applying ${reference}.`);
+      const result = await applyStash(selectedRepository, reference);
+      setStatusMessage(result, "Stash reapplied");
+      await refreshRepository();
+      await loadStashes({ reportErrors: false });
+    } catch (reason) {
+      reportAppError({
+        scope: "git.stash.apply.error",
+        title: "Re-apply stash failed",
+        fallback: "Re-applying the stash failed.",
+        reason,
+        context: `Re-apply ${reference}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [loadStashes, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runDropStash = useCallback(async (reference: string) => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.stash.drop", `Removing ${reference}.`);
+      const result = await dropStash(selectedRepository, reference);
+      setStatusMessage(result, "Stash removed");
+      await loadStashes({ reportErrors: false });
+    } catch (reason) {
+      reportAppError({
+        scope: "git.stash.drop.error",
+        title: "Remove stash failed",
+        fallback: "Removing the stash failed.",
+        reason,
+        context: `Remove ${reference}.`,
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }, [loadStashes, reportAppError, selectedRepository, writeClientLog]);
+
   const runDetachHead = useCallback(async () => {
     if (!selectedRepository || !detachHeadDialog) {
       return;
@@ -3211,6 +3347,13 @@ export function App() {
               </div>
               <div className="changes-header-actions">
                 <p className="board__hint">Drag, click, commit. Nothing extra.</p>
+                <button
+                  className="ghost-button"
+                  disabled={!selectedRepository || submitting}
+                  onClick={() => openStashDialog()}
+                >
+                  Stashes
+                </button>
                 <button className="ghost-button" onClick={() => void toggleChangesFullscreen()} title="Toggle working tree fullscreen">
                   {isChangesFullscreen ? <Minimize2 size={15} /> : <Expand size={15} />}
                   {isChangesFullscreen ? "Window" : "Fullscreen"}
@@ -3268,6 +3411,13 @@ export function App() {
                 onClick={() => setShowHiddenLocalMenu(true)}
               >
                 Hidden local {hiddenLocalEntries.length ? `(${hiddenLocalEntries.length})` : ""}
+              </button>
+              <button
+                className="ghost-button"
+                disabled={submitting || selectedChangeActionPaths.length === 0}
+                onClick={() => void runStashSelected()}
+              >
+                Stash selected{selectedChangeActionPaths.length ? ` (${selectedChangeActionPaths.length})` : ""}
               </button>
             </div>
 
@@ -3747,6 +3897,18 @@ export function App() {
             setShowHiddenLocalMenu(false);
             setHiddenLocalContextMenu(null);
           }}
+        />
+      ) : null}
+
+      {stashDialogOpen ? (
+        <StashDialog
+          entries={stashEntries}
+          loading={stashLoading}
+          disabled={submitting}
+          onRefresh={() => void loadStashes()}
+          onApply={(reference) => void runApplyStash(reference)}
+          onDrop={(reference) => void runDropStash(reference)}
+          onClose={() => setStashDialogOpen(false)}
         />
       ) : null}
 

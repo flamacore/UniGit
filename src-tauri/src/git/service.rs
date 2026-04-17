@@ -22,6 +22,7 @@ use super::models::{
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
     ModelPreviewResource, ModelPreviewSource,
+    StashEntry,
     RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, RepositorySshConfigHost,
     RepositorySshDiscovery, RepositorySshKeyOption, RepositorySshSettings, UnityColorValue,
     UnityMaterialPreviewSource, UnityMaterialTexturePreview,
@@ -314,6 +315,13 @@ pub async fn list_branches(repo_path: String) -> Result<Vec<BranchEntry>, String
 }
 
 #[command]
+pub async fn list_stashes(repo_path: String) -> Result<Vec<StashEntry>, String> {
+    list_stashes_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn switch_branch(repo_path: String, full_name: String) -> Result<String, String> {
     switch_branch_inner(repo_path, full_name)
         .await
@@ -330,6 +338,27 @@ pub async fn force_switch_branch(repo_path: String, full_name: String) -> Result
 #[command]
 pub async fn create_branch(repo_path: String, name: String, start_point: Option<String>, discard_changes: bool) -> Result<String, String> {
     create_branch_inner(repo_path, name, start_point, discard_changes)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn stash_paths(repo_path: String, paths: Vec<String>) -> Result<String, String> {
+    stash_paths_inner(repo_path, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn apply_stash(repo_path: String, reference: String) -> Result<String, String> {
+    apply_stash_inner(repo_path, reference)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn drop_stash(repo_path: String, reference: String) -> Result<String, String> {
+    drop_stash_inner(repo_path, reference)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1359,7 +1388,6 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
         ],
     )
     .await?;
-
     Ok(output
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -1414,6 +1442,43 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 is_current,
                 commit_hash,
                 subject,
+            })
+        })
+        .collect())
+}
+
+async fn list_stashes_inner(repo_path: String) -> GitResult<Vec<StashEntry>> {
+    let path = validate_repository_path(&repo_path)?;
+    let output = run_git_owned(
+        path,
+        vec![
+            "stash".into(),
+            "list".into(),
+            "--date=iso-strict".into(),
+            "--format=%gd%x1f%h%x1f%aI%x1f%gs".into(),
+        ],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            let mut parts = trimmed.splitn(4, '\u{1f}');
+            let reference = parts.next()?.trim().to_string();
+            let short_hash = parts.next().unwrap_or_default().trim().to_string();
+            let created_at = parts.next().unwrap_or_default().trim().to_string();
+            let message = parts.next().unwrap_or_default().trim().to_string();
+
+            Some(StashEntry {
+                reference,
+                short_hash,
+                created_at,
+                message,
             })
         })
         .collect())
@@ -2305,6 +2370,86 @@ async fn create_branch_inner(repo_path: String, name: String, start_point: Optio
     }
 
     Ok(result)
+}
+
+async fn stash_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let sanitized_paths = sanitize_path_list(paths);
+
+    if sanitized_paths.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("No stash paths were provided.".to_string()));
+    }
+
+    let mut args = vec![
+        "stash".into(),
+        "push".into(),
+        "--include-untracked".into(),
+        "-m".into(),
+        format!(
+            "UniGit selected changes ({} path{})",
+            sanitized_paths.len(),
+            if sanitized_paths.len() == 1 { "" } else { "s" }
+        ),
+        "--".into(),
+    ];
+    args.extend(sanitized_paths.iter().cloned());
+
+    let output = run_git_owned(path, args).await?;
+    let summary = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "Stashed {} selected path{}.",
+                sanitized_paths.len(),
+                if sanitized_paths.len() == 1 { "" } else { "s" }
+            )
+        });
+
+    Ok(summary)
+}
+
+async fn apply_stash_inner(repo_path: String, reference: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = reference.trim();
+
+    if trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Stash reference cannot be empty.".to_string()));
+    }
+
+    run_git_owned(
+        path,
+        vec!["stash".into(), "apply".into(), "--index".into(), trimmed.to_string()],
+    )
+    .await?;
+
+    Ok(format!("Re-applied {trimmed}."))
+}
+
+async fn drop_stash_inner(repo_path: String, reference: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = reference.trim();
+
+    if trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Stash reference cannot be empty.".to_string()));
+    }
+
+    let output = run_git_owned(
+        path,
+        vec!["stash".into(), "drop".into(), trimmed.to_string()],
+    )
+    .await?;
+
+    Ok(output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("Removed {trimmed}.")))
 }
 
 async fn detach_head_to_commit_inner(repo_path: String, commit_hash: String) -> GitResult<String> {

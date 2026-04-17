@@ -746,6 +746,10 @@ h4 {
   gap: 14px;
 }
 
+.stash-dialog {
+  position: relative;
+}
+
 .hidden-local-dialog__header,
 .hidden-local-dialog__actions {
   display: flex;
@@ -1106,6 +1110,39 @@ h4 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.stash-row {
+  align-items: flex-start;
+}
+
+.stash-row__content {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stash-row__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stash-row__message,
+.stash-row__detail {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stash-row__detail {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .local-ignore-list::-webkit-scrollbar {
@@ -2269,6 +2306,10 @@ h4 {
   border: 1px solid var(--line);
   background: linear-gradient(180deg, var(--surface-menu-start), var(--surface-menu-end));
   box-shadow: var(--panel-shadow);
+}
+
+.stash-context-menu {
+  min-width: 160px;
 }
 
 .graph-context-menu {
