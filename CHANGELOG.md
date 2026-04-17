@@ -1,3 +1,9 @@
+## [0.19.0](https://github.com/flamacore/UniGit/compare/v0.18.0...v0.19.0) (2026-04-17)
+
+### Features
+
+* implement stash management features including listing, applying, and dropping stashes ([1c7644b](https://github.com/flamacore/UniGit/commit/1c7644b4588243c4a2859e09ae1043da3a9cb28d))
+
 ## [0.18.0](https://github.com/flamacore/UniGit/compare/v0.17.0...v0.18.0) (2026-04-16)
 
 ### Features
