@@ -1,3 +1,9 @@
+## [0.18.0](https://github.com/flamacore/UniGit/compare/v0.17.0...v0.18.0) (2026-04-16)
+
+### Features
+
+* add detach head functionality with dialog support ([c06b4d8](https://github.com/flamacore/UniGit/commit/c06b4d8766e428b6cf828563649d446c07dc911d))
+
 ## [0.17.0](https://github.com/flamacore/UniGit/compare/v0.16.1...v0.17.0) (2026-04-13)
 
 ### Features
