@@ -117,6 +117,7 @@ import {
   resolveThemePresetId,
   type ThemeSettings,
 } from "./utils/themeSettings";
+import { loadUiSettings, persistUiSettings, type BranchFilterMode } from "./utils/uiSettings";
 
 type BranchDeleteDialogState = {
   branch: BranchEntry;
@@ -256,11 +257,13 @@ export function App() {
     removeRepository,
     selectRepository,
   } = useRepositoryStore();
+  const initialUiSettings = useMemo(() => loadUiSettings(), []);
 
   const [snapshot, setSnapshot] = useState<RepositorySnapshot | null>(null);
   const [branches, setBranches] = useState<BranchEntry[]>([]);
   const [selectedBranchFullName, setSelectedBranchFullName] = useState<string | null>(null);
   const [branchQuery, setBranchQuery] = useState("");
+  const [branchFilterMode, setBranchFilterMode] = useState<BranchFilterMode>(initialUiSettings.branchFilterMode);
   const [branchCreateOpen, setBranchCreateOpen] = useState(false);
   const [branchCreateName, setBranchCreateName] = useState("");
   const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
@@ -271,8 +274,10 @@ export function App() {
   const [mergeConflictState, setMergeConflictState] = useState<MergeConflictState | null>(null);
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
   const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
-  const [graphScope, setGraphScope] = useState<CommitGraphScope>("all");
-  const [graphOrder, setGraphOrder] = useState<CommitGraphOrder>("date");
+  const [graphScope, setGraphScope] = useState<CommitGraphScope>(initialUiSettings.graphScope);
+  const [graphOrder, setGraphOrder] = useState<CommitGraphOrder>(initialUiSettings.graphOrder);
+  const [commitGraphLaneScale, setCommitGraphLaneScale] = useState(initialUiSettings.commitGraphLaneScale);
+  const [commitGraphLaneCropWidth, setCommitGraphLaneCropWidth] = useState(initialUiSettings.commitGraphLaneCropWidth);
   const [graphNextSkip, setGraphNextSkip] = useState(0);
   const [graphHasMore, setGraphHasMore] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -314,17 +319,17 @@ export function App() {
   const [fileHistoryLoading, setFileHistoryLoading] = useState(false);
   const [fileHistoryError, setFileHistoryError] = useState<string | null>(null);
   const [changeQuery, setChangeQuery] = useState("");
-  const [pairMetaFiles, setPairMetaFiles] = useState(true);
+  const [pairMetaFiles, setPairMetaFiles] = useState(initialUiSettings.pairMetaFiles);
   const [showHiddenLocalMenu, setShowHiddenLocalMenu] = useState(false);
-  const [showPaths, setShowPaths] = useState(true);
+  const [showPaths, setShowPaths] = useState(initialUiSettings.showPaths);
   const [isInspectorFullscreen, setIsInspectorFullscreen] = useState(false);
   const [isChangesFullscreen, setIsChangesFullscreen] = useState(false);
-  const [inspectorFractions, setInspectorFractions] = useState({ top: 0.68, bottom: 0.32 });
-  const [sortBy, setSortBy] = useState<ChangeSortKey>("name");
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const [stackFractions, setStackFractions] = useState({ top: 0.48, bottom: 0.52 });
-  const [graphFractions, setGraphFractions] = useState({ left: 0.26, right: 0.74 });
-  const [panelFractions, setPanelFractions] = useState({ left: 0.6, right: 0.4 });
+  const [inspectorFractions, setInspectorFractions] = useState(initialUiSettings.inspectorFractions);
+  const [sortBy, setSortBy] = useState<ChangeSortKey>(initialUiSettings.sortBy);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">(initialUiSettings.sortDirection);
+  const [stackFractions, setStackFractions] = useState(initialUiSettings.stackFractions);
+  const [graphFractions, setGraphFractions] = useState(initialUiSettings.graphFractions);
+  const [panelFractions, setPanelFractions] = useState(initialUiSettings.panelFractions);
   const changesBoardRef = useRef<HTMLDivElement | null>(null);
   const inspectorRef = useRef<HTMLElement | null>(null);
   const inspectorSplitRef = useRef<HTMLDivElement | null>(null);
@@ -540,6 +545,38 @@ export function App() {
   useEffect(() => {
     persistThemeSettings(themeSettings);
   }, [themeSettings]);
+
+  useEffect(() => {
+    persistUiSettings({
+      branchFilterMode,
+      graphScope,
+      graphOrder,
+      pairMetaFiles,
+      showPaths,
+      sortBy,
+      sortDirection,
+      panelFractions,
+      graphFractions,
+      stackFractions,
+      inspectorFractions,
+      commitGraphLaneScale,
+      commitGraphLaneCropWidth,
+    });
+  }, [
+    branchFilterMode,
+    commitGraphLaneCropWidth,
+    commitGraphLaneScale,
+    graphFractions,
+    graphOrder,
+    graphScope,
+    inspectorFractions,
+    pairMetaFiles,
+    panelFractions,
+    showPaths,
+    sortBy,
+    sortDirection,
+    stackFractions,
+  ]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -1773,9 +1810,14 @@ export function App() {
 
   const filteredBranches = useMemo(() => {
     const query = branchQuery.trim().toLowerCase();
+    const modeFiltered = branchFilterMode === "committed"
+      ? branches.filter((branch) => branch.isOwnedByMe)
+      : branchFilterMode === "created"
+        ? branches.filter((branch) => branch.isCreatedByMe)
+        : branches;
     const visible = !query
-      ? branches
-      : branches.filter((branch) => {
+      ? modeFiltered
+      : modeFiltered.filter((branch) => {
           return [
             branch.name,
             branch.branchKind,
@@ -1791,7 +1833,7 @@ export function App() {
       local: visible.filter((branch) => branch.branchKind === "local"),
       remote: visible.filter((branch) => branch.branchKind === "remote"),
     };
-  }, [branchQuery, branches]);
+  }, [branchFilterMode, branchQuery, branches]);
 
   const selectedCommit = useMemo(
     () => commitGraph.find((commit) => commit.hash === selectedCommitHash) ?? null,
@@ -3273,6 +3315,8 @@ export function App() {
                 remoteBranches={filteredBranches.remote}
                 filter={branchQuery}
                 onFilterChange={setBranchQuery}
+                filterMode={branchFilterMode}
+                onChangeFilterMode={setBranchFilterMode}
                 selectedBranchFullName={selectedBranchFullName}
                 onSelectBranch={setSelectedBranchFullName}
                 onSwitchBranch={(fullName) => void runSwitchBranch(fullName)}
@@ -3310,6 +3354,10 @@ export function App() {
                 onGraphScopeChange={setGraphScope}
                 graphOrder={graphOrder}
                 onGraphOrderChange={setGraphOrder}
+                laneScale={commitGraphLaneScale}
+                onLaneScaleChange={setCommitGraphLaneScale}
+                laneCropWidth={commitGraphLaneCropWidth}
+                onLaneCropWidthChange={setCommitGraphLaneCropWidth}
                 onLoadMore={() => void loadMoreGraph()}
                 hasMore={graphHasMore}
                 loading={graphLoading}

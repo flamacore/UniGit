@@ -142,6 +142,8 @@ pub struct BranchEntry {
     pub ahead_count: usize,
     pub behind_count: usize,
     pub is_current: bool,
+    pub is_owned_by_me: bool,
+    pub is_created_by_me: bool,
     pub commit_hash: String,
     pub subject: String,
 }

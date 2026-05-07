@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Expand, GitMerge, Minimize2, Plus, Trash2 } 
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BranchEntry } from "../../features/repositories/api";
 import type { BranchContextMenuState, BranchTreeNode } from "../types";
+import type { BranchFilterMode } from "../utils/uiSettings";
 import { buildBranchTree } from "../utils/branchTree";
 
 export type BranchPaneProps = {
@@ -10,6 +11,8 @@ export type BranchPaneProps = {
   remoteBranches: BranchEntry[];
   filter: string;
   onFilterChange: (value: string) => void;
+  filterMode: BranchFilterMode;
+  onChangeFilterMode: (value: BranchFilterMode) => void;
   selectedBranchFullName: string | null;
   onSelectBranch: (fullName: string) => void;
   onSwitchBranch: (fullName: string) => void;
@@ -31,6 +34,8 @@ export function BranchPane({
   remoteBranches,
   filter,
   onFilterChange,
+  filterMode,
+  onChangeFilterMode,
   selectedBranchFullName,
   onSelectBranch,
   onSwitchBranch,
@@ -51,6 +56,7 @@ export function BranchPane({
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(() => new Set(["local", "remote", "local/root", "remote/root"]));
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pruneMenuOpen, setPruneMenuOpen] = useState(false);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
 
   const localTree = useMemo(() => buildBranchTree(localBranches, "local"), [localBranches]);
   const remoteTree = useMemo(() => buildBranchTree(remoteBranches, "remote"), [remoteBranches]);
@@ -65,7 +71,7 @@ export function BranchPane({
   }, []);
 
   useEffect(() => {
-    if (!contextMenu && !pruneMenuOpen) {
+    if (!contextMenu && !pruneMenuOpen && !filterMenuOpen) {
       return;
     }
 
@@ -76,11 +82,18 @@ export function BranchPane({
 
       setContextMenu(null);
       setPruneMenuOpen(false);
+      setFilterMenuOpen(false);
     };
 
     window.addEventListener("pointerdown", handlePointerDown);
     return () => window.removeEventListener("pointerdown", handlePointerDown);
-  }, [contextMenu, pruneMenuOpen]);
+  }, [contextMenu, filterMenuOpen, pruneMenuOpen]);
+
+  const filterLabel = filterMode === "committed"
+    ? "I Committed"
+    : filterMode === "created"
+      ? "I created"
+      : "All branches";
 
   const toggleFullscreen = useCallback(async () => {
     if (!rootRef.current) {
@@ -111,6 +124,7 @@ export function BranchPane({
     event.preventDefault();
     onSelectBranch(branch.fullName);
     setPruneMenuOpen(false);
+    setFilterMenuOpen(false);
 
     const bounds = rootRef.current?.getBoundingClientRect();
     setContextMenu({
@@ -129,7 +143,7 @@ export function BranchPane({
 
   const renderTreeNodes = (nodes: BranchTreeNode[], depth: number): JSX.Element[] => {
     return nodes.map((node) => {
-      const isExpanded = filter.trim() ? true : expandedNodes.has(node.id);
+      const isExpanded = filter.trim() || filterMode !== "all" ? true : expandedNodes.has(node.id);
       const hasChildren = node.children.length > 0;
       const branch = node.branch;
 
@@ -153,7 +167,8 @@ export function BranchPane({
                 onClick={() => {
                   onSelectBranch(branch.fullName);
                   setContextMenu(null);
-                    setPruneMenuOpen(false);
+                  setPruneMenuOpen(false);
+                  setFilterMenuOpen(false);
                 }}
                 onContextMenu={(event) => openContextMenu(event, branch)}
               >
@@ -230,6 +245,7 @@ export function BranchPane({
               onClick={() => {
                 toggleNode(node.id);
                 setPruneMenuOpen(false);
+                setFilterMenuOpen(false);
               }}
             >
               <span className="branch-tree-toggle">
@@ -308,12 +324,41 @@ export function BranchPane({
         </div>
       </div>
 
-      <input
-        className="history-filter"
-        placeholder="Filter branches"
-        value={filter}
-        onChange={(event) => onFilterChange(event.target.value)}
-      />
+      <div className="branch-panel__filter-row">
+        <input
+          className="history-filter"
+          placeholder="Filter branches"
+          value={filter}
+          onChange={(event) => onFilterChange(event.target.value)}
+        />
+        <div className="branch-prune-menu-wrap">
+          <button
+            className={clsx("ghost-button", filterMode !== "all" && "ghost-button--active")}
+            onClick={() => {
+              setPruneMenuOpen(false);
+              setContextMenu(null);
+              setFilterMenuOpen((current) => !current);
+            }}
+            title="Filter branches by your activity"
+          >
+            Filter: {filterLabel}
+            <ChevronDown size={15} />
+          </button>
+          {filterMenuOpen ? (
+            <div className="branch-context-menu branch-filter-menu">
+              <button className="ghost-button" onClick={() => { onChangeFilterMode("all"); setFilterMenuOpen(false); }}>
+                All branches
+              </button>
+              <button className="ghost-button" onClick={() => { onChangeFilterMode("committed"); setFilterMenuOpen(false); }}>
+                I Committed
+              </button>
+              <button className="ghost-button" onClick={() => { onChangeFilterMode("created"); setFilterMenuOpen(false); }}>
+                I created
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
 
       <div className="branch-panel__scroll panel-scroll">
         {renderBranchGroup("Local", localTree)}

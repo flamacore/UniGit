@@ -2053,6 +2053,7 @@ h4 {
 }
 
 .branch-panel__header-actions,
+.branch-panel__filter-row,
 .branch-card,
 .branch-row__actions,
 .branch-action-dialog,
@@ -2073,6 +2074,22 @@ h4 {
 
 .branch-prune-menu-wrap {
   position: relative;
+}
+
+.branch-panel__filter-row {
+  align-items: center;
+}
+
+.branch-panel__filter-row .history-filter {
+  flex: 1;
+  min-width: 0;
+}
+
+.branch-filter-menu {
+  top: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  min-width: 220px;
 }
 
 .branch-card,
@@ -2334,6 +2351,10 @@ h4 {
 }
 
 .branch-prune-menu .ghost-button {
+  justify-content: flex-start;
+}
+
+.branch-filter-menu .ghost-button {
   justify-content: flex-start;
 }
 

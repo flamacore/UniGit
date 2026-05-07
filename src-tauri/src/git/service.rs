@@ -1377,12 +1377,19 @@ async fn list_file_history_inner(repo_path: String, relative_path: String, limit
 
 async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
     let path = validate_repository_path(&repo_path)?;
+    let (current_user_name, current_user_email) = resolve_git_user_identity(path).await;
+    let created_remote_refs = resolve_remote_refs_created_by_current_user(
+        path,
+        current_user_name.as_deref(),
+        current_user_email.as_deref(),
+    )
+    .await?;
     let output = run_git_owned(
         path,
         vec![
             "for-each-ref".into(),
             "--sort=-committerdate".into(),
-            "--format=%(refname)	%(refname:short)	%(objectname:short)	%(subject)	%(upstream:short)	%(upstream:trackshort)	%(upstream:track,nobracket)	%(HEAD)".into(),
+            "--format=%(refname)	%(refname:short)	%(objectname:short)	%(subject)	%(upstream:short)	%(upstream:trackshort)	%(upstream:track,nobracket)	%(HEAD)	%(authorname)	%(authoremail:trim)".into(),
             "refs/heads".into(),
             "refs/remotes".into(),
         ],
@@ -1418,6 +1425,8 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string);
             let is_current = parts.next().unwrap_or_default().trim() == "*";
+            let author_name = parts.next().unwrap_or_default().trim().to_string();
+            let author_email = parts.next().unwrap_or_default().trim().to_string();
             let (ahead_count, behind_count) = tracking_detail
                 .as_deref()
                 .map(parse_tracking_counts)
@@ -1430,6 +1439,22 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 ("local".to_string(), None)
             };
 
+            let is_owned_by_me = branch_matches_current_user(
+                &author_name,
+                &author_email,
+                current_user_name.as_deref(),
+                current_user_email.as_deref(),
+            );
+            let is_created_by_me = if branch_kind == "remote" {
+                created_remote_refs.contains(full_name.as_str())
+            } else {
+                tracking_name
+                    .as_deref()
+                    .map(|tracking| format!("refs/remotes/{tracking}"))
+                    .map(|tracking_ref| created_remote_refs.contains(tracking_ref.as_str()))
+                    .unwrap_or(false)
+            };
+
             Some(BranchEntry {
                 full_name,
                 name,
@@ -1440,9 +1465,128 @@ async fn list_branches_inner(repo_path: String) -> GitResult<Vec<BranchEntry>> {
                 ahead_count,
                 behind_count,
                 is_current,
+                is_owned_by_me,
+                is_created_by_me,
                 commit_hash,
                 subject,
             })
+        })
+        .collect())
+}
+
+async fn resolve_git_user_identity(repo_path: &Path) -> (Option<String>, Option<String>) {
+    let user_name = run_git_owned(
+        repo_path,
+        vec!["config".into(), "--get".into(), "user.name".into()],
+    )
+    .await
+    .ok()
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty());
+
+    let user_email = run_git_owned(
+        repo_path,
+        vec!["config".into(), "--get".into(), "user.email".into()],
+    )
+    .await
+    .ok()
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty());
+
+    (user_name, user_email)
+}
+
+fn branch_matches_current_user(
+    author_name: &str,
+    author_email: &str,
+    current_user_name: Option<&str>,
+    current_user_email: Option<&str>,
+) -> bool {
+    let normalized_author_email = author_email.trim().to_ascii_lowercase();
+    let normalized_current_email = current_user_email
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+
+    if let Some(email) = normalized_current_email.as_deref() {
+        if !normalized_author_email.is_empty() && normalized_author_email == email {
+            return true;
+        }
+    }
+
+    let normalized_author_name = author_name.trim().to_ascii_lowercase();
+    let normalized_current_name = current_user_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+
+    matches!(normalized_current_name.as_deref(), Some(name) if !normalized_author_name.is_empty() && normalized_author_name == name)
+}
+
+async fn resolve_remote_refs_created_by_current_user(
+    repo_path: &Path,
+    current_user_name: Option<&str>,
+    current_user_email: Option<&str>,
+) -> GitResult<std::collections::HashSet<String>> {
+    if current_user_name.is_none() && current_user_email.is_none() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let output = run_git_owned(
+        repo_path,
+        vec![
+            "log".into(),
+            "-g".into(),
+            "--all".into(),
+            "--format=%gD%x1f%gs%x1f%gN%x1f%gE".into(),
+        ],
+    )
+    .await?;
+
+    let mut oldest_remote_entries = std::collections::BTreeMap::<String, (String, String, String)>::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let mut parts = trimmed.splitn(4, '\u{1f}');
+        let selector = match parts.next() {
+            Some(value) => value.trim(),
+            None => continue,
+        };
+        let message = parts.next().unwrap_or_default().trim().to_string();
+        let actor_name = parts.next().unwrap_or_default().trim().to_string();
+        let actor_email = parts.next().unwrap_or_default().trim().to_string();
+        let reference = selector.split("@{").next().unwrap_or(selector).trim();
+
+        if !reference.starts_with("refs/remotes/") || reference.ends_with("/HEAD") {
+            continue;
+        }
+
+        oldest_remote_entries.insert(reference.to_string(), (message, actor_name, actor_email));
+    }
+
+    Ok(oldest_remote_entries
+        .into_iter()
+        .filter_map(|(reference, (message, actor_name, actor_email))| {
+            let normalized_message = message.trim().to_ascii_lowercase();
+            if normalized_message != "update by push" {
+                return None;
+            }
+
+            if branch_matches_current_user(
+                &actor_name,
+                &actor_email,
+                current_user_name,
+                current_user_email,
+            ) {
+                return Some(reference);
+            }
+
+            None
         })
         .collect())
 }

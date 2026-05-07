@@ -123,6 +123,8 @@ export type BranchEntry = {
   aheadCount: number;
   behindCount: number;
   isCurrent: boolean;
+  isOwnedByMe: boolean;
+  isCreatedByMe: boolean;
   commitHash: string;
   subject: string;
 };

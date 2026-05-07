@@ -78,6 +78,10 @@ type CommitGraphCanvasProps = {
   onGraphScopeChange: (value: CommitGraphScope) => void;
   graphOrder: CommitGraphOrder;
   onGraphOrderChange: (value: CommitGraphOrder) => void;
+  laneScale: number;
+  onLaneScaleChange: (value: number) => void;
+  laneCropWidth: number;
+  onLaneCropWidthChange: (value: number) => void;
   onLoadMore: () => void;
   hasMore: boolean;
   loading: boolean;
@@ -101,6 +105,10 @@ export function CommitGraphCanvas({
   onGraphScopeChange,
   graphOrder,
   onGraphOrderChange,
+  laneScale,
+  onLaneScaleChange,
+  laneCropWidth,
+  onLaneCropWidthChange,
   onLoadMore,
   hasMore,
   loading,
@@ -114,8 +122,6 @@ export function CommitGraphCanvas({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadingRef = useRef(loading);
   const previousRowHeightRef = useRef(BASE_ROW_HEIGHT * 0.55);
-  const [laneScale, setLaneScale] = useState(0.55);
-  const [laneCropWidth, setLaneCropWidth] = useState(220);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -408,7 +414,7 @@ export function CommitGraphCanvas({
               max="120"
               step="5"
               value={Math.round(laneScale * 100)}
-              onChange={(event) => setLaneScale(Number(event.target.value) / 100)}
+              onChange={(event) => onLaneScaleChange(Number(event.target.value) / 100)}
             />
           </label>
           <label className="graph-control">
@@ -420,7 +426,7 @@ export function CommitGraphCanvas({
               max="520"
               step="10"
               value={laneCropWidth}
-              onChange={(event) => setLaneCropWidth(Number(event.target.value))}
+              onChange={(event) => onLaneCropWidthChange(Number(event.target.value))}
             />
           </label>
           <input
