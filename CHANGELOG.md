@@ -1,3 +1,9 @@
+## [0.21.0](https://github.com/flamacore/UniGit/compare/v0.20.0...v0.21.0) (2026-05-08)
+
+### Features
+
+* implement notification system with toast and pane for user actions ([db386cc](https://github.com/flamacore/UniGit/commit/db386ccd7d6a95d926bc537b74aba9ab6349e4ce))
+
 ## [0.20.0](https://github.com/flamacore/UniGit/compare/v0.19.0...v0.20.0) (2026-05-07)
 
 ### Features
