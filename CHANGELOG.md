@@ -1,3 +1,9 @@
+## [0.20.0](https://github.com/flamacore/UniGit/compare/v0.19.0...v0.20.0) (2026-05-07)
+
+### Features
+
+* enhance branch management with user-specific filters and settings ([39486d7](https://github.com/flamacore/UniGit/commit/39486d7961c2713b2ac52b8dc5ad40b36b869404))
+
 ## [0.19.0](https://github.com/flamacore/UniGit/compare/v0.18.0...v0.19.0) (2026-04-17)
 
 ### Features
