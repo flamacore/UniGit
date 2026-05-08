@@ -1685,15 +1685,7 @@ export function App() {
       writeClientLog("git.push", `Pushing repository ${selectedRepository} after commit.`);
       const pushResult = await pushRepository(selectedRepository);
 
-      setStatusMessage(pushResult || "Committed staged changes and pushed them.");
-      showRemoteDialog({
-        tone: "info",
-        title: "Commit and push completed",
-        summary: pushResult || "Staged changes were committed and pushed to the tracked remote branch.",
-      }, {
-        scope: "git.push.success",
-        context: `Push repository ${selectedRepository} after commit.`,
-      });
+      setStatusMessage(pushResult || "Committed staged changes and pushed them.", "Commit and push completed");
       await refreshRepository();
     } catch (reason) {
       const failure = getReasonMessage(reason, "Commit and push failed.");
@@ -2912,15 +2904,7 @@ export function App() {
     try {
       writeClientLog("git.push", `Pushing repository ${selectedRepository}.`);
       const result = await pushRepository(selectedRepository);
-      setStatusMessage(result || "Push completed.");
-      showRemoteDialog({
-        tone: "info",
-        title: "Push completed",
-        summary: result || "Local commits were pushed to the tracked remote branch.",
-      }, {
-        scope: "git.push.success",
-        context: `Push repository ${selectedRepository}.`,
-      });
+      setStatusMessage(result || "Push completed.", "Push completed");
       await refreshRepository();
     } catch (reason) {
       const message = getReasonMessage(reason, "Push failed.");
@@ -2947,15 +2931,7 @@ export function App() {
       writeClientLog("git.pull", `Pull requested for ${selectedRepository}.`);
       const result = await pullRepository(selectedRepository);
       setPullOverwriteState(null);
-      setStatusMessage(result || "Pull completed.");
-      showRemoteDialog({
-        tone: "info",
-        title: "Pull completed",
-        summary: result || "Remote commits were integrated with a fast-forward pull.",
-      }, {
-        scope: "git.pull.success",
-        context: `Pull repository ${selectedRepository}.`,
-      });
+      setStatusMessage(result || "Pull completed.", "Pull completed");
       await refreshRepository();
     } catch (reason) {
       const message = getReasonMessage(reason, "Pull failed.");
@@ -2987,15 +2963,7 @@ export function App() {
       writeClientLog("git.branch.pull", `Pull requested for branch ${fullName}.`, selectedRepository);
       const result = await pullBranch(selectedRepository, fullName);
       setPullOverwriteState(null);
-      setStatusMessage(result || "Branch pull completed.");
-      showRemoteDialog({
-        tone: "info",
-        title: "Branch pull completed",
-        summary: result || "The selected local branch was updated from its tracked remote without switching to it.",
-      }, {
-        scope: "git.branch.pull.success",
-        context: `Pull branch ${fullName} for ${selectedRepository}.`,
-      });
+      setStatusMessage(result || "Branch pull completed.", "Branch pull completed");
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       const message = getReasonMessage(reason, "Branch pull failed.");
@@ -3027,16 +2995,8 @@ export function App() {
       writeClientLog("git.force-pull", `Force pull requested for ${selectedRepository}.`);
       const result = await forcePullRepository(selectedRepository);
       setPullOverwriteState(null);
-      setStatusMessage(result);
+      setStatusMessage(result, "Force pull completed");
       setError(null);
-      showRemoteDialog({
-        tone: "info",
-        title: "Force pull completed",
-        summary: result,
-      }, {
-        scope: "git.force-pull.success",
-        context: `Force pull repository ${selectedRepository}.`,
-      });
       await refreshRepository();
     } catch (reason) {
       const message = getReasonMessage(reason, "Force pull failed.");
