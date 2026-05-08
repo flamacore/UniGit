@@ -1,3 +1,9 @@
+## [0.21.1](https://github.com/flamacore/UniGit/compare/v0.21.0...v0.21.1) (2026-05-08)
+
+### Bug Fixes
+
+* improve notification toast styles for better usability ([d0c3ed5](https://github.com/flamacore/UniGit/commit/d0c3ed56c5caac70dc81325247b96979950575ee))
+
 ## [0.21.0](https://github.com/flamacore/UniGit/compare/v0.20.0...v0.21.0) (2026-05-08)
 
 ### Features
