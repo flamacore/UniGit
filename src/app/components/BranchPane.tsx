@@ -1,6 +1,7 @@
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, Expand, GitMerge, Minimize2, Plus, Trash2 } from "lucide-react";
 import { type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { BranchCommandInfoKind } from "./BranchCommandInfoDialog";
 import type { BranchEntry } from "../../features/repositories/api";
 import type { BranchContextMenuState, BranchTreeNode } from "../types";
 import type { BranchFilterMode } from "../utils/uiSettings";
@@ -24,6 +25,7 @@ export type BranchPaneProps = {
   onSoftPrune: () => void;
   onLocalHardPrune: () => void;
   onOpenConditionalPrune: () => void;
+  onOpenCommandInfo: (kind: BranchCommandInfoKind) => void;
   onOpenCreateBranch: () => void;
   hasMergeConflict: boolean;
   disabled: boolean;
@@ -47,6 +49,7 @@ export function BranchPane({
   onSoftPrune,
   onLocalHardPrune,
   onOpenConditionalPrune,
+  onOpenCommandInfo,
   onOpenCreateBranch,
   hasMergeConflict,
   disabled,
@@ -139,6 +142,13 @@ export function BranchPane({
   const stopRowButton = (event: MouseEvent<HTMLElement>) => {
     event.preventDefault();
     event.stopPropagation();
+  };
+
+  const openPruneInfo = (kind: BranchCommandInfoKind) => {
+    setPruneMenuOpen(false);
+    setFilterMenuOpen(false);
+    setContextMenu(null);
+    onOpenCommandInfo(kind);
   };
 
   const renderTreeNodes = (nodes: BranchTreeNode[], depth: number): JSX.Element[] => {
@@ -296,20 +306,35 @@ export function BranchPane({
             </button>
             {pruneMenuOpen ? (
               <div className="branch-context-menu branch-prune-menu">
-                <button className="ghost-button" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onSoftPrune(); }}>
-                  Soft prune
-                </button>
-                <button
-                  className="ghost-button ghost-button--danger"
-                  disabled={disabled}
-                  title="Force-remove local branches that no longer exist on any remote, even if the local branch is dirty, diverged, broken, or otherwise unhealthy. This never deletes anything on the remote."
-                  onClick={() => { setPruneMenuOpen(false); onLocalHardPrune(); }}
-                >
-                  Local hard prune
-                </button>
-                <button className="ghost-button" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onOpenConditionalPrune(); }}>
-                  Prune Conditional...
-                </button>
+                <div className="branch-menu-entry">
+                  <button className="ghost-button branch-menu-entry__action" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onSoftPrune(); }}>
+                    Soft prune
+                  </button>
+                  <button className="icon-button branch-menu-entry__info" type="button" aria-label="Show soft prune command details" title="Show soft prune command details" onClick={() => openPruneInfo("soft-prune")}>
+                    ?
+                  </button>
+                </div>
+                <div className="branch-menu-entry">
+                  <button
+                    className="ghost-button ghost-button--danger branch-menu-entry__action"
+                    disabled={disabled}
+                    title="Force-remove local branches that no longer exist on any remote, even if the local branch is dirty, diverged, broken, or otherwise unhealthy. This never deletes anything on the remote."
+                    onClick={() => { setPruneMenuOpen(false); onLocalHardPrune(); }}
+                  >
+                    Local hard prune
+                  </button>
+                  <button className="icon-button branch-menu-entry__info" type="button" aria-label="Show local hard prune command details" title="Show local hard prune command details" onClick={() => openPruneInfo("local-hard-prune")}>
+                    ?
+                  </button>
+                </div>
+                <div className="branch-menu-entry">
+                  <button className="ghost-button branch-menu-entry__action" disabled={disabled} onClick={() => { setPruneMenuOpen(false); onOpenConditionalPrune(); }}>
+                    Prune Conditional...
+                  </button>
+                  <button className="icon-button branch-menu-entry__info" type="button" aria-label="Show conditional prune command details" title="Show conditional prune command details" onClick={() => openPruneInfo("conditional-prune")}>
+                    ?
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
@@ -478,6 +503,7 @@ export function BranchPane({
           )}
         </div>
       ) : null}
+
     </section>
   );
 }

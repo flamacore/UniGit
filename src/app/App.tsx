@@ -1,6 +1,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import clsx from "clsx";
 import {
+  History,
   Expand,
   FolderPlus,
   GitBranch,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { Suspense, lazy, type MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BranchPane } from "./components/BranchPane";
+import { BranchCommandInfoDialog, type BranchCommandInfoKind } from "./components/BranchCommandInfoDialog";
 import { BranchCreateDialog } from "./components/BranchCreateDialog";
 import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
 import { BranchPruneDialog, type BranchPruneDialogValue } from "./components/BranchPruneDialog";
@@ -33,7 +35,7 @@ import { RepoManagerDialog } from "./components/RepoManagerDialog";
 import type {
   AppErrorState,
   ChangeSortKey,
-  InlineNoticeState,
+  NotificationEntry,
   RemoteDialogState,
 } from "./types";
 import {
@@ -267,6 +269,7 @@ export function App() {
   const [branchCreateOpen, setBranchCreateOpen] = useState(false);
   const [branchCreateName, setBranchCreateName] = useState("");
   const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
+  const [branchCommandInfoKind, setBranchCommandInfoKind] = useState<BranchCommandInfoKind | null>(null);
   const [detachHeadDialog, setDetachHeadDialog] = useState<DetachHeadDialogState | null>(null);
   const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
   const [branchPruneDialog, setBranchPruneDialog] = useState<BranchPruneDialogValue | null>(null);
@@ -295,8 +298,10 @@ export function App() {
   const [error, setError] = useState<AppErrorState | null>(null);
   const [errorDialogOpen, setErrorDialogOpen] = useState(false);
   const [errorRecoveryBusy, setErrorRecoveryBusy] = useState(false);
-  const [statusMessage, setStatusMessageState] = useState<InlineNoticeState | null>(null);
-  const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotificationEntry[]>([]);
+  const [activeNotificationIds, setActiveNotificationIds] = useState<string[]>([]);
+  const [notificationsPaneOpen, setNotificationsPaneOpen] = useState(false);
+  const [selectedNotification, setSelectedNotification] = useState<NotificationEntry | null>(null);
   const [remoteDialog, setRemoteDialog] = useState<RemoteDialogState | null>(null);
   const [remoteDialogOpen, setRemoteDialogOpen] = useState(false);
   const [pullOverwriteState, setPullOverwriteState] = useState<PullOverwriteState | null>(null);
@@ -336,6 +341,9 @@ export function App() {
   const workspaceSplitRef = useRef<HTMLElement | null>(null);
   const graphSplitRef = useRef<HTMLDivElement | null>(null);
   const contentGridRef = useRef<HTMLElement | null>(null);
+  const notificationsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const notificationsPaneRef = useRef<HTMLElement | null>(null);
+  const notificationIdRef = useRef(0);
   const lastAutoRefreshAtRef = useRef(0);
   const gitActivityStartedAtRef = useRef(0);
   const gitActivityHideTimeoutRef = useRef<number | null>(null);
@@ -343,15 +351,20 @@ export function App() {
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
   const [gitActivityShown, setGitActivityShown] = useState(false);
 
+  const dismissNotificationToast = useCallback((notificationId: string) => {
+    setActiveNotificationIds((current) => current.filter((id) => id !== notificationId));
+  }, []);
+
   const setStatusMessage = useCallback((message: string | null, fallbackTitle = "Operation update") => {
     if (!message) {
-      setStatusMessageState(null);
-      setStatusDialogOpen(false);
+      setActiveNotificationIds([]);
       return;
     }
 
     const occurredAt = new Date().toISOString();
     const notice = summarizeInlineNotice(message, fallbackTitle);
+    notificationIdRef.current += 1;
+    const notificationId = `notification-${notificationIdRef.current}`;
     const fullDetail = [
       `Time: ${occurredAt}`,
       selectedRepository ? `Repository: ${selectedRepository}` : null,
@@ -360,7 +373,8 @@ export function App() {
       logFilePath ? `Log file:\n${logFilePath}` : null,
     ].filter(Boolean).join("\n\n");
 
-    setStatusMessageState({
+    const notification: NotificationEntry = {
+      id: notificationId,
       tone: "info",
       title: notice.title,
       summary: notice.summary,
@@ -368,9 +382,20 @@ export function App() {
       occurredAt,
       logPath: logFilePath,
       fullDetail,
-    });
-    setStatusDialogOpen(false);
+    };
+
+    setNotifications((current) => [notification, ...current].slice(0, 30));
+    setActiveNotificationIds((current) => [notificationId, ...current].slice(0, 4));
   }, [logFilePath, selectedRepository]);
+
+  const openNotificationDetail = useCallback((notification: NotificationEntry) => {
+    setSelectedNotification(notification);
+    setNotificationsPaneOpen(false);
+  }, []);
+
+  const activeNotifications = useMemo(() => {
+    return notifications.filter((notification) => activeNotificationIds.includes(notification.id));
+  }, [activeNotificationIds, notifications]);
 
   const {
     changeContextMenu,
@@ -1159,9 +1184,9 @@ export function App() {
 
     const timers: number[] = [];
 
-    if (statusMessage) {
-      timers.push(window.setTimeout(() => setStatusMessage(null), 5000));
-    }
+    activeNotificationIds.forEach((notificationId) => {
+      timers.push(window.setTimeout(() => dismissNotificationToast(notificationId), 5000));
+    });
 
     if (error && !errorDialogOpen) {
       timers.push(window.setTimeout(() => setError(null), 9000));
@@ -1179,7 +1204,26 @@ export function App() {
     return () => {
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, [error, errorDialogOpen, notificationsHovered, remoteDialog, remoteDialogOpen, setStatusMessage, statusMessage]);
+  }, [activeNotificationIds, dismissNotificationToast, error, errorDialogOpen, notificationsHovered, remoteDialog, remoteDialogOpen]);
+
+  useEffect(() => {
+    if (!notificationsPaneOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+
+      if (notificationsPaneRef.current?.contains(target) || notificationsButtonRef.current?.contains(target)) {
+        return;
+      }
+
+      setNotificationsPaneOpen(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [notificationsPaneOpen]);
 
 
   const pickRepository = useCallback(async () => {
@@ -3104,6 +3148,15 @@ export function App() {
             >
               <RefreshCw size={16} />
             </button>
+            <button
+              ref={notificationsButtonRef}
+              className={clsx("icon-button notification-toggle", notificationsPaneOpen && "notification-toggle--active")}
+              onClick={() => setNotificationsPaneOpen((current) => !current)}
+              aria-label="Open notifications"
+              title="Open notifications"
+            >
+              <History size={16} />
+            </button>
           </div>
         </div>
 
@@ -3140,6 +3193,73 @@ export function App() {
         ) : null}
       </header>
 
+      {activeNotifications.length ? (
+        <div
+          className="notification-stack"
+          onMouseEnter={() => setNotificationsHovered(true)}
+          onMouseLeave={() => setNotificationsHovered(false)}
+        >
+          {activeNotifications.map((notification) => (
+            <div key={notification.id} className="panel remote-dialog notification-toast">
+              <div className="notification-toast__header">
+                <div className="error-banner__copy">
+                  <strong>{notification.title}</strong>
+                  <span title={notification.summary}>{notification.summary}</span>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => dismissNotificationToast(notification.id)}
+                  aria-label="Dismiss notification"
+                  title="Dismiss notification"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+              <div className="notification-toast__actions">
+                <span className="muted">{notification.occurredAt ? formatRelativeTime(notification.occurredAt) : "Now"}</span>
+                <button className="ghost-button" onClick={() => openNotificationDetail(notification)}>
+                  View details
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {notificationsPaneOpen ? (
+        <section ref={notificationsPaneRef} className="panel notifications-pane">
+          <div className="notifications-pane__header">
+            <div>
+              <p className="eyebrow">Notifications</p>
+              <h3>Recent actions</h3>
+              <p className="muted">Showing the last {notifications.length} action{notifications.length === 1 ? "" : "s"}, capped at 30.</p>
+            </div>
+            <button className="icon-button" onClick={() => setNotificationsPaneOpen(false)} aria-label="Close notifications" title="Close notifications">
+              <X size={14} />
+            </button>
+          </div>
+
+          <div className="notifications-pane__list panel-scroll">
+            {notifications.length ? notifications.map((notification) => (
+              <button
+                key={notification.id}
+                className="notifications-pane__item"
+                onClick={() => openNotificationDetail(notification)}
+                title={notification.summary}
+              >
+                <div className="notifications-pane__item-copy">
+                  <strong>{notification.title}</strong>
+                  <span>{notification.summary}</span>
+                </div>
+                <span className="muted">{notification.occurredAt ? formatRelativeTime(notification.occurredAt) : "Now"}</span>
+              </button>
+            )) : (
+              <p className="muted">No notifications yet.</p>
+            )}
+          </div>
+        </section>
+      ) : null}
+
       <main className="workspace">
 
         {error ? (
@@ -3167,29 +3287,6 @@ export function App() {
             </div>
           </div>
         ) : null}
-        {statusMessage ? (
-          <div
-            className="banner remote-dialog"
-            onMouseEnter={() => setNotificationsHovered(true)}
-            onMouseLeave={() => setNotificationsHovered(false)}
-          >
-            <div className="remote-dialog__header">
-              <div className="error-banner__copy">
-                <strong>{statusMessage.title}</strong>
-                <span title={statusMessage.summary}>{statusMessage.summary}</span>
-              </div>
-              <div className="error-banner__actions">
-                <button className="ghost-button" onClick={() => setStatusDialogOpen(true)}>
-                  View details
-                </button>
-                <button className="icon-button" onClick={() => setStatusMessage(null)} aria-label="Dismiss status" title="Dismiss status">
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         {changeContextMenu ? (
           <div
             className="change-context-menu"
@@ -3328,6 +3425,7 @@ export function App() {
                 onSoftPrune={() => void runSoftPruneBranches()}
                 onLocalHardPrune={() => void runLocalHardPruneBranches()}
                 onOpenConditionalPrune={() => setBranchPruneDialog(createDefaultBranchPruneDialogValue())}
+                onOpenCommandInfo={setBranchCommandInfoKind}
                 onOpenCreateBranch={() => {
                   setBranchCreateName("");
                   setBranchCreateDiscardChanges(false);
@@ -3973,8 +4071,8 @@ export function App() {
         <RemoteDetailDialog dialog={remoteDialog} onClose={() => setRemoteDialogOpen(false)} />
       ) : null}
 
-      {statusMessage && statusDialogOpen ? (
-        <RemoteDetailDialog dialog={statusMessage} onClose={() => setStatusDialogOpen(false)} />
+      {selectedNotification ? (
+        <RemoteDetailDialog dialog={selectedNotification} onClose={() => setSelectedNotification(null)} />
       ) : null}
 
       {selectedChange && preview && hasDiffContent(preview) && diffDialogOpen ? (
@@ -4048,6 +4146,13 @@ export function App() {
           onChange={setBranchPruneDialog}
           onClose={() => setBranchPruneDialog(null)}
           onConfirm={() => void runConditionalPruneBranches()}
+        />
+      ) : null}
+
+      {branchCommandInfoKind ? (
+        <BranchCommandInfoDialog
+          kind={branchCommandInfoKind}
+          onClose={() => setBranchCommandInfoKind(null)}
         />
       ) : null}
 

@@ -58,6 +58,10 @@ export type RemoteDialogState = {
   fullDetail?: string;
 };
 
+export type NotificationEntry = RemoteDialogState & {
+  id: string;
+};
+
 export type AppErrorState = {
   title: string;
   summary: string;
