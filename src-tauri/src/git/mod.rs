@@ -6,7 +6,7 @@ pub use service::{
 	conditional_prune_branches, hard_prune_local_branches,
 	create_branch, force_switch_branch, merge_branch, resolve_conflicted_files,
 	apply_stash, drop_stash, list_stashes, stash_paths,
-	detach_head_to_commit,
+	cherry_pick_commit, detach_head_to_commit,
 	discard_paths, export_file_from_commit,
 	inspect_commit_detail, inspect_file_preview, inspect_repository,
 	inspect_commit_message_context,

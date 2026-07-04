@@ -2,7 +2,9 @@ import { X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 type ConflictResolutionDialogProps = {
+  title: string;
   branchLabel: string;
+  description: string;
   conflictedFiles: string[];
   disabled: boolean;
   onClose: () => void;
@@ -10,7 +12,9 @@ type ConflictResolutionDialogProps = {
 };
 
 export function ConflictResolutionDialog({
+  title,
   branchLabel,
+  description,
   conflictedFiles,
   disabled,
   onClose,
@@ -35,9 +39,9 @@ export function ConflictResolutionDialog({
       <section className="panel conflict-dialog" onClick={(event) => event.stopPropagation()}>
         <div className="branch-action-dialog__header">
           <div>
-            <p className="eyebrow">Merge conflicts</p>
+            <p className="eyebrow">{title}</p>
             <h3>{branchLabel}</h3>
-            <p className="muted">Choose conflicted files, then keep your version or the incoming version.</p>
+            <p className="muted">{description}</p>
           </div>
           <button className="icon-button" onClick={onClose} aria-label="Close conflict dialog" title="Close conflict dialog">
             <X size={14} />
@@ -66,8 +70,8 @@ export function ConflictResolutionDialog({
 
         <div className="branch-action-dialog__actions">
           <button className="ghost-button" onClick={onClose}>Close</button>
-          <button className="ghost-button" disabled={disabled || selectedPaths.length === 0} onClick={() => onResolve(selectedPaths, "ours")}>Keep yours</button>
-          <button className="primary-button" disabled={disabled || selectedPaths.length === 0} onClick={() => onResolve(selectedPaths, "theirs")}>Keep theirs</button>
+          <button className="ghost-button" disabled={disabled || selectedPaths.length === 0} onClick={() => onResolve(selectedPaths, "ours")}>Keep current</button>
+          <button className="primary-button" disabled={disabled || selectedPaths.length === 0} onClick={() => onResolve(selectedPaths, "theirs")}>Keep incoming</button>
         </div>
       </section>
     </div>

@@ -19,6 +19,7 @@ import { Suspense, lazy, type MouseEvent, useCallback, useEffect, useMemo, useRe
 import { BranchPane } from "./components/BranchPane";
 import { BranchCommandInfoDialog, type BranchCommandInfoKind } from "./components/BranchCommandInfoDialog";
 import { BranchCreateDialog } from "./components/BranchCreateDialog";
+import { CherryPickDialog } from "./components/CherryPickDialog";
 import { BranchDeleteDialog } from "./components/BranchDeleteDialog";
 import { BranchPruneDialog, type BranchPruneDialogValue } from "./components/BranchPruneDialog";
 import { CommitGraphCanvas } from "./CommitGraphCanvas";
@@ -52,6 +53,7 @@ import {
   applyCommitFilePatch,
   applyStash,
   BranchEntry,
+  cherryPickCommit,
   ConditionalBranchPruneInput,
   CloneResult,
   CommitDetail,
@@ -141,9 +143,19 @@ type DetachHeadDialogState = {
   branchName: string;
 };
 
+type CherryPickDialogState = {
+  commitHash: string;
+  shortHash: string;
+  subject: string;
+  parentHashes: string[];
+  mainlineParent: number;
+};
+
 type MergeConflictState = {
+  title: string;
   branchFullName: string;
   branchLabel: string;
+  description: string;
   conflictedFiles: string[];
 };
 
@@ -271,6 +283,7 @@ export function App() {
   const [branchCreateDiscardChanges, setBranchCreateDiscardChanges] = useState(false);
   const [branchCommandInfoKind, setBranchCommandInfoKind] = useState<BranchCommandInfoKind | null>(null);
   const [detachHeadDialog, setDetachHeadDialog] = useState<DetachHeadDialogState | null>(null);
+  const [cherryPickDialog, setCherryPickDialog] = useState<CherryPickDialogState | null>(null);
   const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
   const [branchPruneDialog, setBranchPruneDialog] = useState<BranchPruneDialogValue | null>(null);
   const [mergeDiscardDialog, setMergeDiscardDialog] = useState<MergeDiscardDialogState | null>(null);
@@ -2365,18 +2378,101 @@ export function App() {
   );
 
   const applyMergeBranchResult = useCallback(async (branchFullName: string, branchLabel: string, result: MergeBranchResult) => {
-    setStatusMessage(result.message);
+    setStatusMessage(result.message, "Merge completed");
 
     if (result.status === "conflicts") {
       setMergeConflictState({
+        title: "Merge conflict",
         branchFullName,
         branchLabel,
+        description: "Choose conflicted files, then keep the current branch version or the incoming branch version.",
         conflictedFiles: result.conflictedFiles,
       });
     }
 
     await refreshRepository({ fetchRemote: true });
   }, [refreshRepository]);
+
+  const runCherryPickCommit = useCallback(async (commitHash: string, shortHash: string, subject: string, mainlineParent?: number) => {
+    if (!selectedRepository) {
+      return false;
+    }
+
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog(
+        "git.commit.cherry-pick",
+        `Cherry-picking ${shortHash}.`,
+        [commitHash, subject, mainlineParent ? `mainlineParent=${mainlineParent}` : null].filter(Boolean).join("\n"),
+      );
+      const result = await cherryPickCommit(selectedRepository, commitHash, mainlineParent);
+      setStatusMessage(result.message, "Cherry-pick completed");
+
+      if (result.status === "conflicts") {
+        setMergeConflictState({
+          title: "Cherry-pick conflict",
+          branchFullName: commitHash,
+          branchLabel: mainlineParent ? `${shortHash} via parent ${mainlineParent}` : shortHash,
+          description: "Choose conflicted files, then keep the current branch version or the picked commit version.",
+          conflictedFiles: result.conflictedFiles,
+        });
+      } else {
+        setMergeConflictState(null);
+      }
+
+      await refreshRepository();
+      return true;
+    } catch (reason) {
+      reportAppError({
+        scope: "git.commit.cherry-pick.error",
+        title: "Cherry-pick failed",
+        fallback: "Cherry-pick failed.",
+        reason,
+        context: `Cherry-pick commit ${shortHash}.`,
+        detail: [commitHash, subject, mainlineParent ? `mainlineParent=${mainlineParent}` : null].filter(Boolean).join("\n"),
+      });
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  }, [refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const requestCherryPickCommit = useCallback((commitHash: string, shortHash: string, subject: string, parentHashes: string[]) => {
+    setSelectedCommitHash(commitHash);
+    setSelectedChangePath(null);
+
+    if (parentHashes.length > 1) {
+      setCherryPickDialog({
+        commitHash,
+        shortHash,
+        subject,
+        parentHashes,
+        mainlineParent: 1,
+      });
+      return;
+    }
+
+    void runCherryPickCommit(commitHash, shortHash, subject);
+  }, [runCherryPickCommit, setSelectedChangePath]);
+
+  const submitCherryPickDialog = useCallback(async () => {
+    if (!cherryPickDialog) {
+      return;
+    }
+
+    const completed = await runCherryPickCommit(
+      cherryPickDialog.commitHash,
+      cherryPickDialog.shortHash,
+      cherryPickDialog.subject,
+      cherryPickDialog.mainlineParent,
+    );
+
+    if (completed) {
+      setCherryPickDialog(null);
+    }
+  }, [cherryPickDialog, runCherryPickCommit]);
 
   const runSwitchBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
@@ -3425,6 +3521,7 @@ export function App() {
                   setSelectedCommitHash(commitHash);
                   setSelectedChangePath(null);
                 }}
+                onRequestCherryPick={(row) => requestCherryPickCommit(row.hash, row.shortHash, row.subject, row.parentHashes)}
                 onRequestDetachHead={openDetachHeadDialog}
               />
             </div>
@@ -3648,7 +3745,7 @@ export function App() {
             </div>
             {mergeConflictState ? (
               <div className="selection-conflict-banner">
-                <span className="pill pill--mixed">Merge conflict</span>
+                <span className="pill pill--mixed">{mergeConflictState.title}</span>
                 <strong>{mergeConflictState.branchLabel}</strong>
                 <span className="muted">{mergeConflictState.conflictedFiles.length} conflicted file(s)</span>
                 <button className="ghost-button" disabled={submitting} onClick={() => setConflictDialogOpen(true)}>
@@ -3814,6 +3911,16 @@ export function App() {
                 {!commitDetailLoading && !commitDetailError && commitDetail ? (
                   <>
                     <span className="pill pill--accent">Commit {commitDetail.shortHash}</span>
+                    <div className="branch-selection-actions">
+                      <button
+                        className="ghost-button"
+                        disabled={submitting}
+                        onClick={() => requestCherryPickCommit(commitDetail.hash, commitDetail.shortHash, commitDetail.subject, commitDetail.parentHashes)}
+                        title={commitDetail.parentHashes.length > 1 ? "Choose a mainline parent for this merge commit" : "Cherry-pick this commit onto the current branch"}
+                      >
+                        {commitDetail.parentHashes.length > 1 ? "Cherry-pick merge..." : "Cherry-pick"}
+                      </button>
+                    </div>
                     {selectedCommitBranch ? (
                       <div className="branch-selection-actions">
                         {selectedCommitBranches.length > 1 ? (
@@ -4087,6 +4194,19 @@ export function App() {
         />
       ) : null}
 
+      {cherryPickDialog ? (
+        <CherryPickDialog
+          shortHash={cherryPickDialog.shortHash}
+          subject={cherryPickDialog.subject}
+          parentHashes={cherryPickDialog.parentHashes}
+          mainlineParent={cherryPickDialog.mainlineParent}
+          disabled={submitting}
+          onChangeMainlineParent={(value) => setCherryPickDialog((current) => current ? { ...current, mainlineParent: value } : current)}
+          onClose={() => setCherryPickDialog(null)}
+          onSubmit={() => void submitCherryPickDialog()}
+        />
+      ) : null}
+
       {branchDeleteDialog ? (
         <BranchDeleteDialog
           branch={branchDeleteDialog.branch}
@@ -4127,7 +4247,9 @@ export function App() {
 
       {mergeConflictState && conflictDialogOpen ? (
         <ConflictResolutionDialog
+          title={mergeConflictState.title}
           branchLabel={mergeConflictState.branchLabel}
+          description={mergeConflictState.description}
           conflictedFiles={mergeConflictState.conflictedFiles}
           disabled={submitting}
           onClose={() => setConflictDialogOpen(false)}

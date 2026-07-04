@@ -371,6 +371,17 @@ pub async fn detach_head_to_commit(repo_path: String, commit_hash: String) -> Re
 }
 
 #[command]
+pub async fn cherry_pick_commit(
+    repo_path: String,
+    commit_hash: String,
+    mainline_parent: Option<usize>,
+) -> Result<MergeBranchResult, String> {
+    cherry_pick_commit_inner(repo_path, commit_hash, mainline_parent)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
 pub async fn rename_branch(repo_path: String, current_name: String, next_name: String) -> Result<String, String> {
     rename_branch_inner(repo_path, current_name, next_name)
         .await
@@ -2622,6 +2633,99 @@ async fn detach_head_to_commit_inner(repo_path: String, commit_hash: String) -> 
         .unwrap_or_else(|_| trimmed.to_string());
 
     Ok(format!("Detached HEAD at {}.", short_hash.trim()))
+}
+
+async fn cherry_pick_commit_inner(
+    repo_path: String,
+    commit_hash: String,
+    mainline_parent: Option<usize>,
+) -> GitResult<MergeBranchResult> {
+    let path = validate_repository_path(&repo_path)?;
+    let trimmed = commit_hash.trim();
+
+    if trimmed.is_empty() {
+        return Err(GitServiceError::GitCommandFailed("Commit hash cannot be empty.".to_string()));
+    }
+
+    let resolved = run_git_owned(
+        path,
+        vec!["rev-parse".into(), "--verify".into(), format!("{trimmed}^{{commit}}")],
+    )
+    .await?;
+    let full_hash = resolved.trim().to_string();
+
+    let parent_line = run_git_owned(
+        path,
+        vec!["rev-list".into(), "--parents".into(), "-n".into(), "1".into(), full_hash.clone()],
+    )
+    .await?;
+    let parent_count = parent_line.split_whitespace().count().saturating_sub(1);
+
+    let selected_mainline = if parent_count > 1 {
+        let mainline = mainline_parent.ok_or_else(|| {
+            GitServiceError::GitCommandFailed(
+                "Merge commits require a mainline parent. Choose a parent and try again.".to_string(),
+            )
+        })?;
+
+        if mainline == 0 || mainline > parent_count {
+            return Err(GitServiceError::GitCommandFailed(format!(
+                "Mainline parent must be between 1 and {} for this merge commit.",
+                parent_count
+            )));
+        }
+
+        Some(mainline)
+    } else {
+        None
+    };
+
+    let short_hash = run_git_owned(path, vec!["rev-parse".into(), "--short".into(), full_hash.clone()])
+        .await
+        .unwrap_or_else(|_| trimmed.to_string());
+    let mut args = vec!["cherry-pick".into()];
+
+    if let Some(mainline) = selected_mainline {
+        args.push("-m".into());
+        args.push(mainline.to_string());
+    }
+
+    args.push(full_hash);
+
+    let output = run_git_capture_owned(path, args).await?;
+    let detail = combine_command_output(&output.stdout, &output.stderr);
+
+    if output.success {
+        return Ok(MergeBranchResult {
+            status: "picked".to_string(),
+            message: if detail.is_empty() {
+                format!("Cherry-picked {} onto the current branch.", short_hash.trim())
+            } else {
+                detail
+            },
+            conflicted_files: Vec::new(),
+        });
+    }
+
+    let conflicted_files = list_conflicted_files(path).await?;
+
+    if !conflicted_files.is_empty() {
+        return Ok(MergeBranchResult {
+            status: "conflicts".to_string(),
+            message: if detail.is_empty() {
+                format!("Cherry-pick of {} produced conflicts.", short_hash.trim())
+            } else {
+                detail
+            },
+            conflicted_files,
+        });
+    }
+
+    Err(GitServiceError::GitCommandFailed(if detail.is_empty() {
+        format!("Cherry-pick of {} failed.", short_hash.trim())
+    } else {
+        detail
+    }))
 }
 
 async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool) -> GitResult<String> {

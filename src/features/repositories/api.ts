@@ -139,7 +139,7 @@ export type ConditionalBranchPruneInput = {
 };
 
 export type MergeBranchResult = {
-  status: "merged" | "conflicts";
+  status: "merged" | "conflicts" | "picked";
   message: string;
   conflictedFiles: string[];
 };
@@ -380,6 +380,10 @@ export const createBranch = (repoPath: string, name: string, startPoint?: string
 
 export const detachHeadToCommit = (repoPath: string, commitHash: string) => {
   return invoke<string>("detach_head_to_commit", { repoPath, commitHash });
+};
+
+export const cherryPickCommit = (repoPath: string, commitHash: string, mainlineParent?: number) => {
+  return invoke<MergeBranchResult>("cherry_pick_commit", { repoPath, commitHash, mainlineParent });
 };
 
 export const renameBranch = (repoPath: string, currentName: string, nextName: string) => {

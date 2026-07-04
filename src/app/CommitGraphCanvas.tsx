@@ -88,6 +88,7 @@ type CommitGraphCanvasProps = {
   disabled: boolean;
   selectedCommitHash: string | null;
   onSelectCommit: (commitHash: string) => void;
+  onRequestCherryPick: (row: CommitGraphRow) => void;
   onRequestDetachHead: (row: CommitGraphRow) => void;
 };
 
@@ -115,6 +116,7 @@ export function CommitGraphCanvas({
   disabled,
   selectedCommitHash,
   onSelectCommit,
+  onRequestCherryPick,
   onRequestDetachHead,
 }: CommitGraphCanvasProps) {
   const rootRef = useRef<HTMLElement | null>(null);
@@ -563,6 +565,16 @@ export function CommitGraphCanvas({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
+          <button
+            className="ghost-button"
+            disabled={disabled}
+            onClick={() => {
+              onRequestCherryPick(contextMenu.row);
+              setContextMenu(null);
+            }}
+          >
+            {contextMenu.row.parentHashes.length > 1 ? "Cherry-pick merge..." : "Cherry-pick"}
+          </button>
           <button
             className="ghost-button"
             disabled={disabled}
