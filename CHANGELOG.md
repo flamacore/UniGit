@@ -1,3 +1,9 @@
+## [0.22.1](https://github.com/flamacore/UniGit/compare/v0.22.0...v0.22.1) (2026-07-06)
+
+### Bug Fixes
+
+* improve grid layout to ensure full height expansion for panels ([809db42](https://github.com/flamacore/UniGit/commit/809db42328737224aaeca2218879a117fe7351d9))
+
 ## [0.22.0](https://github.com/flamacore/UniGit/compare/v0.21.1...v0.22.0) (2026-07-04)
 
 ### Features
