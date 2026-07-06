@@ -2177,19 +2177,19 @@ export function App() {
   }, [resizeInspectorPanels]);
 
   const lowerGridTemplateColumns = useMemo(() => {
-    return `${panelFractions.left}fr 12px ${panelFractions.right}fr`;
+    return `minmax(240px, ${panelFractions.left}fr) 8px minmax(240px, ${panelFractions.right}fr)`;
   }, [panelFractions]);
 
   const graphGridTemplateColumns = useMemo(() => {
-    return `${graphFractions.left}fr 12px ${graphFractions.right}fr`;
+    return `minmax(160px, ${graphFractions.left}fr) 8px minmax(320px, ${graphFractions.right}fr)`;
   }, [graphFractions]);
 
   const workspaceGridTemplateRows = useMemo(() => {
-    return `${stackFractions.top}fr 12px ${stackFractions.bottom}fr`;
+    return `minmax(140px, ${stackFractions.top}fr) 8px minmax(240px, ${stackFractions.bottom}fr)`;
   }, [stackFractions]);
 
   const inspectorGridTemplateRows = useMemo(() => {
-    return `${inspectorFractions.top}fr 12px ${inspectorFractions.bottom}fr`;
+    return `minmax(200px, ${inspectorFractions.top}fr) 8px minmax(140px, ${inspectorFractions.bottom}fr)`;
   }, [inspectorFractions]);
 
   const gitActivityRequestedVisible = loading
