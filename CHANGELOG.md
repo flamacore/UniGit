@@ -1,3 +1,9 @@
+## [0.22.0](https://github.com/flamacore/UniGit/compare/v0.21.1...v0.22.0) (2026-07-04)
+
+### Features
+
+* add cherry-pick functionality with dialog support ([4fffa76](https://github.com/flamacore/UniGit/commit/4fffa76d6d0678ed983fc422665747d1394a50fd))
+
 ## [0.21.1](https://github.com/flamacore/UniGit/compare/v0.21.0...v0.21.1) (2026-05-08)
 
 ### Bug Fixes
