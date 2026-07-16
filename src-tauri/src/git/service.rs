@@ -20,7 +20,7 @@ use tokio::process::Command;
 use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CloneResult, CommitDetail, CommitFileEntry,
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
-    FileHistoryEntry, FilePreview, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
+    FileHistoryEntry, FilePreview, GitLfsPreparationResult, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
     ModelPreviewResource, ModelPreviewSource,
     StashEntry,
     RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, RepositorySshConfigHost,
@@ -30,6 +30,8 @@ use super::models::{
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_INLINE_MODEL_BYTES: u64 = 24 * 1024 * 1024;
+const LARGE_COMMIT_CHUNK_BYTES: u64 = 1024 * 1024 * 1024;
+const LARGE_LFS_TRACK_BYTES: u64 = 50 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
 const COMMIT_MESSAGE_DIFF_LIMIT: usize = 30_000;
 const COMMIT_MESSAGE_UPSTREAM_LIMIT: usize = 8;
@@ -501,12 +503,47 @@ pub async fn create_commit(repo_path: String, message: String) -> Result<(), Str
         .map_err(|error| error.to_string())
 }
 
+#[command]
+pub async fn create_commit_for_paths(repo_path: String, message: String, paths: Vec<String>) -> Result<String, String> {
+    let path = validate_repository_path(&repo_path).map_err(|error| error.to_string())?;
+    let trimmed = message.trim();
+    let sanitized_paths = sanitize_path_list(paths);
+
+    if trimmed.is_empty() {
+        return Err("Commit message cannot be empty.".to_string());
+    }
+
+    if sanitized_paths.is_empty() {
+        return Err("Commit paths cannot be empty.".to_string());
+    }
+
+    let args = vec![
+        "commit".to_string(),
+        "-m".to_string(),
+        trimmed.to_string(),
+        "--pathspec-from-file=-".to_string(),
+        "--pathspec-file-nul".to_string(),
+    ];
+
+    run_git_owned_with_input(path, args, encode_pathspec_input(&sanitized_paths))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn prepare_git_lfs(repo_path: String, paths: Vec<String>) -> Result<GitLfsPreparationResult, String> {
+    prepare_git_lfs_inner(repo_path, paths)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnapshot> {
     let path = validate_repository_path(&repo_path)?;
     let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "--untracked-files=all"])
         .await?;
 
     let (current_branch, detached_head, ahead, behind, files, counts) = parse_status_output(&branch_output);
+    let files = enrich_file_changes_with_sizes(path, files);
 
     Ok(RepositorySnapshot {
         repo_path: repo_path.clone(),
@@ -523,6 +560,110 @@ async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnap
         files,
         counts,
     })
+}
+
+async fn prepare_git_lfs_inner(repo_path: String, paths: Vec<String>) -> GitResult<GitLfsPreparationResult> {
+    let path = validate_repository_path(&repo_path)?;
+    let sanitized_paths = sanitize_path_list(paths);
+    let gitattributes_path = path.join(".gitattributes");
+
+    if sanitized_paths.is_empty() {
+        return Ok(GitLfsPreparationResult {
+            transcript: "No staged paths needed git-lfs preparation.".to_string(),
+            attributes_changed: false,
+            tracked_patterns: Vec::new(),
+        });
+    }
+
+    let candidates = sanitized_paths
+        .iter()
+        .filter_map(|relative_path| {
+            let resolved = path.join(relative_path);
+            let size = fs::metadata(&resolved).ok()?.len();
+            if is_git_lfs_candidate_path(relative_path, size) {
+                Some((relative_path.clone(), size))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if candidates.is_empty() {
+        return Ok(GitLfsPreparationResult {
+            transcript: "Staged paths are not large enough for git-lfs preparation.".to_string(),
+            attributes_changed: false,
+            tracked_patterns: Vec::new(),
+        });
+    }
+
+    let mut transcript = Vec::new();
+    transcript.push(format!("Detected {} git-lfs candidate file(s).", candidates.len()));
+    transcript.push("Running `git lfs install --local` to initialize repository hooks.".to_string());
+    run_git_owned(path, vec!["lfs".into(), "install".into(), "--local".into()]).await?;
+
+    let tracked_patterns = candidates
+        .iter()
+        .map(|(relative_path, size)| {
+            transcript.push(format!("Tracking {relative_path} via git-lfs ({size} bytes)."));
+            relative_path.clone()
+        })
+        .collect::<Vec<_>>();
+
+    if !tracked_patterns.is_empty() {
+        for chunk in split_git_path_argument_batches(&tracked_patterns) {
+            let mut track_args = vec!["lfs".into(), "track".into()];
+            track_args.extend(chunk.iter().cloned());
+            run_git_owned(path, track_args).await?;
+        }
+
+        if gitattributes_path.exists() {
+            run_git_owned(path, vec!["add".into(), ".gitattributes".into()]).await?;
+        }
+    }
+
+    let attributes_changed = gitattributes_path.exists();
+
+    if attributes_changed {
+        transcript.push("Updated .gitattributes for git-lfs tracking.".to_string());
+    }
+
+    Ok(GitLfsPreparationResult {
+        transcript: transcript.join("\n"),
+        attributes_changed,
+        tracked_patterns,
+    })
+}
+
+fn enrich_file_changes_with_sizes(repo_root: &Path, files: Vec<FileChange>) -> Vec<FileChange> {
+    files
+        .into_iter()
+        .map(|mut file| {
+            file.file_size_bytes = resolve_file_size_bytes(repo_root, &file.path);
+            file
+        })
+        .collect()
+}
+
+fn resolve_file_size_bytes(repo_root: &Path, relative_path: &str) -> Option<u64> {
+    let resolved = repo_root.join(relative_path);
+    fs::metadata(resolved).ok().map(|metadata| metadata.len())
+}
+
+fn is_git_lfs_candidate_path(relative_path: &str, size_bytes: u64) -> bool {
+    if size_bytes >= LARGE_LFS_TRACK_BYTES {
+        return true;
+    }
+
+    let extension = Path::new(relative_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    matches!(
+        extension.as_str(),
+        "psd" | "fbx" | "blend" | "glb" | "gltf" | "png" | "jpg" | "jpeg" | "tga" | "exr" | "bmp"
+    )
 }
 
 async fn inspect_repository_config_inner(repo_path: String) -> GitResult<RepositoryConfig> {
@@ -4891,6 +5032,7 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
             ignored,
             staged_modified,
             display_status,
+            file_size_bytes: None,
         });
     }
 

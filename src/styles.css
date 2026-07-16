@@ -1531,6 +1531,20 @@ h4 {
   flex: 1;
 }
 
+.change-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.change-card__title-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .change-card__meta-child {
   margin-top: 6px;
   align-items: center;
@@ -3006,5 +3020,7 @@ button:disabled {
     flex-wrap: wrap;
   }
 }
+
+
 
 

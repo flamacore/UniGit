@@ -15,6 +15,7 @@ use git::{
     force_pull_repository, pull_branch, pull_repository, push_repository, rename_branch,
     restore_file_from_commit, save_repository_remote, save_repository_ssh_settings, stage_files, switch_branch,
     unstage_files, log_client_event, get_log_file_path, clear_git_index_lock,
+    create_commit_for_paths, prepare_git_lfs,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -66,6 +67,8 @@ pub fn run() {
             stage_files,
             unstage_files,
             create_commit,
+            create_commit_for_paths,
+            prepare_git_lfs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

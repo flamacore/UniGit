@@ -169,7 +169,20 @@ export function DropLane({
                   aria-label={item.marker.label}
                 />
                 <div className="change-card__text">
-                  <strong title={item.parentPath ? `${item.parentPath}/${item.fileName}` : item.fileName}>{item.fileName}</strong>
+                  <div className="change-card__title-row">
+                    <strong title={item.parentPath ? `${item.parentPath}/${item.fileName}` : item.fileName}>{item.fileName}</strong>
+                    {item.change.fileSizeBytes ? (
+                      <span
+                        className={clsx(
+                          "pill",
+                          item.change.fileSizeBytes >= 50 * 1024 * 1024 ? "pill--accent" : "pill--default",
+                        )}
+                        title={item.change.fileSizeBytes >= 50 * 1024 * 1024 ? "Large file, good LFS candidate" : "File size"}
+                      >
+                        {item.change.fileSizeBytes >= 50 * 1024 * 1024 ? "LFS" : "Size"} {Math.round(item.change.fileSizeBytes / 1024)} KB
+                      </span>
+                    ) : null}
+                  </div>
                   {showPaths && item.parentPath ? (
                     <p title={item.parentPath}>{item.parentPath}</p>
                   ) : null}

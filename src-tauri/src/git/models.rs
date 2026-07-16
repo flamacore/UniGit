@@ -13,6 +13,7 @@ pub struct FileChange {
     pub ignored: bool,
     pub staged_modified: bool,
     pub display_status: String,
+    pub file_size_bytes: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Clone, Default)]
@@ -38,6 +39,14 @@ pub struct RepositorySnapshot {
     pub last_refreshed_at: String,
     pub files: Vec<FileChange>,
     pub counts: RepositoryCounts,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitLfsPreparationResult {
+    pub transcript: String,
+    pub attributes_changed: bool,
+    pub tracked_patterns: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

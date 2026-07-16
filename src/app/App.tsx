@@ -70,7 +70,7 @@ import {
   cloneRepository,
   clearGitIndexLock,
   createBranch,
-  createCommit,
+  createCommitForPaths,
   discardPaths,
   detachHeadToCommit,
   deleteRepositoryRemote,
@@ -98,6 +98,7 @@ import {
   pullRepository,
   pullBranch,
   pushRepository,
+  prepareGitLfs,
   renameBranch,
   restoreFileFromCommit,
   saveRepositoryRemote,
@@ -1608,33 +1609,116 @@ export function App() {
     [refreshRepository, reportAppError, selectedRepository, writeClientLog],
   );
 
+  const runCommitStagedChanges = useCallback(
+    async (pushAfterCommit: boolean) => {
+      if (!selectedRepository || !commitMessage.trim() || !stagedChanges.length) {
+        return;
+      }
+
+      const message = commitMessage.trim();
+      const stagedPaths = Array.from(new Set(stagedChanges.flatMap((item) => item.actionPaths)));
+      const fileSizeByPath = new Map((snapshot?.files ?? []).map((file) => [file.path, file.fileSizeBytes]));
+      const largePaths = Array.from(
+        new Set(
+          stagedPaths.filter((path) => {
+            const size = fileSizeByPath.get(path);
+            return typeof size === "number" && size >= 50 * 1024 * 1024;
+          }),
+        ),
+      );
+
+      if (largePaths.length > 0) {
+        const confirmed = window.confirm(
+          [
+            "Some staged files exceed 50 MB and are good candidates for Git LFS.",
+            "",
+            "Install and initialize Git LFS, track them, and continue?",
+            "",
+            largePaths.join("\n"),
+          ].join("\n"),
+        );
+
+        if (!confirmed) {
+          return;
+        }
+      }
+
+      setSubmitting(true);
+      setError(null);
+      setRemoteDialog(null);
+
+      let committed = false;
+
+      try {
+        let commitPaths = stagedPaths;
+
+        if (largePaths.length > 0) {
+          writeClientLog(
+            "git.lfs.prepare",
+            `Preparing Git LFS for ${largePaths.length} large staged file(s).`,
+            largePaths.join("\n"),
+          );
+
+          const lfsResult = await prepareGitLfs(selectedRepository, largePaths);
+          if (lfsResult.transcript) {
+            setStatusMessage(lfsResult.transcript, "Git LFS prepared");
+          }
+
+          if (lfsResult.attributesChanged && !commitPaths.includes(".gitattributes")) {
+            commitPaths = [...commitPaths, ".gitattributes"];
+          }
+        }
+
+        writeClientLog(
+          "git.commit",
+          pushAfterCommit ? "Creating commit before push." : "Creating commit.",
+          message,
+        );
+        await createCommitForPaths(selectedRepository, message, commitPaths);
+        committed = true;
+        setCommitMessage("");
+
+        if (pushAfterCommit) {
+          writeClientLog("git.push", `Pushing repository ${selectedRepository} after commit.`);
+          const pushResult = await pushRepository(selectedRepository);
+          setStatusMessage(pushResult || "Committed staged changes and pushed them.", "Commit and push completed");
+        } else {
+          setStatusMessage("Committed staged changes.");
+        }
+
+        await refreshRepository();
+      } catch (reason) {
+        const failure = getReasonMessage(reason, pushAfterCommit ? "Commit and push failed." : "Commit failed.");
+
+        if (pushAfterCommit && committed) {
+          setError(null);
+          setStatusMessage("Committed staged changes locally. Push failed.");
+          showRemoteDialog(describeRemoteFailure("push", failure), {
+            scope: "git.push.error",
+            context: `Push repository ${selectedRepository} after commit.`,
+            extraDetail: message,
+          });
+          await refreshRepository();
+        } else {
+          reportAppError({
+            scope: pushAfterCommit ? "git.commit.error" : "git.commit.error",
+            title: pushAfterCommit ? "Commit before push failed" : "Commit failed",
+            fallback: pushAfterCommit ? "Commit and push failed." : "Commit failed.",
+            reason: failure,
+            context: pushAfterCommit ? "Create a commit before push." : "Create a commit from staged changes.",
+            detail: message,
+          });
+        }
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [commitMessage, refreshRepository, reportAppError, selectedRepository, showRemoteDialog, snapshot?.files, stagedChanges, writeClientLog],
+  );
+
   const commitChanges = useCallback(async () => {
-    if (!selectedRepository || !commitMessage.trim()) {
-      return;
-    }
-
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      writeClientLog("git.commit", "Creating commit.", commitMessage.trim());
-      await createCommit(selectedRepository, commitMessage.trim());
-      setCommitMessage("");
-      setStatusMessage("Committed staged changes.");
-      await refreshRepository();
-    } catch (reason) {
-      reportAppError({
-        scope: "git.commit.error",
-        title: "Commit failed",
-        fallback: "Commit failed.",
-        reason,
-        context: "Create a commit from staged changes.",
-        detail: commitMessage.trim(),
-      });
-    } finally {
-      setSubmitting(false);
-    }
-  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+    await runCommitStagedChanges(false);
+  }, [runCommitStagedChanges]);
 
   const runGenerateCommitMessage = useCallback(async () => {
     if (!selectedRepository || !stagedChanges.length) {
@@ -1678,54 +1762,8 @@ export function App() {
   }, [aiSettings, reportAppError, selectedRepository, stagedChanges.length, writeClientLog]);
 
   const commitAndPushChanges = useCallback(async () => {
-    if (!selectedRepository || !commitMessage.trim()) {
-      return;
-    }
-
-    const message = commitMessage.trim();
-    let committed = false;
-
-    setSubmitting(true);
-    setError(null);
-    setRemoteDialog(null);
-
-    try {
-      writeClientLog("git.commit", "Creating commit before push.", message);
-      await createCommit(selectedRepository, message);
-      committed = true;
-      setCommitMessage("");
-
-      writeClientLog("git.push", `Pushing repository ${selectedRepository} after commit.`);
-      const pushResult = await pushRepository(selectedRepository);
-
-      setStatusMessage(pushResult || "Committed staged changes and pushed them.", "Commit and push completed");
-      await refreshRepository();
-    } catch (reason) {
-      const failure = getReasonMessage(reason, "Commit and push failed.");
-
-      if (committed) {
-        setError(null);
-        setStatusMessage("Committed staged changes locally. Push failed.");
-        showRemoteDialog(describeRemoteFailure("push", failure), {
-          scope: "git.push.error",
-          context: `Push repository ${selectedRepository} after commit.`,
-          extraDetail: message,
-        });
-        await refreshRepository();
-      } else {
-        reportAppError({
-          scope: "git.commit.error",
-          title: "Commit before push failed",
-          fallback: "Commit and push failed.",
-          reason: failure,
-          context: "Create a commit before push.",
-          detail: message,
-        });
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  }, [commitMessage, refreshRepository, reportAppError, selectedRepository, showRemoteDialog, writeClientLog]);
+    await runCommitStagedChanges(true);
+  }, [runCommitStagedChanges]);
 
   const exportCommitFile = useCallback(async (commitHash: string, relativePath: string) => {
     if (!selectedRepository || !commitHash) {
@@ -3492,7 +3530,7 @@ export function App() {
               />
 
               <div
-                className="panel-resizer"
+ phSc           className="panel-resizer"
                 role="separator"
                 aria-orientation="vertical"
                 onPointerDown={() => startGraphResize()}

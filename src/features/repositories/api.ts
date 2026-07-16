@@ -11,6 +11,7 @@ export type FileChange = {
   ignored: boolean;
   stagedModified: boolean;
   displayStatus: string;
+  fileSizeBytes: number | null;
 };
 
 export type RepositoryCounts = {
@@ -516,6 +517,18 @@ export const addPathsToGitignore = (repoPath: string, paths: string[]) => {
 
 export const createCommit = (repoPath: string, message: string) => {
   return invoke<void>("create_commit", { repoPath, message });
+};
+
+export const createCommitForPaths = (repoPath: string, message: string, paths: string[]) => {
+  return invoke<string>("create_commit_for_paths", { repoPath, message, paths });
+};
+
+export const prepareGitLfs = (repoPath: string, paths: string[]) => {
+  return invoke<{
+    transcript: string;
+    attributesChanged: boolean;
+    trackedPatterns: string[];
+  }>("prepare_git_lfs", { repoPath, paths });
 };
 
 export const inspectFilePreview = (repoPath: string, relativePath: string) => {
