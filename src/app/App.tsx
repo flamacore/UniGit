@@ -3530,7 +3530,7 @@ export function App() {
               />
 
               <div
- phSc           className="panel-resizer"
+                className="panel-resizer"
                 role="separator"
                 aria-orientation="vertical"
                 onPointerDown={() => startGraphResize()}
