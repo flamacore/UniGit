@@ -1,3 +1,9 @@
+## [0.23.1](https://github.com/flamacore/UniGit/compare/v0.23.0...v0.23.1) (2026-07-17)
+
+### Bug Fixes
+
+* remove stray phSc attribute from panel-resizer div ([ef69a48](https://github.com/flamacore/UniGit/commit/ef69a48e647dbd38fe3819f021d92b22d0663e3a))
+
 ## [0.23.0](https://github.com/flamacore/UniGit/compare/v0.22.1...v0.23.0) (2026-07-16)
 
 ### Features
