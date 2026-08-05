@@ -1,3 +1,9 @@
+## [0.23.3](https://github.com/flamacore/UniGit/compare/v0.23.2...v0.23.3) (2026-08-05)
+
+### Bug Fixes
+
+* resolve cargo target dir dynamically for release ([12db293](https://github.com/flamacore/UniGit/commit/12db293307ffdaf87bc1a89c4b136d64e5a1e09a))
+
 ## [0.23.2](https://github.com/flamacore/UniGit/compare/v0.23.1...v0.23.2) (2026-08-05)
 
 ### Bug Fixes
