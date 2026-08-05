@@ -1,3 +1,9 @@
+## [0.24.0](https://github.com/flamacore/UniGit/compare/v0.23.3...v0.24.0) (2026-08-05)
+
+### Features
+
+* add new app permissions to ACL manifests ([dcc971e](https://github.com/flamacore/UniGit/commit/dcc971e12c4373dd8ea8c7359602d6e5d9c7e428))
+
 ## [0.23.3](https://github.com/flamacore/UniGit/compare/v0.23.2...v0.23.3) (2026-08-05)
 
 ### Bug Fixes
