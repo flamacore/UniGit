@@ -16,7 +16,15 @@ try {
     throw "Windows release build failed with exit code $LASTEXITCODE."
   }
 
-  $bundleDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
+  # Resolve the actual cargo target directory (honors src-tauri/.cargo/config.toml
+  # and CARGO_TARGET_DIR) instead of assuming src-tauri/target.
+  $cargoMeta = cargo metadata --no-deps --format-version 1 --manifest-path (Join-Path $repoRoot "src-tauri\Cargo.toml") 2>$null | ConvertFrom-Json
+  $targetDir = $cargoMeta.target_directory
+  if (-not $targetDir) {
+    $targetDir = Join-Path $repoRoot "src-tauri\target"
+  }
+
+  $bundleDirectory = Join-Path $targetDir "release\bundle\nsis"
   $bundles = Get-ChildItem $bundleDirectory -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
 
   if ($bundles) {

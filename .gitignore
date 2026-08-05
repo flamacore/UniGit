@@ -3,6 +3,8 @@ dist/
 .vite/
 target/
 Cargo.lock
+# Local cargo target-dir override (developer-only); must not ship to CI
+src-tauri/.cargo/config.toml
 .DS_Store
 Thumbs.db
 docs/notes.md
