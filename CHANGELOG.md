@@ -1,3 +1,9 @@
+## [0.24.1](https://github.com/flamacore/UniGit/compare/v0.24.0...v0.24.1) (2026-08-06)
+
+### Bug Fixes
+
+* suppress console window when running git commands on Windows ([7d2a1a0](https://github.com/flamacore/UniGit/commit/7d2a1a08cc6c9ade62fe11d64bb028e765359098))
+
 ## [0.24.0](https://github.com/flamacore/UniGit/compare/v0.23.3...v0.24.0) (2026-08-05)
 
 ### Features
