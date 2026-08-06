@@ -38,6 +38,15 @@ const COMMIT_MESSAGE_UPSTREAM_LIMIT: usize = 8;
 
 static LOG_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+#[cfg(windows)]
+fn suppress_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn suppress_console_window(_command: &mut Command) {}
+
 #[derive(Debug, Error)]
 enum GitServiceError {
     #[error("Repository path is missing or invalid.")]
@@ -4328,11 +4337,15 @@ async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
     let command_preview = args.join(" ");
     let _ = append_log("backend", "git.command.start", &format!("git {command_preview}"), None);
 
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command
         .output()
         .await
         .map_err(|error| match error.kind() {
@@ -4374,6 +4387,7 @@ async fn run_git_owned_with_env(
     );
 
     let mut command = Command::new("git");
+    suppress_console_window(&mut command);
     command
         .arg("-C")
         .arg(repo_path)
@@ -4468,6 +4482,7 @@ async fn rerun_git_owned_with_env(
     let command_preview = args.join(" ");
     let repo_display = repo_path.display().to_string();
     let mut command = Command::new("git");
+    suppress_console_window(&mut command);
     command
         .arg("-C")
         .arg(repo_path)
@@ -4609,13 +4624,17 @@ async fn run_git_owned_without_retry(repo_path: &Path, args: Vec<String>) -> Git
         Some("no-retry"),
     );
 
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command
         .output()
         .await
         .map_err(|error| match error.kind() {
@@ -4656,13 +4675,17 @@ async fn run_git_capture_owned(repo_path: &Path, args: Vec<String>) -> GitResult
     let repo_display = repo_path.display().to_string();
     let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), None);
 
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command
         .output()
         .await
         .map_err(|error| match error.kind() {
@@ -4692,13 +4715,17 @@ async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<V
     let repo_display = repo_path.display().to_string();
     let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), Some("binary stdout expected"));
 
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let output = command
         .output()
         .await
         .map_err(|error| match error.kind() {
@@ -4739,13 +4766,17 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
         Some(&format!("stdin bytes={}", input.len())),
     );
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
         .spawn()
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
@@ -4799,13 +4830,17 @@ async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, inp
         Some(&format!("stdin bytes={} (binary stdout expected)", input.len())),
     );
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    command
         .arg("-C")
         .arg(repo_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
         .spawn()
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
