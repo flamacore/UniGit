@@ -12,6 +12,21 @@ export type FileChange = {
   stagedModified: boolean;
   displayStatus: string;
   fileSizeBytes: number | null;
+  conflictKind: ConflictKind | null;
+};
+
+export type ConflictKind =
+  | "both-modified"
+  | "both-added"
+  | "both-deleted"
+  | "added-by-us"
+  | "added-by-them"
+  | "deleted-by-us"
+  | "deleted-by-them";
+
+export type RepositoryOperation = {
+  kind: "merge" | "cherry-pick" | "revert" | "rebase";
+  label: string;
 };
 
 export type RepositoryCounts = {
@@ -33,6 +48,7 @@ export type RepositorySnapshot = {
   lastRefreshedAt: string;
   files: FileChange[];
   counts: RepositoryCounts;
+  operation: RepositoryOperation | null;
 };
 
 export type RepositoryRemote = {
@@ -145,6 +161,26 @@ export type MergeBranchResult = {
   conflictedFiles: string[];
 };
 
+export type MergePreview = {
+  targetLabel: string;
+  currentBranch: string;
+  upToDate: boolean;
+  fastForward: boolean;
+  unrelatedHistories: boolean;
+  incomingCommits: number;
+  incomingSubjects: string[];
+  changedFiles: number;
+  /** null when the installed git cannot predict conflicts without touching the working tree. */
+  predictedConflicts: string[] | null;
+  localChanges: number;
+  overlappingLocalChanges: string[];
+  operationInProgress: string | null;
+};
+
+export type MergeLocalChanges = "keep" | "discard";
+export type MergeConflictPreference = "ask" | "ours" | "theirs";
+export type ConflictStrategy = "ours" | "theirs" | "manual";
+
 export type CommitFileEntry = {
   path: string;
   status: string;
@@ -203,6 +239,10 @@ export type FilePreview = {
   stagedDiff: string | null;
   unstagedDiff: string | null;
   assetSummary: AssetSummary | null;
+  /** Importer settings from the Unity .meta file next to the asset. */
+  importSettings: AssetSummary | null;
+  lfsTracked: boolean;
+  missingFromDisk: boolean;
   imageSources: ImagePreviewSource[];
   imageComparisonPresets: ImageComparisonPreset[];
   defaultImageComparisonPresetKey: string | null;
@@ -223,6 +263,7 @@ export type ImagePreviewSource = {
   byteSize: number;
   encodedBytesBase64: string;
   isPsd: boolean;
+  format: string;
 };
 
 export type ImageComparisonPreset = {
@@ -239,19 +280,45 @@ export type UnityMaterialPreviewSource = {
   sourceKind: "workingTree" | "staged" | "head" | string;
   materialName: string;
   shaderLabel: string;
+  shaderPath: string | null;
+  shaderSource: "ShaderLab" | "Shader Graph" | "Built-in" | "Not found" | string;
+  renderPipeline: string | null;
   shaderFamily: "lit" | "unlit" | "custom" | string;
-  surfaceKind: "opaque" | "transparent" | "unlit" | string;
+  surfaceKind: "opaque" | "cutout" | "alpha" | "premultiply" | "additive" | "multiply" | string;
+  doubleSided: boolean;
   baseColor: UnityColorValue | null;
   emissionColor: UnityColorValue | null;
+  emissionEnabled: boolean;
   metallic: number | null;
   smoothness: number | null;
+  normalScale: number | null;
+  occlusionStrength: number | null;
   cutoff: number | null;
-  previewShapeHint: "sphere" | "box" | "cylinder" | string;
+  /** Base map tiling x/y and offset x/y. */
+  baseTiling: [number, number, number, number] | null;
+  renderQueue: number | null;
+  keywords: string[];
+  previewShapeHint: "sphere" | "box" | "cylinder" | "plane" | string;
   notes: string[];
   textures: UnityMaterialTexturePreview[];
   baseTextureKey: string | null;
   normalTextureKey: string | null;
   emissionTextureKey: string | null;
+  occlusionTextureKey: string | null;
+  metallicTextureKey: string | null;
+  metallicTextureLayout: "metallic" | "mask" | null;
+  properties: UnityMaterialProperty[];
+};
+
+export type UnityMaterialProperty = {
+  name: string;
+  displayName: string;
+  kind: "texture" | "color" | "vector" | "number" | string;
+  value: string;
+  color: UnityColorValue | null;
+  role: string | null;
+  isDefault: boolean;
+  hidden: boolean;
 };
 
 export type UnityMaterialTexturePreview = {
@@ -262,6 +329,7 @@ export type UnityMaterialTexturePreview = {
   mimeType: string;
   encodedBytesBase64: string;
   isPsd: boolean;
+  format: string;
 };
 
 export type UnityColorValue = {
@@ -403,11 +471,28 @@ export const conditionalPruneBranches = (repoPath: string, input: ConditionalBra
   return invoke<string>("conditional_prune_branches", { repoPath, input });
 };
 
-export const mergeBranch = (repoPath: string, fullName: string, discardLocalChanges = false) => {
-  return invoke<MergeBranchResult>("merge_branch", { repoPath, fullName, discardLocalChanges });
+export const previewMerge = (repoPath: string, fullName: string) => {
+  return invoke<MergePreview>("preview_merge", { repoPath, fullName });
 };
 
-export const resolveConflictedFiles = (repoPath: string, paths: string[], strategy: "ours" | "theirs") => {
+export const mergeBranch = (
+  repoPath: string,
+  fullName: string,
+  localChanges: MergeLocalChanges = "keep",
+  conflictPreference: MergeConflictPreference = "ask",
+) => {
+  return invoke<MergeBranchResult>("merge_branch", { repoPath, fullName, localChanges, conflictPreference });
+};
+
+export const abortOperation = (repoPath: string) => {
+  return invoke<string>("abort_operation", { repoPath });
+};
+
+export const continueOperation = (repoPath: string) => {
+  return invoke<string>("continue_operation", { repoPath });
+};
+
+export const resolveConflictedFiles = (repoPath: string, paths: string[], strategy: ConflictStrategy) => {
   return invoke<string>("resolve_conflicted_files", { repoPath, paths, strategy });
 };
 

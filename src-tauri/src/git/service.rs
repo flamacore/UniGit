@@ -1,12 +1,12 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     env,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Mutex, OnceLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -21,15 +21,19 @@ use super::models::{
     AssetDetail, AssetSummary, BranchEntry, CloneResult, CommitDetail, CommitFileEntry,
     CommitGraphPage, CommitGraphRow, CommitMessageContext, CommitSummary, FileChange,
     FileHistoryEntry, FilePreview, GitLfsPreparationResult, ImageComparisonPreset, ImagePreviewSource, MergeBranchResult,
+    MergePreview, RepositoryOperation,
     ModelPreviewResource, ModelPreviewSource,
     StashEntry,
     RepositoryConfig, RepositoryCounts, RepositoryRemote, RepositorySnapshot, RepositorySshConfigHost,
     RepositorySshDiscovery, RepositorySshKeyOption, RepositorySshSettings, UnityColorValue,
-    UnityMaterialPreviewSource, UnityMaterialTexturePreview,
+    UnityMaterialPreviewSource, UnityMaterialProperty, UnityMaterialTexturePreview,
 };
+use super::unity_shader::{parse_shader, ParsedShader, ShaderProperty, ShaderPropertyKind};
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_INLINE_MODEL_BYTES: u64 = 24 * 1024 * 1024;
+/// Upper bound on what a preview reads from disk; headers and text excerpts need far less.
+const MAX_PREVIEW_READ_BYTES: u64 = 64 * 1024 * 1024;
 const LARGE_COMMIT_CHUNK_BYTES: u64 = 1024 * 1024 * 1024;
 const LARGE_LFS_TRACK_BYTES: u64 = 50 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
@@ -46,6 +50,23 @@ fn suppress_console_window(command: &mut Command) {
 
 #[cfg(not(windows))]
 fn suppress_console_window(_command: &mut Command) {}
+
+/// Every git invocation goes through here so path handling is identical everywhere.
+fn git_command(repo_path: Option<&Path>) -> Command {
+    let mut command = Command::new("git");
+    suppress_console_window(&mut command);
+    // There is no terminal behind the app: an editor prompt (merge --continue, etc.) would hang
+    // forever in a hidden console, so accept git's prepared message instead.
+    command.env("GIT_EDITOR", "true");
+    // Emit non-ASCII paths as UTF-8 instead of octal-escaped quoted strings.
+    command.args(["-c", "core.quotepath=false"]);
+
+    if let Some(path) = repo_path {
+        command.arg("-C").arg(path);
+    }
+
+    command
+}
 
 #[derive(Debug, Error)]
 enum GitServiceError {
@@ -73,15 +94,21 @@ struct ParsedUnityMaterial {
     material_name: String,
     shader_guid: Option<String>,
     shader_file_id: Option<String>,
-    float_values: std::collections::HashMap<String, f32>,
-    color_values: std::collections::HashMap<String, UnityColorValue>,
+    /// Floats and ints; Unity stores both as plain numbers.
+    float_values: HashMap<String, f32>,
+    /// Colors and vectors; Unity stores both as r/g/b/a.
+    color_values: HashMap<String, UnityColorValue>,
     texture_slots: Vec<ParsedUnityTextureSlot>,
+    keywords: Vec<String>,
+    custom_render_queue: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
 struct ParsedUnityTextureSlot {
     property_name: String,
     guid: Option<String>,
+    scale: (f32, f32),
+    offset: (f32, f32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -421,8 +448,34 @@ pub async fn conditional_prune_branches(repo_path: String, input: ConditionalBra
 }
 
 #[command]
-pub async fn merge_branch(repo_path: String, full_name: String, discard_local_changes: bool) -> Result<MergeBranchResult, String> {
-    merge_branch_inner(repo_path, full_name, discard_local_changes)
+pub async fn merge_branch(
+    repo_path: String,
+    full_name: String,
+    local_changes: String,
+    conflict_preference: String,
+) -> Result<MergeBranchResult, String> {
+    merge_branch_inner(repo_path, full_name, local_changes, conflict_preference)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn preview_merge(repo_path: String, full_name: String) -> Result<MergePreview, String> {
+    preview_merge_inner(repo_path, full_name)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn abort_operation(repo_path: String) -> Result<String, String> {
+    abort_operation_inner(repo_path)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn continue_operation(repo_path: String) -> Result<String, String> {
+    continue_operation_inner(repo_path)
         .await
         .map_err(|error| error.to_string())
 }
@@ -526,6 +579,14 @@ pub async fn create_commit_for_paths(repo_path: String, message: String, paths: 
         return Err("Commit paths cannot be empty.".to_string());
     }
 
+    // Git refuses a path-limited commit while a merge or cherry-pick is being concluded
+    // ("cannot do a partial commit during a merge"), so commit the whole index instead.
+    if detect_repository_operation(path).is_some() {
+        return run_git(path, ["commit", "-m", trimmed])
+            .await
+            .map_err(|error| error.to_string());
+    }
+
     let args = vec![
         "commit".to_string(),
         "-m".to_string(),
@@ -548,7 +609,7 @@ pub async fn prepare_git_lfs(repo_path: String, paths: Vec<String>) -> Result<Gi
 
 async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnapshot> {
     let path = validate_repository_path(&repo_path)?;
-    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "--untracked-files=all"])
+    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "-z", "--untracked-files=all"])
         .await?;
 
     let (current_branch, detached_head, ahead, behind, files, counts) = parse_status_output(&branch_output);
@@ -568,7 +629,67 @@ async fn inspect_repository_inner(repo_path: String) -> GitResult<RepositorySnap
         last_refreshed_at: chrono_like_timestamp(),
         files,
         counts,
+        operation: detect_repository_operation(path),
     })
+}
+
+fn resolve_git_dir(repo_root: &Path) -> Option<PathBuf> {
+    let dot_git = repo_root.join(".git");
+
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+
+    // Worktrees and submodules keep a `.git` file that points at the real directory.
+    let pointer = fs::read_to_string(&dot_git).ok()?;
+    let target = pointer.lines().find_map(|line| line.strip_prefix("gitdir:"))?.trim();
+    let target_path = Path::new(target);
+
+    Some(if target_path.is_absolute() {
+        target_path.to_path_buf()
+    } else {
+        repo_root.join(target_path)
+    })
+}
+
+/// Reads git's own state files, so an interrupted merge is still reported after an app restart.
+fn detect_repository_operation(repo_root: &Path) -> Option<RepositoryOperation> {
+    let git_dir = resolve_git_dir(repo_root)?;
+    let first_line = |name: &str| {
+        fs::read_to_string(git_dir.join(name))
+            .ok()
+            .and_then(|contents| contents.lines().next().map(|line| line.trim().to_string()))
+            .filter(|line| !line.is_empty())
+    };
+    let short_hash = |name: &str| first_line(name).map(|hash| hash.chars().take(7).collect::<String>());
+    let operation = |kind: &str, label: Option<String>| {
+        Some(RepositoryOperation {
+            kind: kind.to_string(),
+            label: label.unwrap_or_else(|| kind.to_string()),
+        })
+    };
+
+    if git_dir.join("MERGE_HEAD").exists() {
+        return operation("merge", first_line("MERGE_MSG").or_else(|| short_hash("MERGE_HEAD")));
+    }
+
+    if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        return operation("cherry-pick", short_hash("CHERRY_PICK_HEAD"));
+    }
+
+    if git_dir.join("REVERT_HEAD").exists() {
+        return operation("revert", short_hash("REVERT_HEAD"));
+    }
+
+    for directory in ["rebase-merge", "rebase-apply"] {
+        if git_dir.join(directory).is_dir() {
+            let branch = first_line(&format!("{directory}/head-name"))
+                .map(|name| name.trim_start_matches("refs/heads/").to_string());
+            return operation("rebase", branch);
+        }
+    }
+
+    None
 }
 
 async fn prepare_git_lfs_inner(repo_path: String, paths: Vec<String>) -> GitResult<GitLfsPreparationResult> {
@@ -677,7 +798,7 @@ fn is_git_lfs_candidate_path(relative_path: &str, size_bytes: u64) -> bool {
 
 async fn inspect_repository_config_inner(repo_path: String) -> GitResult<RepositoryConfig> {
     let path = validate_repository_path(&repo_path)?;
-    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "--untracked-files=all"])
+    let branch_output = run_git(path, ["status", "--branch", "--porcelain=v1", "-z", "--untracked-files=no"])
         .await?;
     let (current_branch, detached_head, _, _, _, _) = parse_status_output(&branch_output);
 
@@ -1514,7 +1635,7 @@ async fn list_file_history_inner(repo_path: String, relative_path: String, limit
             "--date=iso-strict".into(),
             format!("--pretty=format:{format}"),
             "--".into(),
-            trimmed_path.to_string(),
+            literal_pathspec(trimmed_path),
         ],
     )
     .await?;
@@ -1699,6 +1820,7 @@ async fn resolve_remote_refs_created_by_current_user(
             "log".into(),
             "-g".into(),
             "--all".into(),
+            "--max-count=2000".into(),
             "--format=%gD%x1f%gs%x1f%gN%x1f%gE".into(),
         ],
     )
@@ -2032,146 +2154,148 @@ fn sanitize_branch_label(value: &str) -> Option<String> {
 
 async fn inspect_file_preview_inner(repo_path: String, relative_path: String) -> GitResult<FilePreview> {
     let repo_root = validate_repository_path(&repo_path)?;
-    let resolved_path = resolve_repo_file(repo_root, &relative_path)?;
-    let metadata = fs::metadata(&resolved_path)
-        .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+    let relative_path = relative_path.replace('\\', "/");
+    let stays_inside_repo = !Path::new(&relative_path)
+        .components()
+        .any(|component| !matches!(component, std::path::Component::Normal(_)));
 
-    if !metadata.is_file() {
-        return Err(GitServiceError::InvalidFileSelection);
-    }
+    // A file deleted from the working tree is still worth previewing from the index or HEAD.
+    let resolved_path = match resolve_repo_file(repo_root, &relative_path) {
+        Ok(path) => Some(path),
+        Err(_) if stays_inside_repo && !repo_root.join(&relative_path).exists() => None,
+        Err(error) => return Err(error),
+    };
 
-    let extension = resolved_path
+    let (file_size_bytes, modified_at, head_bytes) = match resolved_path.as_ref() {
+        Some(path) => {
+            let metadata = fs::metadata(path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+            if !metadata.is_file() {
+                return Err(GitServiceError::InvalidFileSelection);
+            }
+
+            let mut head = Vec::new();
+            fs::File::open(path)
+                .and_then(|file| file.take(MAX_PREVIEW_READ_BYTES).read_to_end(&mut head))
+                .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .map(|value| value.as_secs());
+            (metadata.len(), modified_at, head)
+        }
+        None => {
+            let staged = git_show_optional_bytes(repo_root, format!(":{relative_path}"), &relative_path).await?;
+            let blob = match staged {
+                Some(blob) => Some(blob),
+                None => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}"), &relative_path).await?,
+            };
+            let Some(blob) = blob else {
+                return Err(GitServiceError::InvalidFileSelection);
+            };
+            (blob.len() as u64, None, blob)
+        }
+    };
+    let missing_from_disk = resolved_path.is_none();
+    let resolved_path = resolved_path.as_deref();
+
+    let extension = Path::new(&relative_path)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    let file_name = resolved_path
+    let file_name = Path::new(&relative_path)
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("file")
         .to_string();
-    let modified_at = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .map(|value| value.as_secs());
-    let file_size_bytes = metadata.len();
     let mime_type = infer_mime_type(&extension);
-    let mut image_data_url = None;
+    let text_excerpt_of = |bytes: &[u8]| String::from_utf8_lossy(&bytes[..bytes.len().min(12_000)]).to_string();
+
+    let unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
+    let staged_diff = git_diff(repo_root, &relative_path, true).await?;
     let mut text_excerpt = None;
-    let mut staged_diff = None;
-    let mut unstaged_diff = None;
     let mut asset_summary = None;
     let mut image_sources = Vec::new();
-    let mut image_comparison_presets = Vec::new();
-    let mut default_image_comparison_preset_key = None;
     let mut unity_material_sources = Vec::new();
-    let mut unity_material_comparison_presets = Vec::new();
-    let mut default_unity_material_comparison_preset_key = None;
     let mut model_sources = Vec::new();
-    let mut model_comparison_presets = Vec::new();
-    let mut default_model_comparison_preset_key = None;
-
-    let preview_kind = if extension == "mat" {
-        let bytes = fs::read(&resolved_path)
-            .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
-        let preview_bytes = &bytes[..bytes.len().min(12_000)];
-        text_excerpt = Some(String::from_utf8_lossy(preview_bytes).to_string());
-        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
-        staged_diff = git_diff(repo_root, &relative_path, true).await?;
-        unity_material_sources = collect_unity_material_preview_sources(repo_root, &resolved_path, &relative_path).await?;
-        unity_material_comparison_presets = build_image_comparison_presets(
-            &unity_material_sources
-                .iter()
-                .map(|source| ImagePreviewSource {
-                    key: source.key.clone(),
-                    label: source.label.clone(),
-                    source_kind: source.source_kind.clone(),
-                    mime_type: "application/x-unity-material".to_string(),
+    // Compare presets only need the source keys, whatever the asset type.
+    let presets_for = |keys: Vec<&String>| {
+        build_image_comparison_presets(
+            &keys
+                .into_iter()
+                .map(|key| ImagePreviewSource {
+                    key: key.clone(),
+                    label: String::new(),
+                    source_kind: key.clone(),
+                    mime_type: String::new(),
                     byte_size: 0,
                     encoded_bytes_base64: String::new(),
                     is_psd: false,
+                    format: String::new(),
                 })
                 .collect::<Vec<_>>(),
             staged_diff.is_some(),
             unstaged_diff.is_some(),
-        );
-        default_unity_material_comparison_preset_key = unity_material_comparison_presets.first().map(|preset| preset.key.clone());
+        )
+    };
+
+    let preview_kind = if extension == "mat" {
+        text_excerpt = Some(text_excerpt_of(&head_bytes));
+        unity_material_sources = collect_unity_material_preview_sources(repo_root, resolved_path, &relative_path).await?;
         asset_summary = unity_material_sources.first().map(build_unity_material_asset_summary);
         if unity_material_sources.is_empty() { "text" } else { "material" }
     } else if is_previewable_model_extension(&extension) {
-        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
-        staged_diff = git_diff(repo_root, &relative_path, true).await?;
-        model_sources = collect_model_preview_sources(repo_root, &resolved_path, &relative_path, &extension, mime_type).await?;
-        model_comparison_presets = build_image_comparison_presets(
-            &model_sources
-                .iter()
-                .map(|source| ImagePreviewSource {
-                    key: source.key.clone(),
-                    label: source.label.clone(),
-                    source_kind: source.source_kind.clone(),
-                    mime_type: source.mime_type.clone(),
-                    byte_size: 0,
-                    encoded_bytes_base64: String::new(),
-                    is_psd: false,
-                })
-                .collect::<Vec<_>>(),
-            staged_diff.is_some(),
-            unstaged_diff.is_some(),
-        );
-        default_model_comparison_preset_key = model_comparison_presets.first().map(|preset| preset.key.clone());
-        asset_summary = build_asset_summary(&resolved_path, &extension)?;
-
-        if model_sources.is_empty() {
-            "asset"
-        } else {
-            "model"
-        }
+        model_sources = collect_model_preview_sources(repo_root, resolved_path, &relative_path, &extension, mime_type).await?;
+        asset_summary = build_asset_summary(&head_bytes, &extension);
+        if model_sources.is_empty() { "asset" } else { "model" }
     } else if is_previewable_image_extension(&extension) {
-        if file_size_bytes <= MAX_INLINE_IMAGE_BYTES {
-            let bytes = fs::read(&resolved_path)
-                .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
-            image_data_url = Some(format!("data:{mime_type};base64,{}", BASE64.encode(bytes)));
-        }
-
-        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
-        staged_diff = git_diff(repo_root, &relative_path, true).await?;
-
-        if extension == "psd" {
-            asset_summary = build_asset_summary(&resolved_path, &extension)?;
-        }
-
-        image_sources = collect_image_preview_sources(repo_root, &resolved_path, &relative_path, &extension, mime_type).await?;
-        image_comparison_presets = build_image_comparison_presets(&image_sources, staged_diff.is_some(), unstaged_diff.is_some());
-        default_image_comparison_preset_key = image_comparison_presets.first().map(|preset| preset.key.clone());
-
+        asset_summary = build_asset_summary(&head_bytes, &extension);
+        image_sources = collect_image_preview_sources(repo_root, resolved_path, &relative_path, &extension, mime_type).await?;
         "image"
-    } else if is_text_extension(&extension) || looks_like_text(&resolved_path)? {
-        let bytes = fs::read(&resolved_path)
-            .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
-        let preview_bytes = &bytes[..bytes.len().min(12_000)];
-        text_excerpt = Some(String::from_utf8_lossy(preview_bytes).to_string());
-        unstaged_diff = git_diff(repo_root, &relative_path, false).await?;
-        staged_diff = git_diff(repo_root, &relative_path, true).await?;
+    } else if is_text_extension(&extension) || looks_like_text(&head_bytes) {
+        text_excerpt = Some(text_excerpt_of(&head_bytes));
         "text"
     } else if is_known_asset_extension(&extension) {
-        asset_summary = build_asset_summary(&resolved_path, &extension)?;
+        asset_summary = build_asset_summary(&head_bytes, &extension);
         "asset"
     } else {
         "binary"
     }
     .to_string();
 
-    let support_hint = match preview_kind.as_str() {
-        "image" if extension == "psd" && !image_sources.is_empty() => "PSD preview, channel inspection, and compare views are active in this slice.".to_string(),
-        "image" if !image_sources.is_empty() => "Image preview, channel inspection, and compare views are active in this slice.".to_string(),
-        "image" => "Image preview is recognized, but available sources are too large for inline transfer in the current slice.".to_string(),
-        "material" if !unity_material_sources.is_empty() => "Unity material preview, compare view, and mesh controls are active in this slice.".to_string(),
-        "model" if !model_sources.is_empty() => "3D model preview, compare view, and orbit controls are active in this slice.".to_string(),
-        "text" => "Inline text preview is active for quick inspection.".to_string(),
-        "asset" => "Asset preview foundation is live. Deep PSD, FBX, and GLTF rendering is the next worker-backed slice.".to_string(),
-        _ => "Binary preview is not decoded yet. Metadata is shown while the dedicated pipeline is built.".to_string(),
+    let image_comparison_presets = presets_for(image_sources.iter().map(|source| &source.key).collect());
+    let unity_material_comparison_presets = presets_for(unity_material_sources.iter().map(|source| &source.key).collect());
+    let model_comparison_presets = presets_for(model_sources.iter().map(|source| &source.key).collect());
+
+    // Unity keeps importer settings for every asset in a sibling .meta file.
+    let import_settings = resolved_path
+        .and_then(|path| fs::read_to_string(format!("{}.meta", path.display())).ok())
+        .and_then(|meta| parse_unity_meta_summary(&meta));
+    let lfs_tracked = run_git_owned(repo_root, vec!["check-attr".into(), "filter".into(), "--".into(), relative_path.clone()])
+        .await
+        .is_ok_and(|output| output.trim_end().ends_with("filter: lfs"));
+
+    let upper_extension = extension.to_ascii_uppercase();
+    let mut support_hint = match preview_kind.as_str() {
+        "image" if image_sources.is_empty() => format!(
+            "This image is too large to preview inline (limit {} MB).",
+            MAX_INLINE_IMAGE_BYTES / 1024 / 1024
+        ),
+        "image" => "Ctrl + scroll to zoom, drag to pan, double-click to reset.".to_string(),
+        "material" => "Drag to rotate, Ctrl + scroll to zoom, double-click to reset.".to_string(),
+        "model" => "Drag to orbit, Ctrl + scroll to zoom, double-click to reset.".to_string(),
+        "text" => "Text preview.".to_string(),
+        "asset" if is_previewable_model_extension(&extension) => format!(
+            "This model is too large to preview inline (limit {} MB).",
+            MAX_INLINE_MODEL_BYTES / 1024 / 1024
+        ),
+        "asset" => format!("There is no built-in viewer for {upper_extension} files; the details below are read from the file itself."),
+        _ => "Binary file. No preview is available for this format.".to_string(),
     };
+    if missing_from_disk {
+        support_hint = format!("Deleted from the working tree; showing the last version git has. {support_hint}");
+    }
 
     Ok(FilePreview {
         relative_path,
@@ -2181,20 +2305,23 @@ async fn inspect_file_preview_inner(repo_path: String, relative_path: String) ->
         mime_type: mime_type.to_string(),
         file_size_bytes,
         modified_at,
-        image_data_url,
+        image_data_url: None,
         text_excerpt,
         staged_diff,
         unstaged_diff,
         asset_summary,
+        import_settings,
+        lfs_tracked,
+        missing_from_disk,
+        default_image_comparison_preset_key: image_comparison_presets.first().map(|preset| preset.key.clone()),
         image_sources,
         image_comparison_presets,
-        default_image_comparison_preset_key,
+        default_unity_material_comparison_preset_key: unity_material_comparison_presets.first().map(|preset| preset.key.clone()),
         unity_material_sources,
         unity_material_comparison_presets,
-        default_unity_material_comparison_preset_key,
+        default_model_comparison_preset_key: model_comparison_presets.first().map(|preset| preset.key.clone()),
         model_sources,
         model_comparison_presets,
-        default_model_comparison_preset_key,
         support_hint,
     })
 }
@@ -2358,7 +2485,7 @@ async fn inspect_commit_message_context_inner(repo_path: String) -> GitResult<Co
             "--unified=2".into(),
             "--".into(),
         ];
-        args.extend(diffable_staged_files.iter().cloned());
+        args.extend(literal_pathspecs(&diffable_staged_files));
         run_git_owned(path, args).await?
     };
     let staged_diff = truncate_commit_message_diff(format_commit_message_diff_context(
@@ -2425,7 +2552,7 @@ async fn restore_file_from_commit_inner(
             format!("--source={trimmed_hash}"),
             "--worktree".into(),
             "--".into(),
-            trimmed_path.to_string(),
+            literal_pathspec(trimmed_path),
         ],
     )
     .await
@@ -2462,7 +2589,7 @@ async fn apply_commit_file_patch_inner(
             base,
             trimmed_hash.to_string(),
             "--".into(),
-            trimmed_path.to_string(),
+            literal_pathspec(trimmed_path),
         ],
     )
     .await?;
@@ -2513,11 +2640,23 @@ async fn apply_path_operation(repo_path: String, paths: Vec<String>, unstage: bo
         .map(|_| ())
 }
 
+/// Marks a path so git matches it byte-for-byte. Unmarked, `[`, `]`, `*`, `?` and a leading
+/// `:` are pathspec magic, and a file such as "Enemy [Variant].prefab" fails to stage with
+/// "pathspec did not match any files". Done per path rather than via GIT_LITERAL_PATHSPECS
+/// because that variable leaks into hooks and breaks `git stash --include-untracked`.
+fn literal_pathspec(path: &str) -> String {
+    format!(":(literal){path}")
+}
+
+fn literal_pathspecs(paths: &[String]) -> Vec<String> {
+    paths.iter().map(|path| literal_pathspec(path)).collect()
+}
+
 fn encode_pathspec_input(paths: &[String]) -> Vec<u8> {
     let mut bytes = Vec::new();
 
     for path in paths {
-        bytes.extend_from_slice(path.as_bytes());
+        bytes.extend_from_slice(literal_pathspec(path).as_bytes());
         bytes.push(0);
     }
 
@@ -2538,7 +2677,7 @@ async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult
             path,
             {
                 let mut args = vec!["ls-files".into(), "--others".into(), "--exclude-standard".into(), "--".into()];
-                args.extend(chunk.iter().cloned());
+                args.extend(literal_pathspecs(chunk));
                 args
             },
         )
@@ -2572,7 +2711,7 @@ async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult
                 "--worktree".into(),
                 "--".into(),
             ];
-            restore_args.extend(chunk.iter().cloned());
+            restore_args.extend(literal_pathspecs(chunk));
             run_git_owned(path, restore_args).await?;
         }
     }
@@ -2581,7 +2720,7 @@ async fn discard_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult
         let untracked_paths = untracked_paths.into_iter().collect::<Vec<_>>();
         for chunk in split_git_path_argument_batches(&untracked_paths) {
             let mut clean_args = vec!["clean".into(), "-fd".into(), "--".into()];
-            clean_args.extend(chunk.iter().cloned());
+            clean_args.extend(literal_pathspecs(chunk));
             run_git_owned(path, clean_args).await?;
         }
     }
@@ -2697,7 +2836,7 @@ async fn stash_paths_inner(repo_path: String, paths: Vec<String>) -> GitResult<S
         ),
         "--".into(),
     ];
-    args.extend(sanitized_paths.iter().cloned());
+    args.extend(literal_pathspecs(&sanitized_paths));
 
     let output = run_git_owned(path, args).await?;
     let summary = output
@@ -3213,32 +3352,217 @@ async fn conditional_prune_branches_inner(repo_path: String, input: ConditionalB
     Ok(format!("Conditional prune {}.", summary_parts.join(" and ")))
 }
 
-async fn merge_branch_inner(repo_path: String, full_name: String, discard_local_changes: bool) -> GitResult<MergeBranchResult> {
+async fn preview_merge_inner(repo_path: String, full_name: String) -> GitResult<MergePreview> {
+    let path = validate_repository_path(&repo_path)?;
+    let target = resolve_branch_specifier(full_name.trim())?;
+    let target_label = pretty_branch_label(full_name.trim());
+    let current_branch = current_local_branch_name(path)
+        .await
+        .unwrap_or_else(|_| "detached HEAD".to_string());
+
+    let head_hash = run_git_owned(path, vec!["rev-parse".into(), "--verify".into(), "HEAD^{commit}".into()])
+        .await?
+        .trim()
+        .to_string();
+    let target_hash = run_git_owned(path, vec!["rev-parse".into(), "--verify".into(), format!("{target}^{{commit}}")])
+        .await?
+        .trim()
+        .to_string();
+
+    let merge_base_output = run_git_capture_owned(path, vec!["merge-base".into(), "HEAD".into(), target.clone()]).await?;
+    let merge_base = merge_base_output.stdout.trim().to_string();
+    let unrelated_histories = !merge_base_output.success || merge_base.is_empty();
+    let up_to_date = !unrelated_histories && merge_base == target_hash;
+    let fast_forward = !unrelated_histories && !up_to_date && merge_base == head_hash;
+
+    let incoming_commits = run_git_owned(path, vec!["rev-list".into(), "--count".into(), format!("HEAD..{target}")])
+        .await?
+        .trim()
+        .parse::<usize>()
+        .unwrap_or(0);
+    let incoming_subjects = run_git_owned(
+        path,
+        vec!["log".into(), "--format=%h %s".into(), "-n".into(), "8".into(), format!("HEAD..{target}")],
+    )
+    .await?
+    .lines()
+    .map(|line| line.trim().to_string())
+    .filter(|line| !line.is_empty())
+    .collect::<Vec<_>>();
+
+    let changed_paths = if unrelated_histories {
+        std::collections::HashSet::new()
+    } else {
+        run_git_owned(
+            path,
+            vec!["diff".into(), "--name-only".into(), "-z".into(), merge_base.clone(), target.clone()],
+        )
+        .await?
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .map(ToString::to_string)
+        .collect::<std::collections::HashSet<_>>()
+    };
+
+    // `merge-tree --write-tree` (git 2.38+) performs the merge in memory: exit 0 is clean,
+    // exit 1 lists the conflicted paths, anything else means it is unavailable.
+    let predicted_conflicts = if up_to_date || fast_forward {
+        Some(Vec::new())
+    } else if unrelated_histories {
+        None
+    } else {
+        let output = run_git_capture_owned(
+            path,
+            vec![
+                "merge-tree".into(),
+                "--write-tree".into(),
+                "--name-only".into(),
+                "-z".into(),
+                "--no-messages".into(),
+                "HEAD".into(),
+                target.clone(),
+            ],
+        )
+        .await?;
+        let mut tokens = output.stdout.split('\0').filter(|entry| !entry.is_empty());
+        let has_tree = tokens
+            .next()
+            .is_some_and(|oid| oid.len() >= 40 && oid.chars().all(|ch| ch.is_ascii_hexdigit()));
+
+        if !has_tree {
+            None
+        } else if output.success {
+            Some(Vec::new())
+        } else {
+            Some(
+                tokens
+                    .map(ToString::to_string)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+            )
+        }
+    };
+
+    let status_output = run_git(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).await?;
+    let (_, _, _, _, local_files, _) = parse_status_output(&status_output);
+    let overlapping_local_changes = local_files
+        .iter()
+        .filter(|file| changed_paths.contains(&file.path))
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+
+    Ok(MergePreview {
+        target_label,
+        current_branch,
+        up_to_date,
+        fast_forward,
+        unrelated_histories,
+        incoming_commits,
+        incoming_subjects,
+        changed_files: changed_paths.len(),
+        predicted_conflicts,
+        local_changes: local_files.len(),
+        overlapping_local_changes,
+        operation_in_progress: detect_repository_operation(path).map(|operation| operation.kind),
+    })
+}
+
+async fn merge_branch_inner(
+    repo_path: String,
+    full_name: String,
+    local_changes: String,
+    conflict_preference: String,
+) -> GitResult<MergeBranchResult> {
     let path = validate_repository_path(&repo_path)?;
     let target = resolve_branch_specifier(full_name.trim())?;
     let target_label = pretty_branch_label(full_name.trim());
 
+    if let Some(operation) = detect_repository_operation(path) {
+        return Err(GitServiceError::GitCommandFailed(format!(
+            "A {} is already in progress ({}). Finish or abort it before starting another merge.",
+            operation.kind, operation.label
+        )));
+    }
+
+    let discard_local_changes = local_changes.trim() == "discard";
     if discard_local_changes {
         discard_all_local_state(path).await?;
     }
 
-    let output = run_git_capture_owned(path, vec!["merge".into(), "--no-edit".into(), target.clone()]).await?;
-    let detail = combine_command_output(&output.stdout, &output.stderr);
+    let mut merge_args: Vec<String> = vec!["merge".into(), "--no-edit".into()];
+    match conflict_preference.trim() {
+        "ours" => merge_args.extend(["-X".to_string(), "ours".to_string()]),
+        "theirs" => merge_args.extend(["-X".to_string(), "theirs".to_string()]),
+        _ => {}
+    }
+
+    // `--autostash` shelves tracked local edits, merges, then puts them back (also after
+    // the merge is completed or aborted later), so a dirty working tree no longer blocks.
+    let mut first_args = merge_args.clone();
+    if !discard_local_changes {
+        first_args.push("--autostash".into());
+    }
+    first_args.push(target.clone());
+
+    let mut output = run_git_capture_owned(path, first_args).await?;
+    let mut detail = combine_command_output(&output.stdout, &output.stderr);
+    let mut notes: Vec<String> = Vec::new();
+
+    // Autostash does not cover untracked files. When one of those is in the way (typically a
+    // locally generated .meta that the other branch committed), shelve everything and retry.
+    if !output.success
+        && !discard_local_changes
+        && is_local_change_merge_block(&detail)
+        && detect_repository_operation(path).is_none()
+    {
+        let stash_name = format!("UniGit: local changes before merging {target_label}");
+        run_git_owned(
+            path,
+            vec!["stash".into(), "push".into(), "--include-untracked".into(), "-m".into(), stash_name.clone()],
+        )
+        .await?;
+
+        let mut retry_args = merge_args.clone();
+        retry_args.push(target.clone());
+        output = run_git_capture_owned(path, retry_args).await?;
+        detail = combine_command_output(&output.stdout, &output.stderr);
+
+        let merge_pending = detect_repository_operation(path).is_some();
+        if merge_pending {
+            notes.push(format!(
+                "Your local changes are parked in the stash \"{stash_name}\". Re-apply it from Stashes after finishing the merge."
+            ));
+        } else {
+            let restore = run_git_capture_owned(path, vec!["stash".into(), "pop".into()]).await?;
+            notes.push(if restore.success {
+                "Your local changes were put back after the merge.".to_string()
+            } else {
+                format!(
+                    "Some local changes could not be put back automatically and are kept in the stash \"{stash_name}\"."
+                )
+            });
+        }
+    }
+
+    let with_notes = |message: String| {
+        if notes.is_empty() {
+            message
+        } else {
+            format!("{message}\n\n{}", notes.join("\n"))
+        }
+    };
 
     if output.success {
         return Ok(MergeBranchResult {
             status: "merged".to_string(),
-            message: if detail.is_empty() {
+            message: with_notes(if detail.is_empty() {
                 format!("Merged {target_label} into the current branch.")
             } else {
                 detail
-            },
+            }),
             conflicted_files: Vec::new(),
         });
-    }
-
-    if !discard_local_changes && is_local_change_merge_block(detail.as_str()) {
-        return Err(GitServiceError::GitCommandFailed(detail));
     }
 
     let conflicted_files = list_conflicted_files(path).await?;
@@ -3246,54 +3570,167 @@ async fn merge_branch_inner(repo_path: String, full_name: String, discard_local_
     if !conflicted_files.is_empty() {
         return Ok(MergeBranchResult {
             status: "conflicts".to_string(),
-            message: if detail.is_empty() {
-                format!("Merge with {target_label} produced conflicts.")
-            } else {
-                detail
-            },
+            message: with_notes(format!(
+                "Merging {target_label} needs your decision on {} file(s).",
+                conflicted_files.len()
+            )),
             conflicted_files,
         });
     }
 
-    Err(GitServiceError::GitCommandFailed(if detail.is_empty() {
+    Err(GitServiceError::GitCommandFailed(with_notes(if detail.is_empty() {
         format!("Merge with {target_label} failed.")
     } else {
         detail
-    }))
+    })))
+}
+
+async fn abort_operation_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let Some(operation) = detect_repository_operation(path) else {
+        return Err(GitServiceError::GitCommandFailed(
+            "No merge, cherry-pick, revert or rebase is in progress.".to_string(),
+        ));
+    };
+
+    run_git_owned(path, vec![operation.kind.clone(), "--abort".into()]).await?;
+
+    Ok(format!(
+        "Aborted the {}. The branch is back to where it was before it started.",
+        operation.kind
+    ))
+}
+
+async fn continue_operation_inner(repo_path: String) -> GitResult<String> {
+    let path = validate_repository_path(&repo_path)?;
+    let Some(operation) = detect_repository_operation(path) else {
+        return Err(GitServiceError::GitCommandFailed(
+            "No merge, cherry-pick, revert or rebase is in progress.".to_string(),
+        ));
+    };
+
+    let remaining = list_conflicted_files(path).await?;
+    if !remaining.is_empty() {
+        return Err(GitServiceError::GitCommandFailed(format!(
+            "{} file(s) still have unresolved conflicts. Resolve them before completing the {}.",
+            remaining.len(),
+            operation.kind
+        )));
+    }
+
+    run_git_owned(path, vec![operation.kind.clone(), "--continue".into()]).await?;
+
+    Ok(format!("Completed the {}.", operation.kind))
+}
+
+fn file_has_conflict_markers(file_path: &Path) -> bool {
+    const MAX_MARKER_SCAN_BYTES: u64 = 8 * 1024 * 1024;
+
+    let Ok(metadata) = fs::metadata(file_path) else {
+        return false;
+    };
+    if metadata.len() > MAX_MARKER_SCAN_BYTES {
+        return false;
+    }
+
+    let Ok(bytes) = fs::read(file_path) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    text.lines().any(|line| line.starts_with("<<<<<<< ")) && text.lines().any(|line| line.starts_with(">>>>>>> "))
 }
 
 async fn resolve_conflicted_files_inner(repo_path: String, paths: Vec<String>, strategy: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
     let sanitized_paths = sanitize_path_list(paths);
+    let strategy = strategy.trim();
 
     if sanitized_paths.is_empty() {
         return Err(GitServiceError::GitCommandFailed("Choose at least one conflicted file to resolve.".to_string()));
     }
 
-    let checkout_flag = match strategy.trim() {
-        "ours" => "--ours",
-        "theirs" => "--theirs",
-        _ => {
-            return Err(GitServiceError::GitCommandFailed(
-                "Conflict strategy must be either 'ours' or 'theirs'.".to_string(),
-            ))
+    if !matches!(strategy, "ours" | "theirs" | "manual") {
+        return Err(GitServiceError::GitCommandFailed(
+            "Conflict strategy must be 'ours', 'theirs' or 'manual'.".to_string(),
+        ));
+    }
+
+    // Index stages per unmerged path: 1 = common ancestor, 2 = ours, 3 = theirs. A side that
+    // deleted the file has no stage, which is why a plain `checkout --ours/--theirs` fails there.
+    let mut stages = BTreeMap::<String, Vec<u8>>::new();
+    for chunk in split_git_path_argument_batches(&sanitized_paths) {
+        let mut args: Vec<String> = vec!["ls-files".into(), "-u".into(), "-z".into(), "--".into()];
+        args.extend(literal_pathspecs(chunk));
+
+        for entry in run_git_owned(path, args).await?.split('\0') {
+            let Some((meta, file)) = entry.split_once('\t') else {
+                continue;
+            };
+            let stage = meta.split_whitespace().nth(2).and_then(|value| value.parse::<u8>().ok()).unwrap_or(0);
+            stages.entry(file.to_string()).or_default().push(stage);
         }
+    }
+
+    if stages.is_empty() {
+        return Err(GitServiceError::GitCommandFailed(
+            "None of the selected files are in conflict any more.".to_string(),
+        ));
+    }
+
+    let run_for_paths = |base: Vec<&'static str>, files: Vec<String>| async move {
+        for chunk in split_git_path_argument_batches(&files) {
+            let mut args: Vec<String> = base.iter().map(|value| value.to_string()).collect();
+            args.extend(literal_pathspecs(chunk));
+            run_git_owned(path, args).await?;
+        }
+        GitResult::Ok(())
     };
 
-    let mut checkout_args = vec!["checkout".into(), checkout_flag.into(), "--".into()];
-    checkout_args.extend(sanitized_paths.iter().cloned());
-    run_git_owned(path, checkout_args).await?;
+    let resolved_count = stages.len();
+    let label = match strategy {
+        "manual" => {
+            let unfinished = stages
+                .keys()
+                .filter(|file| file_has_conflict_markers(&path.join(file.as_str())))
+                .cloned()
+                .collect::<Vec<_>>();
 
-    let mut add_args = vec!["add".into(), "--".into()];
-    add_args.extend(sanitized_paths.iter().cloned());
-    run_git_owned(path, add_args).await?;
+            if !unfinished.is_empty() {
+                return Err(GitServiceError::GitCommandFailed(format!(
+                    "Conflict markers (<<<<<<<) are still present in: {}",
+                    unfinished.join(", ")
+                )));
+            }
+
+            run_for_paths(vec!["add", "--"], stages.into_keys().collect()).await?;
+            "your edited version"
+        }
+        _ => {
+            let (wanted_stage, checkout_flag) = if strategy == "ours" { (2u8, "--ours") } else { (3u8, "--theirs") };
+            let (keep, remove): (Vec<_>, Vec<_>) = stages
+                .into_iter()
+                .partition(|(_, file_stages)| file_stages.contains(&wanted_stage));
+            let keep = keep.into_iter().map(|(file, _)| file).collect::<Vec<_>>();
+            let remove = remove.into_iter().map(|(file, _)| file).collect::<Vec<_>>();
+
+            if !keep.is_empty() {
+                run_for_paths(vec!["checkout", checkout_flag, "--"], keep.clone()).await?;
+                run_for_paths(vec!["add", "--"], keep).await?;
+            }
+
+            // The chosen side deleted the file, so taking that side means removing it.
+            if !remove.is_empty() {
+                run_for_paths(vec!["rm", "-f", "-q", "--"], remove).await?;
+            }
+
+            if strategy == "ours" { "the current branch version" } else { "the incoming version" }
+        }
+    };
 
     let remaining = list_conflicted_files(path).await?;
 
     Ok(format!(
-        "Resolved {} conflicted file(s) using {}. Remaining conflicted files: {}.",
-        sanitized_paths.len(),
-        if checkout_flag == "--ours" { "yours" } else { "theirs" },
+        "Resolved {resolved_count} file(s) using {label}. {} still in conflict.",
         remaining.len()
     ))
 }
@@ -3438,10 +3875,19 @@ async fn fetch_repository_inner(repo_path: String) -> GitResult<String> {
 async fn pull_repository_inner(repo_path: String) -> GitResult<String> {
     let path = validate_repository_path(&repo_path)?;
     let (ahead, behind) = resolve_upstream_divergence(path).await?;
-    let output = if ahead > 0 && behind > 0 {
-        run_git_remote_owned(path, vec!["pull".into(), "--no-rebase".into()]).await?
+    let pull_args: Vec<String> = if ahead > 0 && behind > 0 {
+        vec!["pull".into(), "--no-rebase".into()]
     } else {
-        run_git_remote_owned(path, vec!["pull".into(), "--ff-only".into()]).await?
+        vec!["pull".into(), "--ff-only".into()]
+    };
+    let output = match run_git_remote_owned(path, pull_args).await {
+        Ok(output) => output,
+        // A diverged pull that stops on conflicts is a merge waiting for decisions, not a failure:
+        // the snapshot reports the pending merge and the UI walks the user through it.
+        Err(GitServiceError::GitCommandFailed(_)) if !list_conflicted_files(path).await.unwrap_or_default().is_empty() => {
+            return Ok("Pull merged the remote changes, but some files conflict. Resolve them to finish the merge.".to_string());
+        }
+        Err(error) => return Err(error),
     };
     let trimmed = output.trim();
 
@@ -3909,14 +4355,13 @@ fn summarize_branch_names(names: &[String]) -> String {
 async fn list_conflicted_files(repo_path: &Path) -> GitResult<Vec<String>> {
     let output = run_git_owned(
         repo_path,
-        vec!["diff".into(), "--name-only".into(), "--diff-filter=U".into()],
+        vec!["diff".into(), "--name-only".into(), "-z".into(), "--diff-filter=U".into()],
     )
     .await?;
 
     Ok(output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
         .map(ToString::to_string)
         .collect())
 }
@@ -4226,22 +4671,25 @@ fn decode_porcelain_path(raw: &str) -> String {
         return trimmed.to_string();
     }
 
+    // Git escapes non-ASCII names one UTF-8 *byte* per octal escape ("\303\247" is "ç"),
+    // so the escapes have to be collected as bytes and decoded together.
     let inner = &trimmed[1..trimmed.len() - 1];
-    let mut decoded = String::with_capacity(inner.len());
+    let mut decoded = Vec::<u8>::with_capacity(inner.len());
     let mut chars = inner.chars().peekable();
+    let mut utf8 = [0u8; 4];
 
     while let Some(ch) = chars.next() {
         if ch != '\\' {
-            decoded.push(ch);
+            decoded.extend_from_slice(ch.encode_utf8(&mut utf8).as_bytes());
             continue;
         }
 
         match chars.next() {
-            Some('\\') => decoded.push('\\'),
-            Some('"') => decoded.push('"'),
-            Some('n') => decoded.push('\n'),
-            Some('r') => decoded.push('\r'),
-            Some('t') => decoded.push('\t'),
+            Some('\\') => decoded.push(b'\\'),
+            Some('"') => decoded.push(b'"'),
+            Some('n') => decoded.push(b'\n'),
+            Some('r') => decoded.push(b'\r'),
+            Some('t') => decoded.push(b'\t'),
             Some(octal @ '0'..='7') => {
                 let mut value = octal.to_digit(8).unwrap_or(0);
 
@@ -4258,19 +4706,17 @@ fn decode_porcelain_path(raw: &str) -> String {
                     value = value * 8 + next.to_digit(8).unwrap_or(0);
                 }
 
-                if let Some(decoded_char) = char::from_u32(value) {
-                    decoded.push(decoded_char);
-                }
+                decoded.push(value as u8);
             }
             Some(other) => {
-                decoded.push('\\');
-                decoded.push(other);
+                decoded.push(b'\\');
+                decoded.extend_from_slice(other.encode_utf8(&mut utf8).as_bytes());
             }
-            None => decoded.push('\\'),
+            None => decoded.push(b'\\'),
         }
     }
 
-    decoded
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 fn validate_repository_path(repo_path: &str) -> GitResult<&Path> {
@@ -4307,7 +4753,7 @@ async fn git_diff(repo_root: &Path, relative_path: &str, cached: bool) -> GitRes
     }
 
     args.push("--".to_string());
-    args.push(relative_path.to_string());
+    args.push(literal_pathspec(relative_path));
 
     let output = run_git_owned(repo_root, args).await?;
     let trimmed = output.trim();
@@ -4337,8 +4783,7 @@ async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
     let command_preview = args.join(" ");
     let _ = append_log("backend", "git.command.start", &format!("git {command_preview}"), None);
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(None);
     command
         .args(&args)
         .stdin(Stdio::null())
@@ -4386,11 +4831,8 @@ async fn run_git_owned_with_env(
         log_detail.as_deref(),
     );
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4481,11 +4923,8 @@ async fn rerun_git_owned_with_env(
 ) -> GitResult<String> {
     let command_preview = args.join(" ");
     let repo_display = repo_path.display().to_string();
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4624,11 +5063,8 @@ async fn run_git_owned_without_retry(repo_path: &Path, args: Vec<String>) -> Git
         Some("no-retry"),
     );
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4675,11 +5111,8 @@ async fn run_git_capture_owned(repo_path: &Path, args: Vec<String>) -> GitResult
     let repo_display = repo_path.display().to_string();
     let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), None);
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4715,11 +5148,8 @@ async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<V
     let repo_display = repo_path.display().to_string();
     let _ = append_log("backend", "git.command.start", &format!("git -C {repo_display} {command_preview}"), Some("binary stdout expected"));
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -4766,11 +5196,8 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
         Some(&format!("stdin bytes={}", input.len())),
     );
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4787,6 +5214,10 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
         use tokio::io::AsyncWriteExt;
         stdin
             .write_all(&input)
+            .await
+            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+        stdin
+            .shutdown()
             .await
             .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
     }
@@ -4830,11 +5261,8 @@ async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, inp
         Some(&format!("stdin bytes={} (binary stdout expected)", input.len())),
     );
 
-    let mut command = Command::new("git");
-    suppress_console_window(&mut command);
+    let mut command = git_command(Some(repo_path));
     command
-        .arg("-C")
-        .arg(repo_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4851,6 +5279,10 @@ async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, inp
         use tokio::io::AsyncWriteExt;
         stdin
             .write_all(&input)
+            .await
+            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
+        stdin
+            .shutdown()
             .await
             .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
     }
@@ -4970,7 +5402,10 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
     let mut files = Vec::new();
     let mut counts = RepositoryCounts::default();
 
-    for line in output.lines() {
+    // `-z` output: NUL-terminated entries with raw (unquoted) paths; a rename or copy is
+    // followed by one extra entry holding the original path.
+    let mut entries = output.split('\0');
+    while let Some(line) = entries.next() {
         if let Some(branch_line) = line.strip_prefix("## ") {
             let branch_segment = branch_line.split_whitespace().next().unwrap_or("Unknown");
 
@@ -5003,20 +5438,31 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
             continue;
         }
 
-        if line.len() < 3 {
+        if line.len() < 4 || !line.is_char_boundary(3) {
             continue;
         }
 
         let index_status = line.chars().nth(0).unwrap_or(' ');
         let worktree_status = line.chars().nth(1).unwrap_or(' ');
-        let raw_path = &line[3..];
-        let path = decode_porcelain_path(raw_path.rsplit(" -> ").next().unwrap_or(raw_path));
+        let path = line[3..].to_string();
+
+        if matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C') {
+            entries.next();
+        }
 
         let untracked = index_status == '?' && worktree_status == '?';
         let ignored = index_status == '!' && worktree_status == '!';
-        let conflicted = matches!(index_status, 'U' | 'A' | 'D') && matches!(worktree_status, 'U' | 'A' | 'D')
-            || index_status == 'U'
-            || worktree_status == 'U';
+        let conflict_kind = match (index_status, worktree_status) {
+            ('U', 'U') => Some("both-modified"),
+            ('A', 'A') => Some("both-added"),
+            ('D', 'D') => Some("both-deleted"),
+            ('A', 'U') => Some("added-by-us"),
+            ('U', 'A') => Some("added-by-them"),
+            ('D', 'U') => Some("deleted-by-us"),
+            ('U', 'D') => Some("deleted-by-them"),
+            _ => None,
+        };
+        let conflicted = conflict_kind.is_some();
         let staged = !untracked && !ignored && index_status != ' ';
         let unstaged = !untracked && !ignored && worktree_status != ' ';
         let staged_modified = staged && unstaged;
@@ -5068,6 +5514,7 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
             staged_modified,
             display_status,
             file_size_bytes: None,
+            conflict_kind: conflict_kind.map(ToString::to_string),
         });
     }
 
@@ -5076,7 +5523,7 @@ fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileCha
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_porcelain_path, infer_unity_shader_family, is_git_lfs_pointer_bytes, parse_unity_material, sanitize_path_list};
+    use super::*;
 
     #[test]
     fn decode_porcelain_path_unquotes_space_wrapped_paths() {
@@ -5084,6 +5531,353 @@ mod tests {
             decode_porcelain_path("\"Assets/TinyWizard/UI/Background/bg main menu.png.meta\""),
             "Assets/TinyWizard/UI/Background/bg main menu.png.meta"
         );
+    }
+
+    #[test]
+    fn decode_porcelain_path_decodes_octal_utf8_bytes() {
+        // "\303\247" is the two UTF-8 bytes of "ç", not two separate characters.
+        assert_eq!(decode_porcelain_path("\"\\303\\207a\\304\\237layan.png\""), "Çağlayan.png");
+    }
+
+    struct TestRepo(PathBuf);
+
+    impl TestRepo {
+        fn new(name: &str) -> Self {
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = env::temp_dir().join(format!("unigit-test-{name}-{nanos}"));
+            fs::create_dir_all(&root).unwrap();
+            let repo = Self(root);
+            repo.git(&["init", "-q", "-b", "main"]);
+            repo.git(&["config", "user.name", "UniGit Test"]);
+            repo.git(&["config", "user.email", "test@unigit.invalid"]);
+            repo.git(&["config", "commit.gpgsign", "false"]);
+            repo.git(&["config", "core.autocrlf", "false"]);
+            repo
+        }
+
+        fn git(&self, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&self.0)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "git {args:?} failed: {}", String::from_utf8_lossy(&status.stderr));
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let target = self.0.join(relative);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, contents).unwrap();
+        }
+
+        fn read(&self, relative: &str) -> String {
+            fs::read_to_string(self.0.join(relative)).unwrap()
+        }
+
+        fn path(&self) -> String {
+            self.0.to_string_lossy().to_string()
+        }
+
+        async fn snapshot(&self) -> RepositorySnapshot {
+            inspect_repository_inner(self.path()).await.unwrap()
+        }
+    }
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn stages_and_unstages_paths_with_special_characters() {
+        let repo = TestRepo::new("special");
+        repo.write("seed.txt", "seed");
+        repo.git(&["add", "seed.txt"]);
+        repo.git(&["commit", "-q", "-m", "seed"]);
+
+        let names = [
+            "Assets/Enemy [Variant] (1).prefab",
+            "Assets/Çağlayan öğe.txt",
+            "Assets/日本語/テクスチャ.png",
+            "Assets/it's a - b; c=d.txt",
+            "Assets/#hash & 100%.mat",
+            "Assets/star-glob-[a-z].asset",
+        ];
+        for name in names {
+            repo.write(name, "data");
+        }
+
+        let listed = repo.snapshot().await.files.into_iter().map(|file| file.path).collect::<Vec<_>>();
+        for name in names {
+            assert!(listed.contains(&name.to_string()), "status should list {name} verbatim, got {listed:?}");
+        }
+
+        let all = names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
+        apply_path_operation(repo.path(), all.clone(), false).await.expect("staging special paths");
+        let snapshot = repo.snapshot().await;
+        assert_eq!(snapshot.counts.staged, names.len());
+        assert_eq!(snapshot.counts.untracked, 0);
+
+        apply_path_operation(repo.path(), all.clone(), true).await.expect("unstaging special paths");
+        assert_eq!(repo.snapshot().await.counts.untracked, names.len());
+
+        discard_paths_inner(repo.path(), all).await.expect("discarding special paths");
+        assert!(repo.snapshot().await.files.is_empty());
+    }
+
+    fn conflicting_repo(name: &str) -> TestRepo {
+        let repo = TestRepo::new(name);
+        repo.write("shared.txt", "base\n");
+        repo.write("gone.txt", "base\n");
+        repo.write("notes.txt", "base\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "base"]);
+
+        repo.git(&["checkout", "-q", "-b", "feature"]);
+        repo.write("shared.txt", "feature\n");
+        repo.write("gone.txt", "feature edit\n");
+        repo.write("added.txt", "from feature\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "feature work"]);
+
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("shared.txt", "main\n");
+        repo.git(&["rm", "-q", "gone.txt"]);
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "main work"]);
+
+        // Uncommitted local edit: the situation that used to block the merge outright.
+        repo.write("notes.txt", "local edit\n");
+        repo
+    }
+
+    #[tokio::test]
+    async fn merge_with_conflicts_can_be_resolved_and_completed() {
+        let repo = conflicting_repo("merge");
+
+        let preview = preview_merge_inner(repo.path(), "refs/heads/feature".into()).await.unwrap();
+        assert!(!preview.fast_forward && !preview.up_to_date);
+        assert_eq!(preview.incoming_commits, 1);
+        assert_eq!(preview.local_changes, 1);
+        assert_eq!(
+            preview.predicted_conflicts,
+            Some(vec!["gone.txt".to_string(), "shared.txt".to_string()]),
+        );
+
+        let result = merge_branch_inner(repo.path(), "refs/heads/feature".into(), "keep".into(), "ask".into())
+            .await
+            .unwrap();
+        assert_eq!(result.status, "conflicts");
+        assert_eq!(result.conflicted_files.len(), 2);
+
+        let snapshot = repo.snapshot().await;
+        assert_eq!(snapshot.operation.as_ref().map(|operation| operation.kind.as_str()), Some("merge"));
+        let kind_of = |path: &str| {
+            snapshot.files.iter().find(|file| file.path == path).and_then(|file| file.conflict_kind.clone())
+        };
+        assert_eq!(kind_of("shared.txt").as_deref(), Some("both-modified"));
+        assert_eq!(kind_of("gone.txt").as_deref(), Some("deleted-by-us"));
+
+        assert!(continue_operation_inner(repo.path()).await.is_err(), "cannot complete with open conflicts");
+
+        resolve_conflicted_files_inner(repo.path(), vec!["shared.txt".into()], "theirs".into()).await.unwrap();
+        // "Ours" deleted this file, so keeping ours must remove it rather than fail.
+        resolve_conflicted_files_inner(repo.path(), vec!["gone.txt".into()], "ours".into()).await.unwrap();
+
+        continue_operation_inner(repo.path()).await.unwrap();
+
+        let snapshot = repo.snapshot().await;
+        assert!(snapshot.operation.is_none());
+        assert_eq!(snapshot.counts.conflicted, 0);
+        assert_eq!(repo.read("shared.txt"), "feature\n");
+        assert_eq!(repo.read("added.txt"), "from feature\n");
+        assert!(!repo.0.join("gone.txt").exists());
+        assert_eq!(repo.read("notes.txt"), "local edit\n", "autostash must restore the local edit");
+    }
+
+    #[tokio::test]
+    async fn merge_can_be_aborted_and_preference_resolves_automatically() {
+        let repo = conflicting_repo("abort");
+
+        let result = merge_branch_inner(repo.path(), "refs/heads/feature".into(), "keep".into(), "ask".into())
+            .await
+            .unwrap();
+        assert_eq!(result.status, "conflicts");
+
+        abort_operation_inner(repo.path()).await.unwrap();
+        let snapshot = repo.snapshot().await;
+        assert!(snapshot.operation.is_none());
+        assert_eq!(repo.read("shared.txt"), "main\n");
+        assert_eq!(repo.read("notes.txt"), "local edit\n");
+
+        // "Prefer incoming" settles the content conflict; only the delete/modify one is left.
+        let result = merge_branch_inner(repo.path(), "refs/heads/feature".into(), "keep".into(), "theirs".into())
+            .await
+            .unwrap();
+        assert_eq!(result.conflicted_files, vec!["gone.txt".to_string()]);
+        resolve_conflicted_files_inner(repo.path(), vec!["gone.txt".into()], "theirs".into()).await.unwrap();
+        continue_operation_inner(repo.path()).await.unwrap();
+        assert_eq!(repo.read("shared.txt"), "feature\n");
+        assert_eq!(repo.read("gone.txt"), "feature edit\n");
+    }
+
+    #[tokio::test]
+    async fn merge_survives_untracked_file_in_the_way() {
+        let repo = TestRepo::new("untracked");
+        repo.write("shared.txt", "base\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "base"]);
+        repo.git(&["checkout", "-q", "-b", "feature"]);
+        repo.write("added.txt", "from feature\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "feature work"]);
+        repo.git(&["checkout", "-q", "main"]);
+        repo.write("shared.txt", "main\n");
+        repo.git(&["commit", "-q", "-am", "main work"]);
+        // Same path the incoming branch adds, sitting untracked in the working tree.
+        repo.write("added.txt", "local untracked copy\n");
+
+        let result = merge_branch_inner(repo.path(), "refs/heads/feature".into(), "keep".into(), "ask".into())
+            .await
+            .expect("an untracked file in the way must not fail the merge");
+        assert_eq!(result.status, "merged");
+        assert!(result.message.contains("stash"), "user must be told where their changes went: {}", result.message);
+        assert_eq!(repo.read("added.txt"), "from feature\n");
+    }
+
+    #[tokio::test]
+    async fn material_preview_is_built_from_the_shader_source() {
+        let repo = TestRepo::new("material");
+        repo.write(
+            "Assets/Shaders/Toon.shader",
+            r#"Shader "Game/Toon"
+{
+    Properties
+    {
+        _Albedo ("Albedo", 2D) = "white" {}
+        _Tint ("Tint", Color) = (1, 0.5, 0.25, 1)
+        [Normal] _Bumps ("Bumps", 2D) = "bump" {}
+        _Gloss ("Smoothness", Range(0, 1)) = 0.8
+    }
+    SubShader
+    {
+        Tags { "RenderType"="Transparent" }
+        Blend One One
+        Cull Off
+        Pass { CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            ENDCG }
+    }
+}"#,
+        );
+        repo.write("Assets/Shaders/Toon.shader.meta", "fileFormatVersion: 2\nguid: aaaa0000aaaa0000aaaa0000aaaa0000\n");
+        repo.write("Assets/Textures/Skin [v2] ç.png", "not really a png");
+        repo.write("Assets/Textures/Skin [v2] ç.png.meta", "fileFormatVersion: 2\nguid: bbbb0000bbbb0000bbbb0000bbbb0000\nTextureImporter:\n  textureType: 1\n  maxTextureSize: 1024\n");
+        repo.write(
+            "Assets/Hero.mat",
+            r#"%YAML 1.1
+Material:
+  m_Name: Hero
+  m_Shader: {fileID: 4800000, guid: aaaa0000aaaa0000aaaa0000aaaa0000, type: 3}
+  m_ValidKeywords:
+  - _EMISSION
+  m_InvalidKeywords: []
+  m_CustomRenderQueue: 3100
+  m_SavedProperties:
+    m_TexEnvs:
+    - _Albedo:
+        m_Texture: {fileID: 2800000, guid: bbbb0000bbbb0000bbbb0000bbbb0000, type: 3}
+        m_Scale: {x: 2, y: 3}
+        m_Offset: {x: 0.5, y: 0}
+    - _MainTex:
+        m_Texture: {fileID: 2800000, guid: bbbb0000bbbb0000bbbb0000bbbb0000, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _Metallic: 1
+    m_Colors:
+    - _Tint: {r: 0, g: 1, b: 0, a: 1}
+"#,
+        );
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "assets"]);
+
+        let preview = inspect_file_preview_inner(repo.path(), "Assets/Hero.mat".into()).await.unwrap();
+        assert_eq!(preview.preview_kind, "material");
+        let source = &preview.unity_material_sources[0];
+
+        assert_eq!(source.shader_label, "Game/Toon");
+        assert_eq!(source.shader_source, "ShaderLab");
+        assert_eq!(source.shader_path.as_deref(), Some("Assets/Shaders/Toon.shader"));
+        assert_eq!(source.shader_family, "unlit");
+        assert_eq!(source.surface_kind, "additive");
+        assert!(source.double_sided);
+        assert_eq!(source.keywords, vec!["_EMISSION".to_string()]);
+        assert_eq!(source.render_queue, Some(3100));
+
+        // _Albedo is not a conventional name: it is picked up from the shader's declarations.
+        assert_eq!(source.base_texture_key.as_deref(), Some("_Albedo"));
+        assert_eq!(source.textures[0].relative_path, "Assets/Textures/Skin [v2] ç.png");
+        assert_eq!(source.base_tiling, Some([2.0, 3.0, 0.5, 0.0]));
+        assert_eq!(source.base_color.as_ref().map(|color| (color.r, color.g, color.b)), Some((0.0, 1.0, 0.0)));
+        // Not saved in the material, so the shader default applies.
+        assert_eq!(source.smoothness, Some(0.8));
+
+        let names = source.properties.iter().map(|property| property.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["_Albedo", "_Tint", "_Bumps", "_Gloss"]);
+        assert!(source.properties[3].is_default);
+        // _MainTex and _Metallic are leftovers from another shader.
+        assert!(source.notes.iter().any(|note| note.starts_with("2 saved value(s)")), "{:?}", source.notes);
+        assert!(source.notes.iter().any(|note| note.contains("not executed")));
+
+        let texture_preview = inspect_file_preview_inner(repo.path(), "Assets/Textures/Skin [v2] ç.png".into()).await.unwrap();
+        let import_settings = texture_preview.import_settings.expect("meta should be summarised");
+        assert_eq!(import_settings.pipeline_state, "TextureImporter");
+        assert_eq!(import_settings.details[0].value, "Normal map");
+    }
+
+    #[tokio::test]
+    async fn deleted_file_is_previewed_from_git() {
+        let repo = TestRepo::new("deleted");
+        repo.write("notes.txt", "kept in history\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-q", "-m", "notes"]);
+        fs::remove_file(repo.0.join("notes.txt")).unwrap();
+
+        let preview = inspect_file_preview_inner(repo.path(), "notes.txt".into()).await.unwrap();
+        assert!(preview.missing_from_disk);
+        assert_eq!(preview.preview_kind, "text");
+        assert_eq!(preview.text_excerpt.as_deref(), Some("kept in history\n"));
+        assert!(preview.unstaged_diff.is_some());
+
+        assert!(inspect_file_preview_inner(repo.path(), "../outside.txt".into()).await.is_err());
+    }
+
+    #[test]
+    fn reads_asset_headers() {
+        let mut psd = b"8BPS".to_vec();
+        psd.extend([0, 1, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 2, 0, 0, 0, 4, 0, 0, 8, 0, 3]);
+        let summary = parse_psd_summary(&psd).unwrap();
+        assert_eq!(summary.details[0].value, "1024 x 512 px");
+        assert_eq!(summary.details[1].value, "RGB");
+
+        assert_eq!(parse_blend_summary(b"BLENDER-v402REND\0\0\0\0").unwrap().pipeline_state, "Blender 4.2");
+        assert_eq!(parse_blend_summary(b"BLENDER17-01v0500").unwrap().pipeline_state, "Blender 5.0");
+
+        let glb_json = br#"{"asset":{"version":"2.0","generator":"Tool"},"meshes":[{},{}]}"#;
+        let mut glb = b"glTF".to_vec();
+        glb.extend(2u32.to_le_bytes());
+        glb.extend(0u32.to_le_bytes());
+        glb.extend((glb_json.len() as u32).to_le_bytes());
+        glb.extend(b"JSON");
+        glb.extend(glb_json);
+        let summary = parse_glb_summary(&glb).unwrap();
+        assert_eq!(summary.pipeline_state, "glTF 2.0");
+        assert!(summary.details.iter().any(|detail| detail.label == "Meshes" && detail.value == "2"));
     }
 
     #[test]
@@ -5176,6 +5970,9 @@ fn infer_mime_type(extension: &str) -> &'static str {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
+        "tga" => "image/x-tga",
+        "exr" => "image/x-exr",
+        "hdr" => "image/vnd.radiance",
         "txt" | "md" | "json" | "toml" | "yaml" | "yml" | "py" | "ts" | "tsx" | "js" | "jsx" | "rs" | "cs" | "shader" | "cginc" | "hlsl" | "glsl" => "text/plain",
         "psd" => "image/vnd.adobe.photoshop",
         "fbx" => "model/vnd.fbx",
@@ -5187,26 +5984,23 @@ fn infer_mime_type(extension: &str) -> &'static str {
     }
 }
 
-fn build_asset_summary(path: &Path, extension: &str) -> GitResult<Option<AssetSummary>> {
-    let bytes = fs::read(path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+fn asset_detail(label: &str, value: impl Into<String>) -> AssetDetail {
+    AssetDetail {
+        label: label.to_string(),
+        value: value.into(),
+    }
+}
 
-    let summary = match extension {
-        "psd" => parse_psd_summary(&bytes),
-        "fbx" => parse_fbx_summary(&bytes),
-        "gltf" => parse_gltf_summary(&bytes),
-        "glb" => parse_glb_summary(&bytes),
-        "blend" => Some(AssetSummary {
-            asset_kind: "Blender scene".to_string(),
-            pipeline_state: "External renderer required".to_string(),
-            details: vec![AssetDetail {
-                label: "Preview route".to_string(),
-                value: "Bundle Blender-backed thumbnail worker in a later slice".to_string(),
-            }],
-        }),
+/// Reads whatever the file header gives away without a full decoder.
+fn build_asset_summary(bytes: &[u8], extension: &str) -> Option<AssetSummary> {
+    match extension {
+        "psd" | "psb" => parse_psd_summary(bytes),
+        "fbx" => parse_fbx_summary(bytes),
+        "gltf" => parse_gltf_summary(bytes, "glTF scene"),
+        "glb" => parse_glb_summary(bytes),
+        "blend" => parse_blend_summary(bytes),
         _ => None,
-    };
-
-    Ok(summary)
+    }
 }
 
 fn parse_psd_summary(bytes: &[u8]) -> Option<AssetSummary> {
@@ -5219,125 +6013,121 @@ fn parse_psd_summary(bytes: &[u8]) -> Option<AssetSummary> {
     let height = u32::from_be_bytes([bytes[14], bytes[15], bytes[16], bytes[17]]);
     let width = u32::from_be_bytes([bytes[18], bytes[19], bytes[20], bytes[21]]);
     let depth = u16::from_be_bytes([bytes[22], bytes[23]]);
-    let color_mode = u16::from_be_bytes([bytes[24], bytes[25]]);
+    let color_mode = match u16::from_be_bytes([bytes[24], bytes[25]]) {
+        0 => "Bitmap".to_string(),
+        1 => "Grayscale".to_string(),
+        2 => "Indexed".to_string(),
+        3 => "RGB".to_string(),
+        4 => "CMYK".to_string(),
+        7 => "Multichannel".to_string(),
+        8 => "Duotone".to_string(),
+        9 => "Lab".to_string(),
+        other => format!("Mode {other}"),
+    };
 
     Some(AssetSummary {
         asset_kind: "Photoshop document".to_string(),
-        pipeline_state: "Header parsed, flattened renderer pending".to_string(),
+        pipeline_state: if version == 2 { "PSB (large document)" } else { "PSD" }.to_string(),
         details: vec![
-            AssetDetail {
-                label: "Version".to_string(),
-                value: version.to_string(),
-            },
-            AssetDetail {
-                label: "Dimensions".to_string(),
-                value: format!("{} x {}", width, height),
-            },
-            AssetDetail {
-                label: "Channels".to_string(),
-                value: channels.to_string(),
-            },
-            AssetDetail {
-                label: "Depth".to_string(),
-                value: format!("{} bit", depth),
-            },
-            AssetDetail {
-                label: "Color mode".to_string(),
-                value: color_mode.to_string(),
-            },
+            asset_detail("Dimensions", format!("{width} x {height} px")),
+            asset_detail("Color mode", color_mode),
+            asset_detail("Channels", channels.to_string()),
+            asset_detail("Bit depth", format!("{depth} bit per channel")),
         ],
     })
 }
 
+/// Binary FBX stores `Name` + 'S' + u32 length + text for string properties.
+fn find_fbx_binary_string(bytes: &[u8], name: &[u8]) -> Option<String> {
+    let window = &bytes[..bytes.len().min(64 * 1024)];
+    let position = window
+        .windows(name.len() + 1)
+        .position(|candidate| &candidate[..name.len()] == name && candidate[name.len()] == b'S')?;
+    let start = position + name.len() + 1;
+    let length = u32::from_le_bytes(window.get(start..start + 4)?.try_into().ok()?) as usize;
+    let text = window.get(start + 4..start + 4 + length.min(256))?;
+    Some(String::from_utf8_lossy(text).trim().to_string()).filter(|value| !value.is_empty())
+}
+
 fn parse_fbx_summary(bytes: &[u8]) -> Option<AssetSummary> {
-    let ascii_prefix = String::from_utf8_lossy(&bytes[..bytes.len().min(256)]).to_string();
+    let format_version = |version: u32| format!("{}.{}", version / 1000, (version % 1000) / 100);
+    let summary = |encoding: &str, version: Option<u32>, creator: Option<String>| {
+        let mut details = vec![asset_detail("Encoding", encoding)];
+        if let Some(version) = version {
+            details.push(asset_detail("FBX version", format!("{} ({version})", format_version(version))));
+        }
+        if let Some(creator) = creator {
+            details.push(asset_detail("Exported by", creator));
+        }
 
-    if ascii_prefix.contains("Kaydara FBX Binary") {
-        let version = if bytes.len() >= 27 {
-            u32::from_le_bytes([bytes[23], bytes[24], bytes[25], bytes[26]])
-        } else {
-            0
-        };
-
-        return Some(AssetSummary {
+        AssetSummary {
             asset_kind: "FBX scene".to_string(),
-            pipeline_state: "Binary scene detected, mesh worker pending".to_string(),
-            details: vec![AssetDetail {
-                label: "Format version".to_string(),
-                value: if version > 0 {
-                    version.to_string()
-                } else {
-                    "unknown".to_string()
-                },
-            }],
-        });
+            pipeline_state: match version {
+                Some(version) => format!("{encoding} FBX {}", format_version(version)),
+                None => format!("{encoding} FBX"),
+            },
+            details,
+        }
+    };
+
+    if bytes.starts_with(b"Kaydara FBX Binary") {
+        let version = bytes.get(23..27).map(|raw| u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]));
+        return Some(summary("Binary", version, find_fbx_binary_string(bytes, b"Creator")));
     }
 
-    if ascii_prefix.contains("FBXHeaderExtension") || ascii_prefix.contains("Kaydara\\FBX") {
-        let version = ascii_prefix
-            .lines()
-            .find(|line| line.contains("FBXVersion"))
-            .map(|line| line.chars().filter(|char| char.is_ascii_digit()).collect::<String>())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "unknown".to_string());
-
-        return Some(AssetSummary {
-            asset_kind: "FBX scene".to_string(),
-            pipeline_state: "ASCII scene detected, mesh worker pending".to_string(),
-            details: vec![AssetDetail {
-                label: "Format version".to_string(),
-                value: version,
-            }],
-        });
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
+    if head.contains("FBXHeaderExtension") || head.contains("Kaydara\\FBX") {
+        let field = |name: &str| head.lines().find_map(|line| line.trim().strip_prefix(name)).map(str::trim);
+        let version = field("FBXVersion:").and_then(|value| value.parse::<u32>().ok());
+        let creator = field("Creator:").map(|value| value.trim_matches('"').to_string()).filter(|value| !value.is_empty());
+        return Some(summary("ASCII", version, creator));
     }
 
     None
 }
 
-fn parse_gltf_summary(bytes: &[u8]) -> Option<AssetSummary> {
+fn parse_gltf_summary(bytes: &[u8], asset_kind: &str) -> Option<AssetSummary> {
     let json = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
-    let scenes = json
-        .get("scenes")
+    let count = |key: &str| json.get(key).and_then(|value| value.as_array()).map(|value| value.len()).unwrap_or(0);
+    let asset_field = |key: &str| {
+        json.get("asset")
+            .and_then(|asset| asset.get(key))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+    };
+    let version = asset_field("version").unwrap_or_else(|| "2.0".to_string());
+
+    let mut details = Vec::new();
+    if let Some(generator) = asset_field("generator") {
+        details.push(asset_detail("Exported by", generator));
+    }
+    for (label, key) in [
+        ("Scenes", "scenes"),
+        ("Nodes", "nodes"),
+        ("Meshes", "meshes"),
+        ("Materials", "materials"),
+        ("Textures", "textures"),
+        ("Animations", "animations"),
+        ("Skins", "skins"),
+        ("Cameras", "cameras"),
+    ] {
+        if count(key) > 0 {
+            details.push(asset_detail(label, count(key).to_string()));
+        }
+    }
+    let extensions = json
+        .get("extensionsUsed")
         .and_then(|value| value.as_array())
-        .map(|value| value.len())
-        .unwrap_or(0);
-    let nodes = json
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .map(|value| value.len())
-        .unwrap_or(0);
-    let meshes = json
-        .get("meshes")
-        .and_then(|value| value.as_array())
-        .map(|value| value.len())
-        .unwrap_or(0);
-    let animations = json
-        .get("animations")
-        .and_then(|value| value.as_array())
-        .map(|value| value.len())
-        .unwrap_or(0);
+        .map(|values| values.iter().filter_map(|value| value.as_str()).collect::<Vec<_>>().join(", "))
+        .filter(|value| !value.is_empty());
+    if let Some(extensions) = extensions {
+        details.push(asset_detail("Extensions", extensions));
+    }
 
     Some(AssetSummary {
-        asset_kind: "glTF scene".to_string(),
-        pipeline_state: "Scene parsed, viewer embedding pending".to_string(),
-        details: vec![
-            AssetDetail {
-                label: "Scenes".to_string(),
-                value: scenes.to_string(),
-            },
-            AssetDetail {
-                label: "Nodes".to_string(),
-                value: nodes.to_string(),
-            },
-            AssetDetail {
-                label: "Meshes".to_string(),
-                value: meshes.to_string(),
-            },
-            AssetDetail {
-                label: "Animations".to_string(),
-                value: animations.to_string(),
-            },
-        ],
+        asset_kind: asset_kind.to_string(),
+        pipeline_state: format!("glTF {version}"),
+        details,
     })
 }
 
@@ -5346,22 +6136,152 @@ fn parse_glb_summary(bytes: &[u8]) -> Option<AssetSummary> {
         return None;
     }
 
-    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-    let length = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    // Header (12 bytes) is followed by the JSON chunk: u32 length, "JSON", payload.
+    let chunk_length = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as usize;
+    if &bytes[16..20] == b"JSON" {
+        if let Some(summary) = bytes.get(20..20 + chunk_length).and_then(|json| parse_gltf_summary(json, "GLB scene")) {
+            return Some(summary);
+        }
+    }
 
+    let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
     Some(AssetSummary {
         asset_kind: "GLB scene".to_string(),
-        pipeline_state: "Container parsed, viewer embedding pending".to_string(),
-        details: vec![
-            AssetDetail {
-                label: "Version".to_string(),
-                value: version.to_string(),
-            },
-            AssetDetail {
-                label: "Container bytes".to_string(),
-                value: length.to_string(),
-            },
+        pipeline_state: format!("glTF {version}.0"),
+        details: Vec::new(),
+    })
+}
+
+fn parse_blend_summary(bytes: &[u8]) -> Option<AssetSummary> {
+    let summary = |state: String, details: Vec<AssetDetail>| {
+        Some(AssetSummary {
+            asset_kind: "Blender file".to_string(),
+            pipeline_state: state,
+            details,
+        })
+    };
+
+    if bytes.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) || bytes.starts_with(&[0x1F, 0x8B]) {
+        let codec = if bytes[0] == 0x28 { "Zstandard" } else { "gzip" };
+        return summary(
+            "Compressed .blend".to_string(),
+            vec![asset_detail("Compression", codec), asset_detail("Version", "Stored inside the compressed data")],
+        );
+    }
+
+    if !bytes.starts_with(b"BLENDER") || bytes.len() < 17 {
+        return None;
+    }
+
+    // Classic header: BLENDER + pointer size (_ or -) + endianness (v or V) + "305".
+    // Blender 5 header: BLENDER17-01v0500 (header size, pointer size, format, endianness, version).
+    let header = String::from_utf8_lossy(&bytes[7..17]).to_string();
+    let marker = header.find(['v', 'V'])?;
+    let digits = header[marker + 1..].chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>();
+    let (major, minor) = match digits.len() {
+        3 => (digits[..1].parse::<u32>().ok()?, digits[1..].parse::<u32>().ok()?),
+        4 => (digits[..2].parse::<u32>().ok()?, digits[2..].parse::<u32>().ok()?),
+        _ => return None,
+    };
+
+    summary(
+        format!("Blender {major}.{minor}"),
+        vec![
+            asset_detail("Saved with", format!("Blender {major}.{minor}")),
+            asset_detail("Pointers", if header.contains('_') { "32 bit" } else { "64 bit" }),
+            asset_detail("Byte order", if header.contains('V') { "Big endian" } else { "Little endian" }),
         ],
+    )
+}
+
+/// Summarises the importer block of a Unity `.meta` file for textures and models.
+fn parse_unity_meta_summary(meta: &str) -> Option<AssetSummary> {
+    let importer = meta
+        .lines()
+        .find(|line| !line.starts_with(' ') && line.trim_end().ends_with("Importer:"))?
+        .trim_end()
+        .trim_end_matches(':')
+        .to_string();
+    let value = |key: &str| {
+        meta.lines()
+            .find_map(|line| line.trim().strip_prefix(key).and_then(|rest| rest.strip_prefix(':')))
+            .map(|raw| raw.trim().to_string())
+            .filter(|raw| !raw.is_empty())
+    };
+    let labelled = |key: &str, labels: &[(&str, &str)]| {
+        value(key).map(|raw| {
+            labels
+                .iter()
+                .find(|(code, _)| *code == raw)
+                .map(|(_, label)| label.to_string())
+                .unwrap_or(raw)
+        })
+    };
+    let toggle = |key: &str| value(key).map(|raw| if raw == "1" { "On" } else { "Off" }.to_string());
+
+    let rows: Vec<(&str, Option<String>)> = match importer.as_str() {
+        "TextureImporter" => {
+            let is_sprite = value("textureType").as_deref() == Some("8");
+            vec![
+                (
+                    "Texture type",
+                    labelled(
+                        "textureType",
+                        &[
+                            ("0", "Default"),
+                            ("1", "Normal map"),
+                            ("2", "Editor GUI"),
+                            ("4", "Cookie"),
+                            ("6", "Lightmap"),
+                            ("7", "Cursor"),
+                            ("8", "Sprite"),
+                            ("10", "Single channel"),
+                        ],
+                    ),
+                ),
+                ("Max size", value("maxTextureSize")),
+                (
+                    "Compression",
+                    labelled("textureCompression", &[("0", "None"), ("1", "Normal"), ("2", "High quality"), ("3", "Low quality")]),
+                ),
+                ("sRGB", toggle("sRGBTexture")),
+                ("Mip maps", toggle("enableMipMap")),
+                ("Alpha is transparency", toggle("alphaIsTransparency")),
+                ("Filter", labelled("filterMode", &[("0", "Point"), ("1", "Bilinear"), ("2", "Trilinear")])),
+                (
+                    "Sprite mode",
+                    labelled("spriteMode", &[("1", "Single"), ("2", "Multiple"), ("3", "Polygon")]).filter(|_| is_sprite),
+                ),
+                ("Pixels per unit", value("spritePixelsToUnits").filter(|_| is_sprite)),
+                ("Read/Write", toggle("isReadable")),
+            ]
+        }
+        "ModelImporter" => vec![
+            ("Scale factor", value("globalScale")),
+            (
+                "Mesh compression",
+                labelled("meshCompression", &[("0", "Off"), ("1", "Low"), ("2", "Medium"), ("3", "High")]),
+            ),
+            ("Read/Write", toggle("isReadable")),
+            ("Blend shapes", toggle("importBlendShapes")),
+            ("Animation", toggle("importAnimation")),
+            (
+                "Rig",
+                labelled("animationType", &[("0", "None"), ("1", "Legacy"), ("2", "Generic"), ("3", "Humanoid")]),
+            ),
+        ],
+        _ => Vec::new(),
+    };
+
+    let details = rows
+        .into_iter()
+        .filter_map(|(label, value)| value.map(|value| asset_detail(label, value)))
+        .collect::<Vec<_>>();
+
+    (!details.is_empty()).then(|| AssetSummary {
+        asset_kind: "Unity import settings".to_string(),
+        pipeline_state: importer,
+        details,
     })
 }
 
@@ -5370,7 +6290,8 @@ fn is_image_extension(extension: &str) -> bool {
 }
 
 fn is_previewable_image_extension(extension: &str) -> bool {
-    is_image_extension(extension) || extension == "psd"
+    // TGA, EXR and HDR are decoded in the webview by three.js loaders.
+    is_image_extension(extension) || matches!(extension, "psd" | "tga" | "exr" | "hdr")
 }
 
 fn is_previewable_model_extension(extension: &str) -> bool {
@@ -5403,12 +6324,12 @@ fn is_text_extension(extension: &str) -> bool {
 }
 
 fn is_known_asset_extension(extension: &str) -> bool {
-    matches!(extension, "psd" | "fbx" | "obj" | "glb" | "gltf" | "blend" | "tga" | "exr")
+    matches!(extension, "psb" | "fbx" | "obj" | "glb" | "gltf" | "blend" | "dds" | "tif" | "tiff")
 }
 
 async fn collect_model_preview_sources(
     repo_root: &Path,
-    resolved_path: &Path,
+    resolved_path: Option<&Path>,
     relative_path: &str,
     extension: &str,
     mime_type: &str,
@@ -5430,10 +6351,8 @@ async fn collect_model_preview_sources(
 
         let external_resources = collect_model_preview_resources(repo_root, source_kind, relative_path, extension, &bytes).await?;
         let notes = match extension {
-            "fbx" => vec!["FBX preview uses a generic Three.js loader. External texture references may not always resolve.".to_string()],
-            "obj" => vec!["OBJ preview loads geometry directly and uses MTL resources when they can be resolved from sidecar files.".to_string()],
-            "gltf" => vec!["glTF preview loads referenced buffers and textures when they are available in the same repo state.".to_string()],
-            "glb" => Vec::new(),
+            "fbx" => vec!["Textures referenced by the FBX are not loaded; geometry, materials and rig are shown.".to_string()],
+            "obj" if external_resources.is_empty() => vec!["No .mtl material file was found next to this OBJ; a neutral material is used.".to_string()],
             _ => Vec::new(),
         };
 
@@ -5580,25 +6499,24 @@ async fn read_model_external_resource_bytes(
 
 async fn collect_image_preview_sources(
     repo_root: &Path,
-    resolved_path: &Path,
+    resolved_path: Option<&Path>,
     relative_path: &str,
     extension: &str,
     mime_type: &str,
 ) -> GitResult<Vec<ImagePreviewSource>> {
     let mut sources = Vec::new();
 
-    let working_tree_bytes = fs::read(resolved_path)
-        .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
-
-    if (working_tree_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
-        sources.push(build_image_preview_source(
-            "workingTree",
-            "Working tree",
-            "workingTree",
-            mime_type,
-            extension,
-            working_tree_bytes,
-        ));
+    if let Some(working_tree_bytes) = read_preview_blob(repo_root, resolved_path, relative_path, PreviewBlobSource::WorkingTree).await? {
+        if (working_tree_bytes.len() as u64) <= MAX_INLINE_IMAGE_BYTES {
+            sources.push(build_image_preview_source(
+                "workingTree",
+                "Working tree",
+                "workingTree",
+                mime_type,
+                extension,
+                working_tree_bytes,
+            ));
+        }
     }
 
     if let Some(staged_bytes) = git_show_optional_bytes(repo_root, format!(":{relative_path}"), relative_path).await? {
@@ -5646,6 +6564,7 @@ fn build_image_preview_source(
         byte_size: bytes.len() as u64,
         encoded_bytes_base64: BASE64.encode(bytes),
         is_psd: extension == "psd",
+        format: extension.to_string(),
     }
 }
 
@@ -5690,11 +6609,10 @@ fn build_image_comparison_presets(
 
 async fn collect_unity_material_preview_sources(
     repo_root: &Path,
-    resolved_path: &Path,
+    resolved_path: Option<&Path>,
     relative_path: &str,
 ) -> GitResult<Vec<UnityMaterialPreviewSource>> {
     let mut sources = Vec::new();
-    let mut guid_cache = std::collections::HashMap::<String, Option<String>>::new();
 
     for (key, label, source_kind) in [
         ("workingTree", "Working tree", PreviewBlobSource::WorkingTree),
@@ -5704,46 +6622,11 @@ async fn collect_unity_material_preview_sources(
         let Some(bytes) = read_preview_blob(repo_root, resolved_path, relative_path, source_kind).await? else {
             continue;
         };
-
-        let text = String::from_utf8_lossy(&bytes).to_string();
-        let Some(parsed_material) = parse_unity_material(&text) else {
+        let Some(material) = parse_unity_material(&String::from_utf8_lossy(&bytes)) else {
             continue;
         };
 
-        let textures = resolve_unity_material_textures(repo_root, source_kind, &parsed_material, &mut guid_cache).await?;
-        let shader_family = infer_unity_shader_family(&parsed_material, &textures);
-        let shader_label = infer_unity_shader_label(&parsed_material, &shader_family);
-        let surface_kind = infer_unity_surface_kind(&parsed_material, &shader_family);
-        let base_texture_key = select_material_texture_key(&textures, &["_BaseMap", "_MainTex", "_BaseColorMap"]);
-        let normal_texture_key = select_material_texture_key(&textures, &["_BumpMap", "_NormalMap", "_NormalTexture"]);
-        let emission_texture_key = select_material_texture_key(&textures, &["_EmissionMap", "_EmissiveColorMap"]);
-
-        let notes = if shader_family == "custom" {
-            vec!["Custom shader detected. UniGit is falling back to a generic lit material using the first available texture and common scalar properties.".to_string()]
-        } else {
-            Vec::new()
-        };
-
-        sources.push(UnityMaterialPreviewSource {
-            key: key.to_string(),
-            label: label.to_string(),
-            source_kind: key.to_string(),
-            material_name: parsed_material.material_name.clone(),
-            shader_label,
-            shader_family,
-            surface_kind,
-            base_color: pick_unity_color(&parsed_material, &["_BaseColor", "_Color"]),
-            emission_color: pick_unity_color(&parsed_material, &["_EmissionColor", "_EmissiveColor"]),
-            metallic: pick_unity_float(&parsed_material, &["_Metallic"]),
-            smoothness: pick_unity_float(&parsed_material, &["_Smoothness", "_Glossiness", "_GlossMapScale"]),
-            cutoff: pick_unity_float(&parsed_material, &["_Cutoff", "_AlphaClipThreshold"]),
-            preview_shape_hint: "sphere".to_string(),
-            notes,
-            textures,
-            base_texture_key,
-            normal_texture_key,
-            emission_texture_key,
-        });
+        sources.push(build_unity_material_preview_source(repo_root, source_kind, key, label, &material).await?);
     }
 
     Ok(sources)
@@ -5751,14 +6634,14 @@ async fn collect_unity_material_preview_sources(
 
 async fn read_preview_blob(
     repo_root: &Path,
-    resolved_path: &Path,
+    resolved_path: Option<&Path>,
     relative_path: &str,
     source_kind: PreviewBlobSource,
 ) -> GitResult<Option<Vec<u8>>> {
     match source_kind {
-        PreviewBlobSource::WorkingTree => Ok(Some(
-            fs::read(resolved_path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?,
-        )),
+        PreviewBlobSource::WorkingTree => resolved_path
+            .map(|path| fs::read(path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string())))
+            .transpose(),
         PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_path}"), relative_path).await,
         PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_path}"), relative_path).await,
     }
@@ -5770,16 +6653,29 @@ fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
         TexEnvs,
         Floats,
         Colors,
+        Keywords,
+    }
+
+    if !source.contains("m_Shader:") {
+        return None;
     }
 
     let mut material_name = "Material".to_string();
     let mut shader_guid = None;
     let mut shader_file_id = None;
-    let mut float_values = std::collections::HashMap::new();
-    let mut color_values = std::collections::HashMap::new();
-    let mut texture_slots = Vec::new();
+    let mut float_values = HashMap::new();
+    let mut color_values = HashMap::new();
+    let mut texture_slots: Vec<ParsedUnityTextureSlot> = Vec::new();
+    let mut keywords = Vec::new();
+    let mut custom_render_queue = None;
     let mut section = Section::None;
     let mut current_texture_property: Option<String> = None;
+    let pair = |fields: &HashMap<String, String>| {
+        (
+            fields.get("x").and_then(|value| value.parse().ok()).unwrap_or(1.0),
+            fields.get("y").and_then(|value| value.parse().ok()).unwrap_or(1.0),
+        )
+    };
 
     for raw_line in source.lines() {
         let trimmed = raw_line.trim();
@@ -5799,28 +6695,28 @@ fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
             continue;
         }
 
-        match trimmed {
-            "m_TexEnvs:" => {
-                section = Section::TexEnvs;
-                current_texture_property = None;
-                continue;
-            }
-            "m_Floats:" => {
-                section = Section::Floats;
-                current_texture_property = None;
-                continue;
-            }
-            "m_Colors:" => {
-                section = Section::Colors;
-                current_texture_property = None;
-                continue;
-            }
-            "m_Ints:" => {
-                section = Section::None;
-                current_texture_property = None;
-                continue;
-            }
-            _ => {}
+        // Unity 2020 and older keep enabled keywords on one space-separated line.
+        if let Some(value) = trimmed.strip_prefix("m_ShaderKeywords:") {
+            keywords.extend(value.split_whitespace().map(ToString::to_string));
+            continue;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("m_CustomRenderQueue:") {
+            custom_render_queue = value.trim().parse::<i32>().ok().filter(|queue| *queue >= 0);
+            continue;
+        }
+
+        let next_section = match trimmed {
+            "m_TexEnvs:" => Some(Section::TexEnvs),
+            "m_Floats:" | "m_Ints:" => Some(Section::Floats),
+            "m_Colors:" => Some(Section::Colors),
+            "m_ValidKeywords:" => Some(Section::Keywords),
+            _ => None,
+        };
+        if let Some(next_section) = next_section {
+            section = next_section;
+            current_texture_property = None;
+            continue;
         }
 
         match section {
@@ -5832,13 +6728,25 @@ fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
                     continue;
                 }
 
-                if let Some(property_name) = current_texture_property.as_ref() {
-                    if let Some(value) = trimmed.strip_prefix("m_Texture:") {
-                        let inline_fields = parse_inline_object_fields(value.trim());
-                        texture_slots.push(ParsedUnityTextureSlot {
-                            property_name: property_name.clone(),
-                            guid: inline_fields.get("guid").cloned().filter(|guid| !guid.is_empty()),
-                        });
+                let Some(property_name) = current_texture_property.as_ref() else {
+                    continue;
+                };
+
+                if let Some(value) = trimmed.strip_prefix("m_Texture:") {
+                    let inline_fields = parse_inline_object_fields(value.trim());
+                    texture_slots.push(ParsedUnityTextureSlot {
+                        property_name: property_name.clone(),
+                        guid: inline_fields.get("guid").cloned().filter(|guid| !guid.is_empty()),
+                        scale: (1.0, 1.0),
+                        offset: (0.0, 0.0),
+                    });
+                } else if let Some(slot) = texture_slots.last_mut().filter(|slot| &slot.property_name == property_name) {
+                    if let Some(value) = trimmed.strip_prefix("m_Scale:") {
+                        slot.scale = pair(&parse_inline_object_fields(value.trim()));
+                    } else if let Some(value) = trimmed.strip_prefix("m_Offset:") {
+                        let (x, y) = pair(&parse_inline_object_fields(value.trim()));
+                        // `pair` defaults to 1 for scale; a missing offset component is 0.
+                        slot.offset = (if value.contains("x:") { x } else { 0.0 }, if value.contains("y:") { y } else { 0.0 });
                     }
                 }
             }
@@ -5852,6 +6760,10 @@ fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
                     color_values.insert(key, value);
                 }
             }
+            Section::Keywords => match trimmed.strip_prefix("- ") {
+                Some(keyword) => keywords.push(keyword.trim().to_string()),
+                None => section = Section::None,
+            },
             Section::None => {}
         }
     }
@@ -5863,11 +6775,13 @@ fn parse_unity_material(source: &str) -> Option<ParsedUnityMaterial> {
         float_values,
         color_values,
         texture_slots,
+        keywords,
+        custom_render_queue,
     })
 }
 
-fn parse_inline_object_fields(source: &str) -> std::collections::HashMap<String, String> {
-    let mut values = std::collections::HashMap::new();
+fn parse_inline_object_fields(source: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
     let trimmed = source.trim().trim_start_matches('{').trim_end_matches('}');
 
     for part in trimmed.split(',') {
@@ -5908,120 +6822,684 @@ fn parse_unity_color_entry(trimmed: &str) -> Option<(String, UnityColorValue)> {
     ))
 }
 
-async fn resolve_unity_material_textures(
+/// Shaders that ship with Unity and are referenced by a fixed id rather than a project file.
+/// Returns (name, lit). Only ids that are stable across Unity versions are listed.
+fn well_known_unity_shader(guid: Option<&str>, file_id: Option<&str>) -> Option<(&'static str, bool)> {
+    match (guid?, file_id.unwrap_or_default()) {
+        ("933532a4fcc9baf4fa0491de14d08ed7", _) => Some(("Universal Render Pipeline/Lit", true)),
+        ("8d2bb70cbf9db8d4da26e15b26e74248", _) => Some(("Universal Render Pipeline/Simple Lit", true)),
+        ("650dd9526735d5b46b79224bc6e94025", _) => Some(("Universal Render Pipeline/Unlit", false)),
+        ("6e4ae4064600d784cac1e41a9e6f2e59", _) => Some(("HDRP/Lit", true)),
+        ("0000000000000000f000000000000000", "46") => Some(("Standard", true)),
+        ("0000000000000000f000000000000000", "45") => Some(("Standard (Specular setup)", true)),
+        ("0000000000000000f000000000000000", "7") => Some(("Legacy Shaders/Diffuse", true)),
+        ("0000000000000000f000000000000000", "10750") => Some(("Unlit/Transparent", false)),
+        ("0000000000000000f000000000000000", "10751") => Some(("Unlit/Transparent Cutout", false)),
+        ("0000000000000000f000000000000000", "10752") => Some(("Unlit/Texture", false)),
+        ("0000000000000000f000000000000000", "10755") => Some(("Unlit/Color", false)),
+        ("0000000000000000f000000000000000", "10753") => Some(("Sprites/Default", false)),
+        ("0000000000000000f000000000000000", "10770") => Some(("UI/Default", false)),
+        _ => None,
+    }
+}
+
+/// Stock shaders are approximated closely enough that "custom code skipped" notes are noise.
+fn is_stock_unity_shader(name: &str) -> bool {
+    [
+        "Universal Render Pipeline/",
+        "HDRP/",
+        "Standard",
+        "Unlit/",
+        "Sprites/",
+        "UI/",
+        "Legacy Shaders/",
+        "Mobile/",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+}
+
+/// Maps a declared shader property to the slot it fills on the preview surface.
+fn classify_unity_property(property: &ShaderProperty) -> Option<&'static str> {
+    let name = property.name.to_ascii_lowercase();
+    let has = |needle: &str| name.contains(needle);
+
+    match property.kind {
+        ShaderPropertyKind::Texture => {
+            if property.has_attribute("maintexture") {
+                Some("baseMap")
+            } else if has("detail") {
+                Some("detail")
+            } else if property.has_attribute("normal") || property.default_value == "bump" || has("bump") || has("normal") {
+                Some("normalMap")
+            } else if has("emis") {
+                Some("emissionMap")
+            } else if has("maskmap") {
+                Some("maskMap")
+            } else if has("metal") {
+                Some("metallicMap")
+            } else if has("occlusion") || has("aomap") || name.ends_with("_ao") {
+                Some("occlusionMap")
+            } else if matches!(
+                name.as_str(),
+                "_maintex" | "_basemap" | "_basecolormap" | "_basetex" | "_basetexture" | "_albedo" | "_albedomap" | "_diffuse" | "_diffusemap"
+            ) {
+                Some("baseMap")
+            } else {
+                None
+            }
+        }
+        ShaderPropertyKind::Color => {
+            if property.has_attribute("maincolor") {
+                Some("baseColor")
+            } else if has("emis") {
+                Some("emissionColor")
+            } else if has("spec") {
+                Some("specularColor")
+            } else if matches!(name.as_str(), "_basecolor" | "_color" | "_tint" | "_tintcolor" | "_maincolor") {
+                Some("baseColor")
+            } else {
+                None
+            }
+        }
+        ShaderPropertyKind::Float | ShaderPropertyKind::Range | ShaderPropertyKind::Int => {
+            // Custom shaders name things freely, so the inspector label counts too.
+            let label = property.display_name.to_ascii_lowercase();
+            let is_scalar_named = |needle: &str| has(needle) && !has("map") && !has("source") && !has("reflections");
+
+            if name == "_metallic" || label == "metallic" {
+                Some("metallic")
+            } else if is_scalar_named("smooth") || is_scalar_named("gloss") || matches!(label.as_str(), "smoothness" | "glossiness") {
+                Some("smoothness")
+            } else if is_scalar_named("roughness") || label == "roughness" {
+                Some("roughness")
+            } else if matches!(name.as_str(), "_cutoff" | "_alphacutoff" | "_alphaclipthreshold") {
+                Some("cutoff")
+            } else if matches!(name.as_str(), "_bumpscale" | "_normalscale" | "_normalstrength") {
+                Some("normalScale")
+            } else if name == "_occlusionstrength" {
+                Some("occlusionStrength")
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_unity_default_vector(value: &str) -> Option<UnityColorValue> {
+    let mut parts = value
+        .trim()
+        .trim_start_matches('(')
+        .trim_end_matches(')')
+        .split(',')
+        .map(|part| part.trim().parse::<f32>().ok());
+
+    Some(UnityColorValue {
+        r: parts.next()??,
+        g: parts.next()??,
+        b: parts.next()??,
+        a: parts.next().flatten().unwrap_or(1.0),
+    })
+}
+
+fn format_unity_number(value: f32) -> String {
+    let formatted = format!("{value:.3}");
+    formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn format_unity_color(color: &UnityColorValue, hdr: bool) -> String {
+    let peak = color.r.max(color.g).max(color.b);
+    let scale = if peak > 1.0 { peak } else { 1.0 };
+    let channel = |value: f32| ((value / scale).clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut text = format!("#{:02X}{:02X}{:02X}", channel(color.r), channel(color.g), channel(color.b));
+
+    if (color.a - 1.0).abs() > 0.001 {
+        text.push_str(&format!("  alpha {}", format_unity_number(color.a)));
+    }
+    if hdr && peak > 1.0 {
+        text.push_str(&format!("  HDR x{}", format_unity_number(peak)));
+    }
+
+    text
+}
+
+/// With no shader source available the material's own saved entries are the best property list.
+fn material_declared_properties(material: &ParsedUnityMaterial) -> Vec<ShaderProperty> {
+    let property = |name: &str, kind: ShaderPropertyKind| ShaderProperty {
+        name: name.to_string(),
+        display_name: name.trim_start_matches('_').to_string(),
+        kind,
+        attributes: Vec::new(),
+        default_value: String::new(),
+    };
+    let mut color_names = material.color_values.keys().collect::<Vec<_>>();
+    color_names.sort();
+    let mut float_names = material.float_values.keys().collect::<Vec<_>>();
+    float_names.sort();
+
+    let mut properties = material
+        .texture_slots
+        .iter()
+        .map(|slot| property(&slot.property_name, ShaderPropertyKind::Texture))
+        .collect::<Vec<_>>();
+    properties.extend(color_names.into_iter().map(|name| property(name, ShaderPropertyKind::Color)));
+    properties.extend(float_names.into_iter().map(|name| property(name, ShaderPropertyKind::Float)));
+    properties
+}
+
+fn infer_unity_blend_mode(material: &ParsedUnityMaterial, shader: Option<&ParsedShader>) -> &'static str {
+    let float = |key: &str| material.float_values.get(key).copied();
+    let keyword = |key: &str| material.keywords.iter().any(|value| value == key);
+    let from_factors = |source: &str, destination: &str| match (source, destination) {
+        ("SrcAlpha", "OneMinusSrcAlpha") => Some("alpha"),
+        ("One", "OneMinusSrcAlpha") => Some("premultiply"),
+        ("One", "One") | ("SrcAlpha", "One") => Some("additive"),
+        ("DstColor", "Zero") | ("Zero", "SrcColor") => Some("multiply"),
+        _ => None,
+    };
+    // UnityEngine.Rendering.BlendMode values as stored in _SrcBlend / _DstBlend.
+    let factor_name = |value: f32| match value as i32 {
+        0 => "Zero",
+        1 => "One",
+        2 => "DstColor",
+        3 => "SrcColor",
+        5 => "SrcAlpha",
+        10 => "OneMinusSrcAlpha",
+        _ => "",
+    };
+
+    if let Some(blend) = shader.and_then(|shader| shader.blend.as_deref()) {
+        let mut operands = blend.split_whitespace();
+        let (source, destination) = (operands.next().unwrap_or_default(), operands.next().unwrap_or_default());
+        let resolve = |operand: &str| match operand.strip_prefix('[').and_then(|inner| inner.strip_suffix(']')) {
+            Some(property) => float(property).map(factor_name).unwrap_or_default().to_string(),
+            None => operand.to_string(),
+        };
+
+        if let Some(mode) = from_factors(&resolve(source), &resolve(destination)) {
+            return mode;
+        }
+    }
+
+    if float("_Surface").unwrap_or(0.0) >= 1.0 || keyword("_SURFACE_TYPE_TRANSPARENT") {
+        return match float("_Blend").unwrap_or(0.0) as i32 {
+            1 => "premultiply",
+            2 => "additive",
+            3 => "multiply",
+            _ => "alpha",
+        };
+    }
+
+    // Built-in Standard shader rendering mode.
+    match float("_Mode").map(|mode| mode as i32) {
+        Some(1) => return "cutout",
+        Some(2) => return "alpha",
+        Some(3) => return "premultiply",
+        _ => {}
+    }
+
+    if keyword("_ALPHABLEND_ON") {
+        return "alpha";
+    }
+    if keyword("_ALPHAPREMULTIPLY_ON") {
+        return "premultiply";
+    }
+    if float("_AlphaClip").unwrap_or(0.0) >= 1.0 || keyword("_ALPHATEST_ON") {
+        return "cutout";
+    }
+
+    let render_type = shader.and_then(|shader| shader.render_type.as_deref()).unwrap_or_default();
+    let queue = shader.and_then(|shader| shader.queue.as_deref()).unwrap_or_default();
+    if render_type == "TransparentCutout" || queue.starts_with("AlphaTest") {
+        return "cutout";
+    }
+    if render_type == "Transparent" || queue.starts_with("Transparent") || material.custom_render_queue.is_some_and(|queue| queue >= 3000) {
+        return "alpha";
+    }
+
+    "opaque"
+}
+
+async fn build_unity_material_preview_source(
     repo_root: &Path,
     source_kind: PreviewBlobSource,
+    key: &str,
+    label: &str,
     material: &ParsedUnityMaterial,
-    guid_cache: &mut std::collections::HashMap<String, Option<String>>,
-) -> GitResult<Vec<UnityMaterialTexturePreview>> {
-    let mut textures = Vec::new();
+) -> GitResult<UnityMaterialPreviewSource> {
+    let mut notes = Vec::new();
 
-    for slot in &material.texture_slots {
-        let Some(guid) = slot.guid.as_ref() else {
+    let mut wanted_guids = material.texture_slots.iter().filter_map(|slot| slot.guid.clone()).collect::<Vec<_>>();
+    wanted_guids.extend(material.shader_guid.clone());
+    let asset_paths = lookup_unity_asset_paths(repo_root, &wanted_guids);
+
+    // 1. The shader: its own source when it lives in the project, else a known built-in id.
+    let shader_path = material.shader_guid.as_ref().and_then(|guid| asset_paths.get(guid)).cloned();
+    let mut shader = None;
+    if let Some(path) = shader_path.as_ref() {
+        if let Some(bytes) = read_material_texture_bytes(repo_root, source_kind, path).await? {
+            shader = parse_shader(path, &String::from_utf8_lossy(&bytes));
+        }
+    }
+    let well_known = well_known_unity_shader(material.shader_guid.as_deref(), material.shader_file_id.as_deref());
+    let shader_name = shader
+        .as_ref()
+        .map(|shader| shader.name.clone())
+        .or_else(|| well_known.map(|(name, _)| name.to_string()));
+    let shader_source = match (shader.as_ref(), well_known) {
+        (Some(shader), _) => shader.source_kind,
+        (None, Some(_)) => "Built-in",
+        (None, None) => "Not found",
+    };
+
+    // 2. The property list. A .mat keeps values from every shader it was ever assigned, so the
+    //    shader's declarations are what separates live properties from stale leftovers.
+    let shader_declares = shader.as_ref().is_some_and(|shader| !shader.properties.is_empty());
+    let declared = if shader_declares {
+        shader.as_ref().map(|shader| shader.properties.clone()).unwrap_or_default()
+    } else {
+        material_declared_properties(material)
+    };
+    let slot_of = |name: &str| material.texture_slots.iter().find(|slot| slot.property_name == name);
+    let assigned_guid = |name: &str| slot_of(name).and_then(|slot| slot.guid.clone());
+
+    let mut roles = HashMap::<&'static str, usize>::new();
+    for (index, property) in declared.iter().enumerate() {
+        let Some(role) = classify_unity_property(property) else {
             continue;
         };
+        // A texture slot only fills a role when the material actually assigns something to it.
+        if property.kind != ShaderPropertyKind::Texture || assigned_guid(&property.name).is_some() {
+            roles.entry(role).or_insert(index);
+        }
+    }
 
-        let relative_texture_path = match guid_cache.get(guid) {
-            Some(value) => value.clone(),
-            None => {
-                let resolved = find_repo_asset_path_by_guid(repo_root, guid)?;
-                guid_cache.insert(guid.clone(), resolved.clone());
-                resolved
+    if shader_declares {
+        // Custom shaders rarely follow naming conventions: fall back to declaration order.
+        if !roles.contains_key("baseMap") {
+            if let Some(index) = declared.iter().position(|property| {
+                property.kind == ShaderPropertyKind::Texture
+                    && classify_unity_property(property).is_none()
+                    && assigned_guid(&property.name).is_some()
+            }) {
+                roles.insert("baseMap", index);
             }
-        };
+        }
+        if !roles.contains_key("baseColor") {
+            if let Some(index) = declared.iter().position(|property| {
+                property.kind == ShaderPropertyKind::Color
+                    && classify_unity_property(property).is_none()
+                    && !property.has_attribute("hdr")
+            }) {
+                roles.insert("baseColor", index);
+            }
+        }
+    }
+    let role_of = |index: usize| roles.iter().find(|(_, role_index)| **role_index == index).map(|(role, _)| *role);
 
-        let Some(relative_texture_path) = relative_texture_path else {
+    // 3. Textures that the preview surface can use.
+    let mut textures = Vec::new();
+    let mut missing_textures = Vec::new();
+    let mut oversized_textures = Vec::new();
+    for role in ["baseMap", "normalMap", "emissionMap", "metallicMap", "maskMap", "occlusionMap"] {
+        let Some(property) = roles.get(role).map(|index| &declared[*index]) else {
             continue;
         };
-
-        let extension = Path::new(&relative_texture_path)
+        let Some(guid) = assigned_guid(&property.name) else {
+            continue;
+        };
+        let Some(texture_path) = asset_paths.get(&guid) else {
+            missing_textures.push(property.name.clone());
+            continue;
+        };
+        let extension = Path::new(texture_path)
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-
         if !is_previewable_image_extension(&extension) {
             continue;
         }
-
-        let Some(bytes) = read_material_texture_bytes(repo_root, source_kind, &relative_texture_path).await? else {
+        let Some(bytes) = read_material_texture_bytes(repo_root, source_kind, texture_path).await? else {
+            missing_textures.push(property.name.clone());
             continue;
         };
-
         if (bytes.len() as u64) > MAX_INLINE_IMAGE_BYTES {
+            oversized_textures.push(property.name.clone());
             continue;
         }
 
         textures.push(UnityMaterialTexturePreview {
-            key: slot.property_name.clone(),
-            property_name: slot.property_name.clone(),
-            label: slot.property_name.clone(),
-            relative_path: relative_texture_path,
+            key: property.name.clone(),
+            property_name: property.name.clone(),
+            label: property.display_name.clone(),
+            relative_path: texture_path.clone(),
             mime_type: infer_mime_type(&extension).to_string(),
             encoded_bytes_base64: BASE64.encode(bytes),
             is_psd: extension == "psd",
+            format: extension,
         });
     }
+    let texture_key = |role: &str| {
+        roles
+            .get(role)
+            .map(|index| declared[*index].name.clone())
+            .filter(|name| textures.iter().any(|texture| &texture.key == name))
+    };
 
-    Ok(textures)
+    // 4. Values: what the material saved, else the shader's declared default.
+    let float_of = |role: &str| {
+        roles.get(role).and_then(|index| {
+            let property = &declared[*index];
+            material
+                .float_values
+                .get(&property.name)
+                .copied()
+                .or_else(|| property.default_value.trim().parse::<f32>().ok())
+        })
+    };
+    let color_of = |role: &str| {
+        roles.get(role).and_then(|index| {
+            let property = &declared[*index];
+            material
+                .color_values
+                .get(&property.name)
+                .cloned()
+                .or_else(|| parse_unity_default_vector(&property.default_value))
+        })
+    };
+
+    let properties = declared
+        .iter()
+        .enumerate()
+        .map(|(index, property)| {
+            let hdr = property.has_attribute("hdr");
+            let (kind, value, color, is_default) = match property.kind {
+                ShaderPropertyKind::Texture => {
+                    let guid = assigned_guid(&property.name);
+                    let value = match guid.as_ref() {
+                        Some(guid) => asset_paths.get(guid).cloned().unwrap_or_else(|| format!("missing (guid {guid})")),
+                        None if property.default_value.is_empty() => "None".to_string(),
+                        None => format!("None ({})", property.default_value),
+                    };
+                    ("texture", value, None, guid.is_none())
+                }
+                ShaderPropertyKind::Color | ShaderPropertyKind::Vector => {
+                    let saved = material.color_values.get(&property.name).cloned();
+                    let resolved = saved.clone().or_else(|| parse_unity_default_vector(&property.default_value));
+                    let is_color = property.kind == ShaderPropertyKind::Color;
+                    let value = match resolved.as_ref() {
+                        Some(color) if is_color => format_unity_color(color, hdr),
+                        Some(vector) => format!(
+                            "({}, {}, {}, {})",
+                            format_unity_number(vector.r),
+                            format_unity_number(vector.g),
+                            format_unity_number(vector.b),
+                            format_unity_number(vector.a)
+                        ),
+                        None => "unset".to_string(),
+                    };
+                    (
+                        if is_color { "color" } else { "vector" },
+                        value,
+                        resolved.filter(|_| is_color),
+                        saved.is_none(),
+                    )
+                }
+                _ => {
+                    let saved = material.float_values.get(&property.name).copied();
+                    let resolved = saved.or_else(|| property.default_value.trim().parse::<f32>().ok());
+                    (
+                        "number",
+                        resolved.map(format_unity_number).unwrap_or_else(|| "unset".to_string()),
+                        None,
+                        saved.is_none(),
+                    )
+                }
+            };
+
+            UnityMaterialProperty {
+                name: property.name.clone(),
+                display_name: property.display_name.clone(),
+                kind: kind.to_string(),
+                value,
+                color,
+                role: role_of(index).map(ToString::to_string),
+                is_default,
+                hidden: property.has_attribute("hideininspector"),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // 5. Surface settings.
+    let shader_family = match (shader.as_ref(), well_known) {
+        (Some(shader), _) => if shader.lit { "lit" } else { "unlit" }.to_string(),
+        (None, Some((_, lit))) => if lit { "lit" } else { "unlit" }.to_string(),
+        (None, None) => infer_unity_shader_family(material, &textures),
+    };
+    let blend_mode = infer_unity_blend_mode(material, shader.as_ref());
+    let cull = shader.as_ref().and_then(|shader| shader.cull.clone()).unwrap_or_else(|| "[_Cull]".to_string());
+    let double_sided = match cull.strip_prefix('[').and_then(|inner| inner.strip_suffix(']')) {
+        Some(property) => material.float_values.get(property).is_some_and(|value| *value == 0.0),
+        None => cull.eq_ignore_ascii_case("off"),
+    } || material.float_values.get("_DoubleSidedEnable").is_some_and(|value| *value >= 1.0);
+
+    let emission_color = color_of("emissionColor");
+    let emission_keyword_gated = shader
+        .as_ref()
+        .map(|shader| shader.emission_keyword)
+        .unwrap_or_else(|| well_known.is_some_and(|(name, lit)| lit && !name.starts_with("HDRP")));
+    let emission_enabled = if emission_keyword_gated {
+        material.keywords.iter().any(|keyword| keyword == "_EMISSION")
+    } else {
+        emission_color.as_ref().is_some_and(unity_color_has_visible_energy)
+    };
+
+    let base_slot = roles.get("baseMap").and_then(|index| slot_of(&declared[*index].name));
+    let smoothness = float_of("smoothness").or_else(|| float_of("roughness").map(|roughness| 1.0 - roughness));
+    let (metallic_texture_key, metallic_texture_layout) = match (texture_key("maskMap"), texture_key("metallicMap")) {
+        (Some(mask), _) => (Some(mask), Some("mask".to_string())),
+        (None, Some(metallic)) => (Some(metallic), Some("metallic".to_string())),
+        (None, None) => (None, None),
+    };
+
+    // 6. Tell the user what the preview could not honour.
+    let stock = shader_name.as_deref().is_some_and(is_stock_unity_shader);
+    if let Some(shader) = shader.as_ref().filter(|_| !stock) {
+        notes.extend(shader.skipped.iter().cloned());
+    }
+    if shader.is_none() && well_known.is_none() {
+        notes.push(match material.shader_guid.as_deref() {
+            Some(guid) => format!(
+                "The shader file (guid {guid}) is not in this repository, so properties are read from the material alone and may include leftovers from other shaders."
+            ),
+            None => "This material does not reference a shader file; properties are read from the material alone.".to_string(),
+        });
+    }
+    if shader_declares {
+        let declared_names = declared.iter().map(|property| property.name.as_str()).collect::<std::collections::HashSet<_>>();
+        let stale = material
+            .texture_slots
+            .iter()
+            .filter(|slot| slot.guid.is_some())
+            .map(|slot| slot.property_name.as_str())
+            .chain(material.color_values.keys().map(String::as_str))
+            .chain(material.float_values.keys().map(String::as_str))
+            .filter(|name| !declared_names.contains(name))
+            .count();
+        if stale > 0 {
+            notes.push(format!(
+                "{stale} saved value(s) belong to a previously assigned shader and are ignored."
+            ));
+        }
+    }
+    if !missing_textures.is_empty() {
+        notes.push(format!("Texture file not found in this repository for: {}.", missing_textures.join(", ")));
+    }
+    if !oversized_textures.is_empty() {
+        notes.push(format!("Texture too large to preview inline for: {}.", oversized_textures.join(", ")));
+    }
+
+    let shape_hint = match shader_name.as_deref() {
+        Some(name) if name.starts_with("Sprites/") || name.starts_with("UI/") || name.contains("Sprite") || name.contains("Particle") => "plane",
+        _ => "sphere",
+    };
+
+    Ok(UnityMaterialPreviewSource {
+        key: key.to_string(),
+        label: label.to_string(),
+        source_kind: key.to_string(),
+        material_name: material.material_name.clone(),
+        shader_label: shader_name.clone().unwrap_or_else(|| "Unknown shader".to_string()),
+        shader_path,
+        shader_source: shader_source.to_string(),
+        render_pipeline: shader.as_ref().and_then(|shader| shader.render_pipeline.clone()),
+        shader_family,
+        surface_kind: blend_mode.to_string(),
+        double_sided,
+        base_color: color_of("baseColor"),
+        emission_color,
+        emission_enabled,
+        metallic: float_of("metallic"),
+        smoothness,
+        normal_scale: float_of("normalScale"),
+        occlusion_strength: float_of("occlusionStrength"),
+        cutoff: (blend_mode == "cutout").then(|| float_of("cutoff").unwrap_or(0.5)),
+        base_tiling: base_slot.map(|slot| [slot.scale.0, slot.scale.1, slot.offset.0, slot.offset.1]),
+        render_queue: material.custom_render_queue,
+        keywords: material.keywords.clone(),
+        preview_shape_hint: shape_hint.to_string(),
+        notes,
+        base_texture_key: texture_key("baseMap"),
+        normal_texture_key: texture_key("normalMap"),
+        emission_texture_key: texture_key("emissionMap"),
+        occlusion_texture_key: texture_key("occlusionMap"),
+        metallic_texture_key,
+        metallic_texture_layout,
+        textures,
+        properties,
+    })
 }
 
 async fn read_material_texture_bytes(
     repo_root: &Path,
     source_kind: PreviewBlobSource,
-    relative_texture_path: &str,
+    relative_asset_path: &str,
 ) -> GitResult<Option<Vec<u8>>> {
-    match source_kind {
-        PreviewBlobSource::WorkingTree => {
-            let resolved = resolve_repo_file(repo_root, relative_texture_path)?;
-            Ok(Some(fs::read(resolved).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?))
-        }
-        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_texture_path}"), relative_texture_path).await,
-        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_texture_path}"), relative_texture_path).await,
-    }
+    let from_disk = || match resolve_repo_file(repo_root, relative_asset_path) {
+        Ok(resolved) => fs::read(resolved).ok(),
+        Err(_) => None,
+    };
+    let from_git = match source_kind {
+        PreviewBlobSource::WorkingTree => return Ok(from_disk()),
+        PreviewBlobSource::Staged => git_show_optional_bytes(repo_root, format!(":{relative_asset_path}"), relative_asset_path).await?,
+        PreviewBlobSource::Head => git_show_optional_bytes(repo_root, format!("HEAD:{relative_asset_path}"), relative_asset_path).await?,
+    };
+
+    // Package shaders and textures live in Unity's ignored cache and only exist on disk.
+    Ok(from_git.or_else(from_disk))
 }
 
-fn find_repo_asset_path_by_guid(repo_root: &Path, guid: &str) -> GitResult<Option<String>> {
-    fn walk(dir: &Path, repo_root: &Path, guid: &str) -> GitResult<Option<String>> {
-        for entry in fs::read_dir(dir).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))? {
-            let entry = entry.map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+#[derive(Default)]
+struct UnityGuidIndex {
+    paths: HashMap<String, String>,
+    walked_at: Option<Instant>,
+}
+
+static UNITY_GUID_INDEX: OnceLock<Mutex<HashMap<PathBuf, UnityGuidIndex>>> = OnceLock::new();
+
+/// Resolves Unity asset GUIDs to repo-relative paths through the `.meta` files.
+fn lookup_unity_asset_paths(repo_root: &Path, guids: &[String]) -> HashMap<String, String> {
+    let mut indexes = UNITY_GUID_INDEX
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = indexes.entry(repo_root.to_path_buf()).or_default();
+    let still_exists = |relative: &String| repo_root.join(format!("{relative}.meta")).is_file();
+    let has_miss = guids.iter().any(|guid| !index.paths.get(guid).is_some_and(still_exists));
+
+    // ponytail: a miss re-walks every .meta, at most once per 10s per repo. Move to a file
+    // watcher if projects grow large enough for that walk to be felt.
+    if has_miss && index.walked_at.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
+        index.paths = walk_unity_meta_files(repo_root);
+        index.walked_at = Some(Instant::now());
+    }
+
+    guids
+        .iter()
+        .filter_map(|guid| {
+            index
+                .paths
+                .get(guid)
+                .filter(|relative| still_exists(relative))
+                .map(|relative| (guid.clone(), relative.clone()))
+        })
+        .collect()
+}
+
+fn walk_unity_meta_files(repo_root: &Path) -> HashMap<String, String> {
+    let mut paths = HashMap::new();
+    let mut pending = vec![repo_root.to_path_buf()];
+    let mut package_caches = Vec::new();
+
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let is_unity_project_root = directory.join("Assets").is_dir();
+
+        for entry in entries.flatten() {
             let path = entry.path();
-            let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+            let name = entry.file_name().to_string_lossy().to_string();
 
-            if path.is_dir() {
-                if matches!(file_name, ".git" | "node_modules" | "target" | "dist") {
-                    continue;
+            if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                match name.as_str() {
+                    ".git" | "node_modules" | "target" | "dist" => {}
+                    "Temp" | "Logs" | "obj" | "UserSettings" if is_unity_project_root => {}
+                    // Library is Unity's cache; only its package sources carry stock shaders.
+                    "Library" if is_unity_project_root => package_caches.push(path.join("PackageCache")),
+                    _ => pending.push(path),
                 }
-
-                if let Some(found) = walk(&path, repo_root, guid)? {
-                    return Ok(Some(found));
-                }
                 continue;
             }
 
-            if path.extension().and_then(|value| value.to_str()) != Some("meta") {
+            if !name.ends_with(".meta") {
                 continue;
             }
 
-            let contents = fs::read_to_string(&path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
-            if !contents.contains(&format!("guid: {guid}")) {
+            let Some(guid) = read_unity_meta_guid(&path) else {
                 continue;
-            }
-
-            let relative_meta_path = path
-                .strip_prefix(repo_root)
-                .map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            return Ok(Some(relative_meta_path.trim_end_matches(".meta").to_string()));
+            };
+            let Ok(relative) = path.strip_prefix(repo_root) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            // Project assets are walked before package caches and win on duplicates.
+            paths
+                .entry(guid)
+                .or_insert_with(|| relative.trim_end_matches(".meta").to_string());
         }
 
-        Ok(None)
+        if pending.is_empty() {
+            pending.extend(package_caches.drain(..).filter(|cache| cache.is_dir()));
+        }
     }
 
-    walk(repo_root, repo_root, guid)
+    paths
 }
 
+fn read_unity_meta_guid(meta_path: &Path) -> Option<String> {
+    // The guid sits on the second line; reading the head keeps a 50k-asset walk cheap.
+    let mut buffer = [0u8; 256];
+    let read = fs::File::open(meta_path).ok()?.read(&mut buffer).ok()?;
+    String::from_utf8_lossy(&buffer[..read])
+        .lines()
+        .find_map(|line| line.strip_prefix("guid:"))
+        .map(|guid| guid.trim().to_string())
+}
+
+/// Heuristic used only when neither the shader source nor a known built-in id is available.
 fn infer_unity_shader_family(material: &ParsedUnityMaterial, textures: &[UnityMaterialTexturePreview]) -> String {
     let has_base_map = has_unity_texture_slot(material, &["_BaseMap", "_MainTex", "_BaseColorMap"])
         || textures.iter().any(|texture| matches!(texture.property_name.as_str(), "_BaseMap" | "_MainTex" | "_BaseColorMap"));
@@ -6054,65 +7532,41 @@ fn unity_color_has_visible_energy(color: &UnityColorValue) -> bool {
     color.r > 0.0001 || color.g > 0.0001 || color.b > 0.0001
 }
 
-fn infer_unity_shader_label(material: &ParsedUnityMaterial, shader_family: &str) -> String {
-    match shader_family {
-        "lit" => "Unity Lit-compatible".to_string(),
-        "unlit" => "Unity Unlit-compatible".to_string(),
-        _ => match (&material.shader_guid, &material.shader_file_id) {
-            (Some(guid), Some(file_id)) => format!("Custom shader {file_id}:{guid}"),
-            _ => "Custom shader".to_string(),
-        },
-    }
-}
-
-fn infer_unity_surface_kind(material: &ParsedUnityMaterial, shader_family: &str) -> String {
-    if material.float_values.get("_Surface").copied().unwrap_or(0.0) >= 1.0 || material.float_values.get("_AlphaClip").copied().unwrap_or(0.0) >= 1.0 {
-        return "transparent".to_string();
-    }
-
-    if shader_family == "unlit" {
-        return "unlit".to_string();
-    }
-
-    "opaque".to_string()
-}
-
-fn pick_unity_color(material: &ParsedUnityMaterial, keys: &[&str]) -> Option<UnityColorValue> {
-    keys.iter().find_map(|key| material.color_values.get(*key).cloned())
-}
-
-fn pick_unity_float(material: &ParsedUnityMaterial, keys: &[&str]) -> Option<f32> {
-    keys.iter().find_map(|key| material.float_values.get(*key).copied())
-}
-
-fn select_material_texture_key(textures: &[UnityMaterialTexturePreview], preferred_keys: &[&str]) -> Option<String> {
-    for key in preferred_keys {
-        if let Some(texture) = textures.iter().find(|texture| texture.property_name == *key) {
-            return Some(texture.key.clone());
-        }
-    }
-
-    textures.first().map(|texture| texture.key.clone())
-}
-
 fn build_unity_material_asset_summary(source: &UnityMaterialPreviewSource) -> AssetSummary {
+    let detail = |label: &str, value: String| AssetDetail {
+        label: label.to_string(),
+        value,
+    };
+    let mut details = vec![
+        detail("Material", source.material_name.clone()),
+        detail("Shader", source.shader_label.clone()),
+        detail(
+            "Shader source",
+            match source.shader_path.as_ref() {
+                Some(path) => format!("{} ({path})", source.shader_source),
+                None => source.shader_source.clone(),
+            },
+        ),
+        detail("Lighting", source.shader_family.clone()),
+        detail("Blending", source.surface_kind.clone()),
+        detail("Culling", if source.double_sided { "Two sided" } else { "Back faces" }.to_string()),
+        detail("Textures in preview", source.textures.len().to_string()),
+    ];
+
+    if let Some(pipeline) = source.render_pipeline.as_ref() {
+        details.push(detail("Render pipeline", pipeline.clone()));
+    }
+    if let Some(queue) = source.render_queue {
+        details.push(detail("Render queue", queue.to_string()));
+    }
+    if !source.keywords.is_empty() {
+        details.push(detail("Keywords", source.keywords.join(" ")));
+    }
+
     AssetSummary {
         asset_kind: "Unity material".to_string(),
-        pipeline_state: source.shader_label.clone(),
-        details: vec![
-            AssetDetail {
-                label: "Material".to_string(),
-                value: source.material_name.clone(),
-            },
-            AssetDetail {
-                label: "Surface".to_string(),
-                value: source.surface_kind.clone(),
-            },
-            AssetDetail {
-                label: "Textures".to_string(),
-                value: source.textures.len().to_string(),
-            },
-        ],
+        pipeline_state: source.shader_source.clone(),
+        details,
     }
 }
 
@@ -6171,13 +7625,13 @@ fn is_missing_git_object_error(message: &str) -> bool {
         || normalized.contains("fatal: pathspec")
 }
 
-fn looks_like_text(path: &Path) -> GitResult<bool> {
-    let bytes = fs::read(path).map_err(|error| GitServiceError::FilePreviewFailed(error.to_string()))?;
+fn looks_like_text(bytes: &[u8]) -> bool {
     let sample = &bytes[..bytes.len().min(4_096)];
 
-    if sample.contains(&0) {
-        return Ok(false);
-    }
-
-    Ok(std::str::from_utf8(sample).is_ok())
+    // A multi-byte character cut off at the sample boundary is still text.
+    !sample.contains(&0)
+        && match std::str::from_utf8(sample) {
+            Ok(_) => true,
+            Err(error) => error.error_len().is_none(),
+        }
 }

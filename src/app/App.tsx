@@ -27,7 +27,7 @@ import { ConflictResolutionDialog } from "./components/ConflictResolutionDialog"
 import { DetachHeadDialog } from "./components/DetachHeadDialog";
 import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
-import { MergeDiscardDialog } from "./components/MergeDiscardDialog";
+import { MergeDialog } from "./components/MergeDialog";
 import { StashDialog } from "./components/StashDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
@@ -94,7 +94,13 @@ import {
   logClientEvent,
   listStashes,
   mergeBranch,
-  MergeBranchResult,
+  previewMerge,
+  abortOperation,
+  continueOperation,
+  ConflictStrategy,
+  MergeConflictPreference,
+  MergeLocalChanges,
+  MergePreview,
   pullRepository,
   pullBranch,
   pushRepository,
@@ -131,9 +137,12 @@ type BranchDeleteDialogState = {
   remoteLabel: string | null;
 };
 
-type MergeDiscardDialogState = {
+type MergeDialogState = {
   branchFullName: string;
   branchLabel: string;
+  preview: MergePreview | null;
+  loading: boolean;
+  error: string | null;
 };
 
 type DetachHeadDialogState = {
@@ -150,14 +159,6 @@ type CherryPickDialogState = {
   subject: string;
   parentHashes: string[];
   mainlineParent: number;
-};
-
-type MergeConflictState = {
-  title: string;
-  branchFullName: string;
-  branchLabel: string;
-  description: string;
-  conflictedFiles: string[];
 };
 
 type PullOverwriteState = {
@@ -287,9 +288,9 @@ export function App() {
   const [cherryPickDialog, setCherryPickDialog] = useState<CherryPickDialogState | null>(null);
   const [branchDeleteDialog, setBranchDeleteDialog] = useState<BranchDeleteDialogState | null>(null);
   const [branchPruneDialog, setBranchPruneDialog] = useState<BranchPruneDialogValue | null>(null);
-  const [mergeDiscardDialog, setMergeDiscardDialog] = useState<MergeDiscardDialogState | null>(null);
-  const [mergeConflictState, setMergeConflictState] = useState<MergeConflictState | null>(null);
+  const [mergeDialog, setMergeDialog] = useState<MergeDialogState | null>(null);
   const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
+  const hadConflictsRef = useRef(false);
   const [commitGraph, setCommitGraph] = useState<CommitGraphRow[]>([]);
   const [graphScope, setGraphScope] = useState<CommitGraphScope>(initialUiSettings.graphScope);
   const [graphOrder, setGraphOrder] = useState<CommitGraphOrder>(initialUiSettings.graphOrder);
@@ -549,33 +550,25 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if ((snapshot?.counts.conflicted ?? 0) === 0) {
-      setMergeConflictState(null);
-      return;
-    }
-
-    if (!mergeConflictState) {
-      return;
-    }
-
-    const conflictedFiles = snapshot?.files.filter((file) => file.conflicted).map((file) => file.path) ?? [];
-
-    if (conflictedFiles.length === 0) {
-      setMergeConflictState(null);
-      return;
-    }
-
-    setMergeConflictState((current) => current ? { ...current, conflictedFiles } : current);
-  }, [mergeConflictState, snapshot]);
+  // Merge state comes from git itself (snapshot.operation + unmerged files), so a merge that
+  // was interrupted by closing the app is still offered for completion or abort afterwards.
+  const conflictedFiles = useMemo(() => snapshot?.files.filter((file) => file.conflicted) ?? [], [snapshot?.files]);
+  const repositoryOperation = snapshot?.operation ?? null;
+  const operationPending = Boolean(repositoryOperation) || conflictedFiles.length > 0;
 
   useEffect(() => {
-    if (mergeConflictState) {
+    const hasConflicts = conflictedFiles.length > 0;
+
+    if (hasConflicts && !hadConflictsRef.current) {
       setConflictDialogOpen(true);
-    } else {
+    }
+
+    if (!operationPending) {
       setConflictDialogOpen(false);
     }
-  }, [mergeConflictState]);
+
+    hadConflictsRef.current = hasConflicts;
+  }, [conflictedFiles.length, operationPending]);
 
   useEffect(() => {
     persistAiSettings(aiSettings);
@@ -876,7 +869,6 @@ export function App() {
           result,
           error.repoPath,
         );
-        setMergeConflictState(null);
         setError(null);
         await refreshRepository({ fetchRemote: true });
       }
@@ -2297,23 +2289,23 @@ export function App() {
   }, [gitActivityRequestedVisible]);
 
   const renderDiffStack = (expanded: boolean) => !previewLoading && !previewError && hasDiffContent(preview) ? (
-    <div className={clsx("diff-stack", !expanded && "diff-stack--inline")}>
+    <div className="diff-stack">
       <div className="preview-panel__header">
         <strong>Exact changes</strong>
-        <span className="preview-panel__meta">Git diff</span>
+        {!expanded ? (
+          <button
+            className="ghost-button"
+            onClick={() => setDiffDialogOpen(true)}
+            aria-label="Open full diff viewer"
+            title="Open full diff viewer"
+          >
+            <Expand size={14} />
+            Open diff
+          </button>
+        ) : (
+          <span className="preview-panel__meta">Git diff</span>
+        )}
       </div>
-
-      {!expanded ? (
-        <button
-          className="ghost-button diff-stack__open-button"
-          onClick={() => setDiffDialogOpen(true)}
-          aria-label="Open full diff viewer"
-          title="Open full diff viewer"
-        >
-          <Expand size={14} />
-          Open diff
-        </button>
-      ) : null}
 
       {preview?.unstagedDiff ? (
         <div className="diff-card">
@@ -2379,57 +2371,57 @@ export function App() {
         </div>
       ) : null}
 
-      {!previewLoading && !previewError && preview?.assetSummary ? (
+      {!previewLoading && !previewError && preview && (preview.missingFromDisk || ["image", "material", "model"].includes(preview.previewKind)) ? (
+        <p className={clsx("preview-note", preview.missingFromDisk && "preview-note--warning")}>{preview.supportHint}</p>
+      ) : null}
+
+      {!previewLoading && !previewError
+        ? [preview?.assetSummary, preview?.importSettings].map((summary) => summary && summary.details.length > 0 ? (
+            <div key={summary.assetKind} className="asset-summary">
+              <div className="preview-panel__header">
+                <strong>{summary.assetKind}</strong>
+                <span className="preview-panel__meta">{summary.pipelineState}</span>
+              </div>
+              <dl className="preview-details">
+                {summary.details.map((detail) => (
+                  <div key={`${detail.label}-${detail.value}`}>
+                    <dt>{detail.label}</dt>
+                    <dd title={detail.value}>{detail.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : null)
+        : null}
+
+      {preview ? (
         <div className="asset-summary">
           <div className="preview-panel__header">
-            <strong>{preview.assetSummary.assetKind}</strong>
-            <span className="preview-panel__meta">{preview.assetSummary.pipelineState}</span>
+            <strong>File</strong>
+            <span className="preview-panel__meta">{preview.extension ? `.${preview.extension}` : "no extension"}</span>
           </div>
           <dl className="preview-details">
-            {preview.assetSummary.details.map((detail) => (
-              <div key={`${detail.label}-${detail.value}`}>
-                <dt>{detail.label}</dt>
-                <dd>{detail.value}</dd>
-              </div>
-            ))}
+            <div>
+              <dt>Size</dt>
+              <dd>{formatFileSize(preview.fileSizeBytes)}</dd>
+            </div>
+            <div>
+              <dt>Stored in</dt>
+              <dd>{preview.lfsTracked ? "Git LFS" : "Git"}</dd>
+            </div>
+            <div>
+              <dt>Type</dt>
+              <dd>{preview.mimeType}</dd>
+            </div>
+            <div>
+              <dt>Modified</dt>
+              <dd>{preview.missingFromDisk ? "Deleted" : formatUnixTimestamp(preview.modifiedAt)}</dd>
+            </div>
           </dl>
         </div>
       ) : null}
-
-      {preview ? (
-        <dl className="preview-details">
-          <div>
-            <dt>Type</dt>
-            <dd>{preview.mimeType}</dd>
-          </div>
-          <div>
-            <dt>Extension</dt>
-            <dd>{preview.extension || "none"}</dd>
-          </div>
-          <div>
-            <dt>Modified</dt>
-            <dd>{formatUnixTimestamp(preview.modifiedAt)}</dd>
-          </div>
-        </dl>
-      ) : null}
     </>
   );
-
-  const applyMergeBranchResult = useCallback(async (branchFullName: string, branchLabel: string, result: MergeBranchResult) => {
-    setStatusMessage(result.message, "Merge completed");
-
-    if (result.status === "conflicts") {
-      setMergeConflictState({
-        title: "Merge conflict",
-        branchFullName,
-        branchLabel,
-        description: "Choose conflicted files, then keep the current branch version or the incoming branch version.",
-        conflictedFiles: result.conflictedFiles,
-      });
-    }
-
-    await refreshRepository({ fetchRemote: true });
-  }, [refreshRepository]);
 
   const runCherryPickCommit = useCallback(async (commitHash: string, shortHash: string, subject: string, mainlineParent?: number) => {
     if (!selectedRepository) {
@@ -2446,19 +2438,7 @@ export function App() {
         [commitHash, subject, mainlineParent ? `mainlineParent=${mainlineParent}` : null].filter(Boolean).join("\n"),
       );
       const result = await cherryPickCommit(selectedRepository, commitHash, mainlineParent);
-      setStatusMessage(result.message, "Cherry-pick completed");
-
-      if (result.status === "conflicts") {
-        setMergeConflictState({
-          title: "Cherry-pick conflict",
-          branchFullName: commitHash,
-          branchLabel: mainlineParent ? `${shortHash} via parent ${mainlineParent}` : shortHash,
-          description: "Choose conflicted files, then keep the current branch version or the picked commit version.",
-          conflictedFiles: result.conflictedFiles,
-        });
-      } else {
-        setMergeConflictState(null);
-      }
+      setStatusMessage(result.message, result.status === "conflicts" ? "Cherry-pick needs your input" : "Cherry-pick completed");
 
       await refreshRepository();
       return true;
@@ -2524,7 +2504,6 @@ export function App() {
       writeClientLog("git.branch.switch", `Switching branch ${fullName}.`);
       const result = await switchBranch(selectedRepository, fullName);
       setStatusMessage(result);
-      setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       const message = getReasonMessage(reason, "Branch switch failed.");
@@ -2583,7 +2562,6 @@ export function App() {
       writeClientLog("git.branch.force-switch", `Force switching branch ${fullName}.`);
       const result = await forceSwitchBranch(selectedRepository, fullName);
       setStatusMessage(result);
-      setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       const message = getReasonMessage(reason, "Force switch failed.");
@@ -2652,7 +2630,6 @@ export function App() {
       setBranchCreateOpen(false);
       setBranchCreateName("");
       setBranchCreateDiscardChanges(false);
-      setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       reportAppError({
@@ -2754,7 +2731,6 @@ export function App() {
 
       setStatusMessage(result, shouldCreateBranch ? "Branch created from commit" : "Detached HEAD");
       setDetachHeadDialog(null);
-      setMergeConflictState(null);
       await refreshRepository({ fetchRemote: true });
     } catch (reason) {
       reportAppError({
@@ -2949,44 +2925,90 @@ export function App() {
     }
   }, [branchPruneDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
 
-  const runMergeBranch = useCallback(async (fullName: string, discardLocalChanges = false) => {
+  // Opens the merge dialog with a dry run, so the user sees incoming commits, predicted
+  // conflicts and what happens to uncommitted work before anything is touched.
+  const runMergeBranch = useCallback(async (fullName: string) => {
     if (!selectedRepository) {
       return;
     }
 
     const branchLabel = resolveBranchNameFromRef(fullName);
+    setMergeDialog({ branchFullName: fullName, branchLabel, preview: null, loading: true, error: null });
+
+    try {
+      const preview = await previewMerge(selectedRepository, fullName);
+      setMergeDialog((current) => current?.branchFullName === fullName ? { ...current, preview, loading: false } : current);
+    } catch (reason) {
+      const message = getReasonMessage(reason, "Could not inspect this merge.");
+      setMergeDialog((current) => current?.branchFullName === fullName ? { ...current, loading: false, error: message } : current);
+    }
+  }, [selectedRepository]);
+
+  const executeMerge = useCallback(async (localChanges: MergeLocalChanges, conflictPreference: MergeConflictPreference) => {
+    if (!selectedRepository || !mergeDialog) {
+      return;
+    }
+
+    const { branchFullName } = mergeDialog;
+    setSubmitting(true);
+    setError(null);
+
+    try {
+      writeClientLog("git.branch.merge", `Merging branch ${branchFullName}.`, `localChanges=${localChanges} conflictPreference=${conflictPreference}`);
+      const result = await mergeBranch(selectedRepository, branchFullName, localChanges, conflictPreference);
+      setMergeDialog(null);
+      setStatusMessage(result.message, result.status === "conflicts" ? "Merge needs your input" : "Merge completed");
+      await refreshRepository({ fetchRemote: true });
+    } catch (reason) {
+      setMergeDialog(null);
+      reportAppError({
+        scope: "git.branch.merge.error",
+        title: "Merge failed",
+        fallback: "Merge failed.",
+        reason,
+        context: `Merge branch ${branchFullName}.`,
+      });
+      await refreshRepository();
+    } finally {
+      setSubmitting(false);
+    }
+  }, [mergeDialog, refreshRepository, reportAppError, selectedRepository, writeClientLog]);
+
+  const runFinishOperation = useCallback(async (action: "continue" | "abort") => {
+    if (!selectedRepository) {
+      return;
+    }
+
+    const noun = repositoryOperation?.kind ?? "merge";
+    if (action === "abort" && !window.confirm(`Abort the ${noun}? The branch goes back to how it was before, and the choices made so far are dropped.`)) {
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
 
     try {
-      writeClientLog("git.branch.merge", `Merging branch ${fullName}.`, discardLocalChanges ? "discard local changes" : undefined);
-      const result = await mergeBranch(selectedRepository, fullName, discardLocalChanges);
-      setMergeDiscardDialog(null);
-      await applyMergeBranchResult(fullName, branchLabel, result);
+      writeClientLog(`git.operation.${action}`, `${action} ${noun}.`, selectedRepository);
+      const result = action === "continue"
+        ? await continueOperation(selectedRepository)
+        : await abortOperation(selectedRepository);
+      setStatusMessage(result, action === "continue" ? `${noun} completed` : `${noun} aborted`);
+      await refreshRepository({ fetchRemote: true });
     } catch (reason) {
-      const message = getReasonMessage(reason, "Merge failed.");
-
-      if (!discardLocalChanges && isMergeOverwriteError(message)) {
-        setMergeDiscardDialog({
-          branchFullName: fullName,
-          branchLabel,
-        });
-      } else {
-        reportAppError({
-          scope: "git.branch.merge.error",
-          title: "Merge failed",
-          fallback: "Merge failed.",
-          reason,
-          context: `Merge branch ${fullName}.`,
-        });
-      }
+      reportAppError({
+        scope: `git.operation.${action}.error`,
+        title: action === "continue" ? `Could not complete the ${noun}` : `Could not abort the ${noun}`,
+        fallback: "Git operation failed.",
+        reason,
+        context: `${action} ${noun} in ${selectedRepository}.`,
+      });
+      await refreshRepository();
     } finally {
       setSubmitting(false);
     }
-  }, [applyMergeBranchResult, reportAppError, selectedRepository, writeClientLog]);
+  }, [refreshRepository, reportAppError, repositoryOperation?.kind, selectedRepository, writeClientLog]);
 
-  const runResolveConflicts = useCallback(async (paths: string[], strategy: "ours" | "theirs") => {
+  const runResolveConflicts = useCallback(async (paths: string[], strategy: ConflictStrategy) => {
     if (!selectedRepository || paths.length === 0) {
       return;
     }
@@ -3525,7 +3547,7 @@ export function App() {
                   setBranchCreateDiscardChanges(false);
                   setBranchCreateOpen(true);
                 }}
-                hasMergeConflict={Boolean(mergeConflictState)}
+                hasMergeConflict={operationPending}
                 disabled={submitting}
               />
 
@@ -3765,7 +3787,7 @@ export function App() {
             ref={inspectorRef}
             className={clsx(
               "panel inspector inspector--long",
-              mergeConflictState && "inspector--conflicted",
+              operationPending && "inspector--conflicted",
               isInspectorFullscreen && "inspector--fullscreen",
             )}
           >
@@ -3781,14 +3803,33 @@ export function App() {
                 {isInspectorFullscreen ? "Window" : "Fullscreen"}
               </button>
             </div>
-            {mergeConflictState ? (
+            {operationPending ? (
               <div className="selection-conflict-banner">
-                <span className="pill pill--mixed">{mergeConflictState.title}</span>
-                <strong>{mergeConflictState.branchLabel}</strong>
-                <span className="muted">{mergeConflictState.conflictedFiles.length} conflicted file(s)</span>
-                <button className="ghost-button" disabled={submitting} onClick={() => setConflictDialogOpen(true)}>
-                  Resolve conflicts
-                </button>
+                <span className="pill pill--mixed">{repositoryOperation ? `${repositoryOperation.kind} in progress` : "Conflicts"}</span>
+                <strong className="title-truncate" title={repositoryOperation?.label}>
+                  {repositoryOperation?.label ?? "Unresolved files"}
+                </strong>
+                <span className="muted">
+                  {conflictedFiles.length > 0
+                    ? `${conflictedFiles.length} conflict${conflictedFiles.length === 1 ? "" : "s"} left`
+                    : "All conflicts resolved"}
+                </span>
+                <span className="selection-conflict-banner__actions">
+                  {conflictedFiles.length > 0 ? (
+                    <button className="primary-button" disabled={submitting} onClick={() => setConflictDialogOpen(true)}>
+                      Resolve conflicts
+                    </button>
+                  ) : repositoryOperation ? (
+                    <button className="primary-button" disabled={submitting} onClick={() => void runFinishOperation("continue")}>
+                      Complete {repositoryOperation.kind}
+                    </button>
+                  ) : null}
+                  {repositoryOperation ? (
+                    <button className="ghost-button ghost-button--danger" disabled={submitting} onClick={() => void runFinishOperation("abort")}>
+                      Abort
+                    </button>
+                  ) : null}
+                </span>
               </div>
             ) : null}
             {selectedChange ? (
@@ -3806,8 +3847,8 @@ export function App() {
                     <dd>{selectedChange.worktreeStatus || "clean"}</dd>
                   </div>
                   <div>
-                    <dt>Status</dt>
-                    <dd>{previewLoading ? "Loading" : preview?.supportHint ?? "Not loaded"}</dd>
+                    <dt>Size</dt>
+                    <dd>{selectedChange.fileSizeBytes != null ? formatFileSize(selectedChange.fileSizeBytes) : "Deleted"}</dd>
                   </div>
                 </dl>
 
@@ -3860,8 +3901,10 @@ export function App() {
                       {previewLoading ? <p className="muted">Loading preview...</p> : null}
                       {previewError ? <p className="muted">{previewError}</p> : null}
 
-                      {renderDiffStack(false)}
+                      {/* Text is best read as a diff first; visual assets lead with the picture. */}
+                      {preview?.previewKind === "text" ? renderDiffStack(false) : null}
                       {previewBodyContent}
+                      {preview?.previewKind !== "text" ? renderDiffStack(false) : null}
                     </div>
                   </div>
 
@@ -4274,24 +4317,31 @@ export function App() {
         />
       ) : null}
 
-      {mergeDiscardDialog ? (
-        <MergeDiscardDialog
-          branchLabel={mergeDiscardDialog.branchLabel}
+      {mergeDialog ? (
+        <MergeDialog
+          branchLabel={mergeDialog.branchLabel}
+          preview={mergeDialog.preview}
+          loading={mergeDialog.loading}
+          error={mergeDialog.error}
           disabled={submitting}
-          onClose={() => setMergeDiscardDialog(null)}
-          onConfirm={() => void runMergeBranch(mergeDiscardDialog.branchFullName, true)}
+          onClose={() => setMergeDialog(null)}
+          onMerge={(localChanges, conflictPreference) => void executeMerge(localChanges, conflictPreference)}
         />
       ) : null}
 
-      {mergeConflictState && conflictDialogOpen ? (
+      {operationPending && conflictDialogOpen ? (
         <ConflictResolutionDialog
-          title={mergeConflictState.title}
-          branchLabel={mergeConflictState.branchLabel}
-          description={mergeConflictState.description}
-          conflictedFiles={mergeConflictState.conflictedFiles}
+          operation={repositoryOperation}
+          conflictedFiles={conflictedFiles}
           disabled={submitting}
           onClose={() => setConflictDialogOpen(false)}
           onResolve={(paths, strategy) => void runResolveConflicts(paths, strategy)}
+          onInspect={(path) => {
+            setSelectedChangePath(path);
+            setConflictDialogOpen(false);
+          }}
+          onAbort={() => void runFinishOperation("abort")}
+          onContinue={() => void runFinishOperation("continue")}
         />
       ) : null}
     </div>

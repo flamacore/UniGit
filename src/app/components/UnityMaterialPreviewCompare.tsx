@@ -1,65 +1,78 @@
 import clsx from "clsx";
-import { readPsd } from "ag-psd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import type {
   FilePreview,
-  ImageComparisonPreset,
   UnityColorValue,
   UnityMaterialPreviewSource,
+  UnityMaterialProperty,
   UnityMaterialTexturePreview,
 } from "../../features/repositories/api";
+import { decodeBase64, decodeImageBytes, imageDataToCanvas } from "../utils/previewDecode";
+import { applyStudioLighting, clamp, disposeMaterial } from "../utils/threePreview";
 
 type ViewerMode = { kind: "single"; sourceKey: string } | { kind: "compare"; presetKey: string };
-type PreviewShape = "sphere" | "box" | "cylinder";
+type PreviewShape = "sphere" | "box" | "cylinder" | "plane";
 type OrbitState = { rotationX: number; rotationY: number; distance: number };
 
 const DEFAULT_ORBIT: OrbitState = { rotationX: 0.28, rotationY: -0.55, distance: 3.2 };
 const MIN_DISTANCE = 1.6;
 const MAX_DISTANCE = 7;
+const SHAPES: PreviewShape[] = ["sphere", "box", "cylinder", "plane"];
+const BLEND_LABELS: Record<string, string> = {
+  opaque: "Opaque",
+  cutout: "Alpha cutout",
+  alpha: "Alpha blended",
+  premultiply: "Premultiplied alpha",
+  additive: "Additive",
+  multiply: "Multiply",
+};
+const ROLE_LABELS: Record<string, string> = {
+  baseMap: "base map",
+  baseColor: "base color",
+  normalMap: "normal map",
+  emissionMap: "emission map",
+  emissionColor: "emission",
+  metallicMap: "metallic map",
+  maskMap: "mask map",
+  occlusionMap: "occlusion",
+  metallic: "metallic",
+  smoothness: "smoothness",
+  roughness: "roughness",
+  cutoff: "alpha cutoff",
+  normalScale: "normal strength",
+  occlusionStrength: "occlusion strength",
+};
 
 export function UnityMaterialPreviewCompare({ preview }: { preview: FilePreview }) {
   const sourceMap = useMemo(() => new Map(preview.unityMaterialSources.map((source) => [source.key, source])), [preview.unityMaterialSources]);
   const defaultSingleSourceKey = sourceMap.has("workingTree") ? "workingTree" : preview.unityMaterialSources[0]?.key ?? null;
   const [shape, setShape] = useState<PreviewShape>("sphere");
-  const [singleOrbit, setSingleOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
-  const [compareOrbit, setCompareOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
-  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(() => {
-    if (preview.defaultUnityMaterialComparisonPresetKey) {
-      return { kind: "compare", presetKey: preview.defaultUnityMaterialComparisonPresetKey };
-    }
-
-    return defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null;
-  });
+  const [orbit, setOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
+  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(null);
 
   useEffect(() => {
     if (preview.defaultUnityMaterialComparisonPresetKey) {
       setViewerMode({ kind: "compare", presetKey: preview.defaultUnityMaterialComparisonPresetKey });
-      return;
+    } else {
+      setViewerMode(defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null);
     }
 
-    if (defaultSingleSourceKey) {
-      setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey });
-      return;
-    }
+    const hint = preview.unityMaterialSources[0]?.previewShapeHint;
+    setShape(SHAPES.includes(hint as PreviewShape) ? (hint as PreviewShape) : "sphere");
+  }, [defaultSingleSourceKey, preview.defaultUnityMaterialComparisonPresetKey, preview.relativePath, preview.unityMaterialSources]);
 
-    setViewerMode(null);
-  }, [defaultSingleSourceKey, preview.defaultUnityMaterialComparisonPresetKey, preview.relativePath]);
+  useEffect(() => {
+    setOrbit(DEFAULT_ORBIT);
+  }, [viewerMode]);
 
   const activePreset = viewerMode?.kind === "compare"
     ? preview.unityMaterialComparisonPresets.find((preset) => preset.key === viewerMode.presetKey) ?? null
     : null;
-  const singleSource = viewerMode?.kind === "single"
-    ? sourceMap.get(viewerMode.sourceKey) ?? null
-    : null;
-
-  useEffect(() => {
-    setSingleOrbit(DEFAULT_ORBIT);
-  }, [singleSource?.key]);
-
-  useEffect(() => {
-    setCompareOrbit(DEFAULT_ORBIT);
-  }, [activePreset?.key]);
+  const beforeSource = activePreset ? sourceMap.get(activePreset.leftSourceKey) ?? null : null;
+  const currentSource = activePreset
+    ? sourceMap.get(activePreset.rightSourceKey) ?? null
+    : viewerMode?.kind === "single" ? sourceMap.get(viewerMode.sourceKey) ?? null : null;
 
   if (preview.unityMaterialSources.length === 0) {
     return (
@@ -69,12 +82,14 @@ export function UnityMaterialPreviewCompare({ preview }: { preview: FilePreview 
     );
   }
 
+  const paneProps = { shape, orbit, onOrbitChange: setOrbit };
+
   return (
     <div className="material-preview-workbench">
       <div className="material-preview-toolbar">
         {defaultSingleSourceKey ? (
           <button
-            className={clsx("ghost-button", viewerMode?.kind === "single" && viewerMode.sourceKey === defaultSingleSourceKey && "ghost-button--active")}
+            className={clsx("ghost-button", viewerMode?.kind === "single" && "ghost-button--active")}
             onClick={() => setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey })}
           >
             Current material
@@ -84,79 +99,132 @@ export function UnityMaterialPreviewCompare({ preview }: { preview: FilePreview 
           <button
             key={preset.key}
             className={clsx("ghost-button", viewerMode?.kind === "compare" && viewerMode.presetKey === preset.key && "ghost-button--active")}
+            title={preset.description}
             onClick={() => setViewerMode({ kind: "compare", presetKey: preset.key })}
           >
             {preset.label}
           </button>
         ))}
+        <span className="preview-toolbar__spacer" />
+        <span className="segmented" title="Preview mesh">
+          {SHAPES.map((option) => (
+            <button key={option} className={clsx(shape === option && "segmented__active")} onClick={() => setShape(option)}>
+              {option[0].toUpperCase()}{option.slice(1)}
+            </button>
+          ))}
+        </span>
       </div>
 
-      <div className="material-shape-toolbar">
-        {(["sphere", "box", "cylinder"] as PreviewShape[]).map((option) => (
-          <button
-            key={option}
-            className={clsx("ghost-button", shape === option && "ghost-button--active")}
-            onClick={() => setShape(option)}
-          >
-            {option[0].toUpperCase()}{option.slice(1)}
-          </button>
-        ))}
-      </div>
-
-      {activePreset ? (
+      {beforeSource && currentSource ? (
         <div className="material-compare-grid">
-          <MaterialPane
-            source={sourceMap.get(activePreset.leftSourceKey) ?? null}
-            caption={activePreset.description}
-            shape={shape}
-            orbit={compareOrbit}
-            onOrbitChange={setCompareOrbit}
-          />
-          <MaterialPane
-            source={sourceMap.get(activePreset.rightSourceKey) ?? null}
-            caption={activePreset.description}
-            shape={shape}
-            orbit={compareOrbit}
-            onOrbitChange={setCompareOrbit}
-          />
+          <MaterialPane source={beforeSource} {...paneProps} />
+          <MaterialPane source={currentSource} {...paneProps} />
         </div>
-      ) : singleSource ? (
+      ) : currentSource ? (
         <div className="material-single-grid">
-          <MaterialPane source={singleSource} shape={shape} orbit={singleOrbit} onOrbitChange={setSingleOrbit} />
+          <MaterialPane source={currentSource} {...paneProps} />
         </div>
       ) : null}
+
+      {currentSource?.notes.length ? (
+        <div className="preview-notes">
+          <strong>Not shown in this preview</strong>
+          <ul>
+            {currentSource.notes.map((note) => <li key={note}>{note}</li>)}
+          </ul>
+        </div>
+      ) : null}
+
+      {currentSource ? <MaterialPropertyTable current={currentSource} before={beforeSource} /> : null}
+    </div>
+  );
+}
+
+function MaterialPropertyTable({ current, before }: { current: UnityMaterialPreviewSource; before: UnityMaterialPreviewSource | null }) {
+  const [showHidden, setShowHidden] = useState(false);
+  const beforeByName = useMemo(() => new Map((before?.properties ?? []).map((property) => [property.name, property])), [before]);
+  const rows = useMemo(() => {
+    const currentNames = new Set(current.properties.map((property) => property.name));
+    const removed = (before?.properties ?? []).filter((property) => !currentNames.has(property.name));
+
+    return [
+      ...current.properties.map((property) => {
+        const previous = beforeByName.get(property.name);
+        return { property, previous, changed: Boolean(before) && previous?.value !== property.value };
+      }),
+      ...removed.map((property) => ({ property: { ...property, value: "removed" }, previous: property, changed: true })),
+    ];
+  }, [before, beforeByName, current.properties]);
+
+  const changedCount = rows.filter((row) => row.changed).length;
+  const hiddenCount = rows.filter((row) => row.property.hidden && !row.changed).length;
+  const visibleRows = rows.filter((row) => showHidden || row.changed || !row.property.hidden);
+
+  return (
+    <div className="material-properties">
+      <div className="preview-panel__header">
+        <strong>
+          Shader properties
+          {before ? <span className="preview-panel__meta"> {changedCount === 0 ? "no changes" : `${changedCount} changed`}</span> : null}
+        </strong>
+        {hiddenCount > 0 ? (
+          <button className="ghost-button" onClick={() => setShowHidden((value) => !value)}>
+            {showHidden ? "Hide internal" : `Show internal (${hiddenCount})`}
+          </button>
+        ) : null}
+      </div>
+      <div className="material-properties__table" role="table">
+        {visibleRows.map(({ property, previous, changed }) => (
+          <div key={property.name} role="row" className={clsx("material-property", changed && "material-property--changed", property.isDefault && !changed && "material-property--default")}>
+            <div className="material-property__name" title={property.name}>
+              <strong>{property.displayName || property.name}</strong>
+              <small>
+                {property.name}
+                {property.role ? <span className="preview-chip preview-chip--accent">{ROLE_LABELS[property.role] ?? property.role}</span> : null}
+              </small>
+            </div>
+            {before ? <PropertyValue property={previous} /> : null}
+            <PropertyValue property={property} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PropertyValue({ property }: { property: UnityMaterialProperty | undefined }) {
+  if (!property) {
+    return <div className="material-property__value muted">not present</div>;
+  }
+
+  return (
+    <div className="material-property__value" title={property.value}>
+      {property.color ? <span className="material-property__swatch" style={{ background: toCssColor(property.color) }} /> : null}
+      <span>{property.value}</span>
+      {property.isDefault ? <small>default</small> : null}
     </div>
   );
 }
 
 function MaterialPane({
   source,
-  caption,
   shape,
   orbit,
   onOrbitChange,
 }: {
-  source: UnityMaterialPreviewSource | null;
-  caption?: string;
+  source: UnityMaterialPreviewSource;
   shape: PreviewShape;
   orbit: OrbitState;
   onOrbitChange: (value: OrbitState) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const surfaceRef = useRef<HTMLDivElement | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const meshRef = useRef<THREE.Mesh | null>(null);
   const renderRef = useRef<(() => void) | null>(null);
   const orbitRef = useRef(orbit);
   const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; rotationX: number; rotationY: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    orbitRef.current = orbit;
-  }, [orbit]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -168,43 +236,24 @@ function MaterialPane({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-
-    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.25);
-    keyLight.position.set(4, 5, 6);
-    const fillLight = new THREE.DirectionalLight(0x7fb5ff, 0.65);
-    fillLight.position.set(-5, 2, 4);
-
-    scene.add(ambient, keyLight, fillLight);
-
-    rendererRef.current = renderer;
+    const disposeLighting = applyStudioLighting(renderer, scene);
     sceneRef.current = scene;
-    cameraRef.current = camera;
 
     const renderScene = () => {
-      const localRenderer = rendererRef.current;
-      const localCamera = cameraRef.current;
-      const localScene = sceneRef.current;
-      const localMesh = meshRef.current;
-      const localCanvas = canvasRef.current;
-      if (!localRenderer || !localCamera || !localScene || !localCanvas) {
-        return;
+      const width = canvas.clientWidth || 320;
+      const height = canvas.clientHeight || 320;
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      camera.position.set(0, 0.4, orbitRef.current.distance);
+      camera.lookAt(0, 0, 0);
+
+      if (meshRef.current) {
+        meshRef.current.rotation.x = orbitRef.current.rotationX;
+        meshRef.current.rotation.y = orbitRef.current.rotationY;
       }
 
-      const width = localCanvas.clientWidth || 320;
-      const height = localCanvas.clientHeight || 320;
-      localRenderer.setSize(width, height, false);
-      localCamera.aspect = width / height;
-      localCamera.updateProjectionMatrix();
-      localCamera.position.set(0, 0.4, orbitRef.current.distance);
-      localCamera.lookAt(0, 0, 0);
-
-      if (localMesh) {
-        localMesh.rotation.x = orbitRef.current.rotationX;
-        localMesh.rotation.y = orbitRef.current.rotationY;
-      }
-
-      localRenderer.render(localScene, localCamera);
+      renderer.render(scene, camera);
     };
 
     renderRef.current = renderScene;
@@ -217,22 +266,22 @@ function MaterialPane({
       resizeObserver.disconnect();
       renderRef.current = null;
       meshRef.current?.geometry.dispose();
-      disposeMaterial(meshRef.current?.material ?? null);
+      disposeMaterial(meshRef.current?.material);
       meshRef.current = null;
+      disposeLighting();
       renderer.dispose();
-      rendererRef.current = null;
       sceneRef.current = null;
-      cameraRef.current = null;
     };
   }, []);
 
   useEffect(() => {
+    orbitRef.current = orbit;
     renderRef.current?.();
   }, [orbit]);
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene || !source) {
+    if (!scene) {
       return;
     }
 
@@ -243,10 +292,8 @@ function MaterialPane({
       setError(null);
 
       try {
-        const geometry = createPreviewGeometry(shape);
         const material = await buildThreeMaterial(source);
         if (cancelled) {
-          geometry.dispose();
           disposeMaterial(material);
           return;
         }
@@ -257,13 +304,13 @@ function MaterialPane({
           disposeMaterial(meshRef.current.material);
         }
 
-        const mesh = new THREE.Mesh(geometry, material);
+        const mesh = new THREE.Mesh(createPreviewGeometry(shape), material);
         scene.add(mesh);
         meshRef.current = mesh;
         renderRef.current?.();
       } catch (reason) {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : "Material preview failed.");
+          setError(reason instanceof Error ? reason.message : "This material could not be previewed.");
         }
       } finally {
         if (!cancelled) {
@@ -285,8 +332,7 @@ function MaterialPane({
     }
 
     event.preventDefault();
-    const nextDistance = clamp(orbit.distance + (event.deltaY > 0 ? 0.24 : -0.24), MIN_DISTANCE, MAX_DISTANCE);
-    onOrbitChange({ ...orbit, distance: nextDistance });
+    onOrbitChange({ ...orbit, distance: clamp(orbit.distance + (event.deltaY > 0 ? 0.24 : -0.24), MIN_DISTANCE, MAX_DISTANCE) });
   };
 
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -310,12 +356,10 @@ function MaterialPane({
       return;
     }
 
-    const deltaX = event.clientX - dragState.startX;
-    const deltaY = event.clientY - dragState.startY;
     onOrbitChange({
       ...orbit,
-      rotationX: clamp(dragState.rotationX + deltaY * 0.012, -1.2, 1.2),
-      rotationY: dragState.rotationY + deltaX * 0.012,
+      rotationX: clamp(dragState.rotationX + (event.clientY - dragState.startY) * 0.012, -1.2, 1.2),
+      rotationY: dragState.rotationY + (event.clientX - dragState.startX) * 0.012,
     });
   };
 
@@ -326,55 +370,35 @@ function MaterialPane({
     }
   };
 
-  const handleDoubleClick = () => {
-    onOrbitChange(DEFAULT_ORBIT);
-  };
-
   return (
     <div className="material-pane-card">
       <div className="preview-panel__header material-pane-card__header">
-        <div>
-          <strong>{source?.materialName ?? "Material preview"}</strong>
-          <p className="preview-panel__meta material-pane-card__meta">
-            {[source?.shaderLabel, source?.surfaceKind, caption].filter(Boolean).join(" • ")}
-          </p>
-        </div>
+        <strong>{source.label}</strong>
+        <span className="preview-panel__meta" title={source.shaderPath ?? undefined}>{source.shaderLabel}</span>
       </div>
 
-      {source?.notes.length ? <p className="muted">{source.notes[0]}</p> : null}
+      <div className="preview-chips">
+        <span className="preview-chip">{source.shaderFamily === "unlit" ? "Unlit" : "Lit"}</span>
+        <span className="preview-chip">{BLEND_LABELS[source.surfaceKind] ?? source.surfaceKind}</span>
+        {source.doubleSided ? <span className="preview-chip">Two sided</span> : null}
+        {source.emissionEnabled ? <span className="preview-chip">Emissive</span> : null}
+        <span className="preview-chip">{source.shaderSource === "Not found" ? "Shader not found" : source.shaderSource}</span>
+      </div>
 
-      {loading ? <p className="muted">Loading material preview...</p> : null}
-      {error ? <p className="muted">{error}</p> : null}
+      {loading ? <p className="muted">Building material...</p> : null}
+      {error ? <p className="preview-note preview-note--warning">{error}</p> : null}
 
       <div
-        ref={surfaceRef}
         className="preview-frame material-pane-card__frame"
         onWheel={handleWheel}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        onDoubleClick={handleDoubleClick}
+        onDoubleClick={() => onOrbitChange(DEFAULT_ORBIT)}
       >
         <canvas ref={canvasRef} className="material-preview-canvas" />
       </div>
-
-      {source ? (
-        <dl className="preview-details">
-          <div>
-            <dt>Shader</dt>
-            <dd>{source.shaderLabel}</dd>
-          </div>
-          <div>
-            <dt>Surface</dt>
-            <dd>{source.surfaceKind}</dd>
-          </div>
-          <div>
-            <dt>Textures</dt>
-            <dd>{source.textures.length}</dd>
-          </div>
-        </dl>
-      ) : null}
     </div>
   );
 }
@@ -382,146 +406,116 @@ function MaterialPane({
 function createPreviewGeometry(shape: PreviewShape) {
   switch (shape) {
     case "box":
-      return new THREE.BoxGeometry(1.65, 1.65, 1.65, 1, 1, 1);
+      return new THREE.BoxGeometry(1.65, 1.65, 1.65);
     case "cylinder":
-      return new THREE.CylinderGeometry(0.9, 0.9, 1.9, 48, 1, false);
+      return new THREE.CylinderGeometry(0.9, 0.9, 1.9, 48);
+    case "plane":
+      return new THREE.PlaneGeometry(2.2, 2.2);
     default:
       return new THREE.SphereGeometry(1.1, 64, 64);
   }
 }
 
 async function buildThreeMaterial(source: UnityMaterialPreviewSource) {
-  const textures = new Map<string, THREE.Texture>();
-  for (const texture of source.textures) {
-    const loadedTexture = await decodeTexture(texture);
-    if (loadedTexture) {
-      textures.set(texture.key, loadedTexture);
-    }
-  }
+  const [tilingX, tilingY, offsetX, offsetY] = source.baseTiling ?? [1, 1, 0, 0];
+  const toTexture = (imageData: ImageData, colorSpace: THREE.ColorSpace) => {
+    const texture = new THREE.CanvasTexture(imageDataToCanvas(imageData));
+    texture.colorSpace = colorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(tilingX, tilingY);
+    texture.offset.set(offsetX, offsetY);
+    return texture;
+  };
+  const decode = async (key: string | null) => {
+    const texture = key ? source.textures.find((entry) => entry.key === key) : null;
+    return texture ? decodeTexture(texture) : null;
+  };
 
-  const baseColor = toThreeColor(source.baseColor ?? { r: 0.75, g: 0.75, b: 0.75, a: 1 });
-  const transparent = source.surfaceKind === "transparent" || (source.baseColor?.a ?? 1) < 0.999;
-  const alphaTest = source.cutoff ?? 0;
-  const baseMap = source.baseTextureKey ? textures.get(source.baseTextureKey) ?? null : null;
-  const normalMap = source.normalTextureKey ? textures.get(source.normalTextureKey) ?? null : null;
-  const emissionMap = source.emissionTextureKey ? textures.get(source.emissionTextureKey) ?? null : null;
+  const [baseImage, normalImage, emissionImage, metallicImage, occlusionImage] = await Promise.all([
+    decode(source.baseTextureKey),
+    decode(source.normalTextureKey),
+    decode(source.emissionTextureKey),
+    decode(source.metallicTextureKey),
+    decode(source.occlusionTextureKey),
+  ]);
+
+  const baseColor = source.baseColor ?? { r: 1, g: 1, b: 1, a: 1 };
+  const blended = ["alpha", "premultiply", "additive", "multiply"].includes(source.surfaceKind);
+  const shared = {
+    color: new THREE.Color().setRGB(baseColor.r, baseColor.g, baseColor.b, THREE.SRGBColorSpace),
+    map: baseImage ? toTexture(baseImage, THREE.SRGBColorSpace) : null,
+    transparent: blended,
+    opacity: source.surfaceKind === "alpha" || source.surfaceKind === "premultiply" ? baseColor.a : 1,
+    premultipliedAlpha: source.surfaceKind === "premultiply",
+    blending: source.surfaceKind === "additive"
+      ? THREE.AdditiveBlending
+      : source.surfaceKind === "multiply" ? THREE.MultiplyBlending : THREE.NormalBlending,
+    depthWrite: !blended,
+    alphaTest: source.cutoff ?? 0,
+    side: source.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+  };
 
   if (source.shaderFamily === "unlit") {
-    return new THREE.MeshBasicMaterial({
-      color: baseColor,
-      map: baseMap ?? undefined,
-      transparent,
-      opacity: source.baseColor?.a ?? 1,
-      alphaTest,
-    });
+    return new THREE.MeshBasicMaterial(shared);
   }
 
+  // Unity packs metallic in R and smoothness in A (plus occlusion in G for HDRP mask maps);
+  // three.js reads occlusion from R, roughness from G and metalness from B.
+  const smoothnessScale = clamp(source.smoothness ?? 1, 0, 1);
+  const packed = metallicImage ? repackChannels(metallicImage, (r, g, _b, a) => [
+    source.metallicTextureLayout === "mask" ? g : 255,
+    255 - a * smoothnessScale,
+    r,
+  ]) : null;
+  const packedTexture = packed ? toTexture(packed, THREE.NoColorSpace) : null;
+  const occlusionTexture = occlusionImage
+    ? toTexture(repackChannels(occlusionImage, (_r, g) => [g, g, g]), THREE.NoColorSpace)
+    : source.metallicTextureLayout === "mask" ? packedTexture : null;
+
+  const emission = source.emissionEnabled ? source.emissionColor ?? { r: 1, g: 1, b: 1, a: 1 } : null;
+  const emissionPeak = emission ? Math.max(emission.r, emission.g, emission.b, 1) : 1;
+  const normalScale = source.normalScale ?? 1;
+
   return new THREE.MeshStandardMaterial({
-    color: baseColor,
-    map: baseMap ?? undefined,
-    normalMap: normalMap ?? undefined,
-    emissive: toThreeColor(source.emissionColor ?? { r: 0, g: 0, b: 0, a: 1 }),
-    emissiveMap: emissionMap ?? undefined,
-    emissiveIntensity: source.emissionColor ? 1 : 0,
-    metalness: clamp(source.metallic ?? 0, 0, 1),
-    roughness: 1 - clamp(source.smoothness ?? 0.5, 0, 1),
-    transparent,
-    opacity: source.baseColor?.a ?? 1,
-    alphaTest,
+    ...shared,
+    normalMap: normalImage ? toTexture(normalImage, THREE.NoColorSpace) : null,
+    normalScale: new THREE.Vector2(normalScale, normalScale),
+    metalnessMap: packedTexture,
+    roughnessMap: packedTexture,
+    aoMap: occlusionTexture,
+    aoMapIntensity: clamp(source.occlusionStrength ?? 1, 0, 1),
+    // With a packed map Unity ignores the sliders, so the map alone drives the result.
+    metalness: packedTexture ? 1 : clamp(source.metallic ?? 0, 0, 1),
+    roughness: packedTexture ? 1 : 1 - clamp(source.smoothness ?? 0.5, 0, 1),
+    emissive: emission
+      ? new THREE.Color(emission.r / emissionPeak, emission.g / emissionPeak, emission.b / emissionPeak)
+      : new THREE.Color(0, 0, 0),
+    emissiveMap: emission && emissionImage ? toTexture(emissionImage, THREE.SRGBColorSpace) : null,
+    emissiveIntensity: emission ? emissionPeak : 0,
   });
 }
 
-async function decodeTexture(texture: UnityMaterialTexturePreview) {
-  const bytes = decodeBase64(texture.encodedBytesBase64);
-  const canvas = texture.isPsd ? decodePsdCanvas(bytes) : await decodeBitmapCanvas(bytes, texture.mimeType);
-  if (!canvas) {
-    return null;
+function decodeTexture(texture: UnityMaterialTexturePreview) {
+  return decodeImageBytes(decodeBase64(texture.encodedBytesBase64), texture.format, texture.mimeType);
+}
+
+function repackChannels(imageData: ImageData, map: (r: number, g: number, b: number, a: number) => [number, number, number]) {
+  const output = new Uint8ClampedArray(imageData.data.length);
+
+  for (let index = 0; index < output.length; index += 4) {
+    const [r, g, b] = map(imageData.data[index], imageData.data[index + 1], imageData.data[index + 2], imageData.data[index + 3]);
+    output[index] = r;
+    output[index + 1] = g;
+    output[index + 2] = b;
+    output[index + 3] = 255;
   }
 
-  const threeTexture = new THREE.CanvasTexture(canvas);
-  threeTexture.colorSpace = THREE.SRGBColorSpace;
-  threeTexture.wrapS = THREE.RepeatWrapping;
-  threeTexture.wrapT = THREE.RepeatWrapping;
-  threeTexture.needsUpdate = true;
-  return threeTexture;
+  return new ImageData(output, imageData.width, imageData.height);
 }
 
-function decodePsdCanvas(bytes: Uint8Array) {
-  const psd = readPsd(toOwnedArrayBuffer(bytes));
-  const imageData = (psd as { imageData?: ImageData }).imageData;
-  if (imageData) {
-    const canvas = document.createElement("canvas");
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return null;
-    }
-    context.putImageData(imageData, 0, 0);
-    return canvas;
-  }
-
-  return (psd as { canvas?: HTMLCanvasElement }).canvas ?? null;
-}
-
-async function decodeBitmapCanvas(bytes: Uint8Array, mimeType: string) {
-  const blob = new Blob([toOwnedUint8Array(bytes)], { type: mimeType || "application/octet-stream" });
-  const bitmap = await createImageBitmap(blob);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const context = canvas.getContext("2d");
-    if (!context) {
-      return null;
-    }
-    context.drawImage(bitmap, 0, 0);
-    return canvas;
-  } finally {
-    bitmap.close();
-  }
-}
-
-function decodeBase64(encoded: string) {
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function toOwnedUint8Array(bytes: Uint8Array) {
-  return new Uint8Array(bytes);
-}
-
-function toOwnedArrayBuffer(bytes: Uint8Array) {
-  return toOwnedUint8Array(bytes).buffer;
-}
-
-function toThreeColor(color: UnityColorValue) {
-  return new THREE.Color(color.r, color.g, color.b);
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[] | null) {
-  if (!material) {
-    return;
-  }
-
-  if (Array.isArray(material)) {
-    material.forEach((entry) => disposeMaterial(entry));
-    return;
-  }
-
-  for (const value of Object.values(material as unknown as Record<string, unknown>)) {
-    if (value instanceof THREE.Texture) {
-      value.dispose();
-    }
-  }
-
-  material.dispose();
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
+function toCssColor(color: UnityColorValue) {
+  const peak = Math.max(color.r, color.g, color.b, 1);
+  const channel = (value: number) => Math.round(clamp(value / peak, 0, 1) * 255);
+  return `rgb(${channel(color.r)}, ${channel(color.g)}, ${channel(color.b)})`;
 }

@@ -1,60 +1,68 @@
 import clsx from "clsx";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import type { FilePreview, ModelPreviewSource } from "../../features/repositories/api";
+import { decodeBase64, toArrayBuffer } from "../utils/previewDecode";
+import { applyStudioLighting, clamp, disposeMaterial } from "../utils/threePreview";
 
 type ViewerMode = { kind: "single"; sourceKey: string } | { kind: "compare"; presetKey: string };
 type OrbitState = { rotationX: number; rotationY: number; distance: number };
+type LoadedModel = { object: THREE.Object3D; animations: THREE.AnimationClip[] };
+type ModelStats = {
+  meshes: number;
+  vertices: number;
+  triangles: number;
+  materials: number;
+  textures: number;
+  bones: number;
+  skinnedMeshes: number;
+  blendShapes: number;
+  animations: Array<{ name: string; duration: number }>;
+  size: [number, number, number];
+  hasUvs: boolean;
+  hasNormals: boolean;
+  hasVertexColors: boolean;
+};
 
 const DEFAULT_ORBIT: OrbitState = { rotationX: 0.3, rotationY: -0.55, distance: 4.2 };
-const MIN_DISTANCE = 1.8;
-const MAX_DISTANCE = 12;
+const MIN_DISTANCE = 1.2;
+const MAX_DISTANCE = 14;
+// Stand-in for texture files an FBX points at but the repository preview does not load.
+const BLANK_PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=";
 
 export function ModelPreviewCompare({ preview }: { preview: FilePreview }) {
   const sourceMap = useMemo(() => new Map(preview.modelSources.map((source) => [source.key, source])), [preview.modelSources]);
   const defaultSingleSourceKey = sourceMap.has("workingTree") ? "workingTree" : preview.modelSources[0]?.key ?? null;
-  const [singleOrbit, setSingleOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
-  const [compareOrbit, setCompareOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
-  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(() => {
-    if (preview.defaultModelComparisonPresetKey) {
-      return { kind: "compare", presetKey: preview.defaultModelComparisonPresetKey };
-    }
-
-    return defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null;
-  });
+  const [orbit, setOrbit] = useState<OrbitState>(DEFAULT_ORBIT);
+  const [wireframe, setWireframe] = useState(false);
+  const [statsByKey, setStatsByKey] = useState<Record<string, ModelStats>>({});
+  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(null);
 
   useEffect(() => {
     if (preview.defaultModelComparisonPresetKey) {
       setViewerMode({ kind: "compare", presetKey: preview.defaultModelComparisonPresetKey });
-      return;
+    } else {
+      setViewerMode(defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null);
     }
-
-    if (defaultSingleSourceKey) {
-      setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey });
-      return;
-    }
-
-    setViewerMode(null);
+    setStatsByKey({});
   }, [defaultSingleSourceKey, preview.defaultModelComparisonPresetKey, preview.relativePath]);
+
+  useEffect(() => {
+    setOrbit(DEFAULT_ORBIT);
+  }, [viewerMode]);
+
+  const handleStats = useCallback((key: string, stats: ModelStats) => {
+    setStatsByKey((current) => ({ ...current, [key]: stats }));
+  }, []);
 
   const activePreset = viewerMode?.kind === "compare"
     ? preview.modelComparisonPresets.find((preset) => preset.key === viewerMode.presetKey) ?? null
     : null;
-  const singleSource = viewerMode?.kind === "single"
-    ? sourceMap.get(viewerMode.sourceKey) ?? null
-    : null;
-
-  useEffect(() => {
-    setSingleOrbit(DEFAULT_ORBIT);
-  }, [singleSource?.key]);
-
-  useEffect(() => {
-    setCompareOrbit(DEFAULT_ORBIT);
-  }, [activePreset?.key]);
+  const singleSource = viewerMode?.kind === "single" ? sourceMap.get(viewerMode.sourceKey) ?? null : null;
 
   if (preview.modelSources.length === 0) {
     return (
@@ -64,12 +72,14 @@ export function ModelPreviewCompare({ preview }: { preview: FilePreview }) {
     );
   }
 
+  const paneProps = { orbit, onOrbitChange: setOrbit, wireframe, onStats: handleStats };
+
   return (
     <div className="model-preview-workbench">
       <div className="model-preview-toolbar">
         {defaultSingleSourceKey ? (
           <button
-            className={clsx("ghost-button", viewerMode?.kind === "single" && viewerMode.sourceKey === defaultSingleSourceKey && "ghost-button--active")}
+            className={clsx("ghost-button", viewerMode?.kind === "single" && "ghost-button--active")}
             onClick={() => setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey })}
           >
             Current model
@@ -79,21 +89,31 @@ export function ModelPreviewCompare({ preview }: { preview: FilePreview }) {
           <button
             key={preset.key}
             className={clsx("ghost-button", viewerMode?.kind === "compare" && viewerMode.presetKey === preset.key && "ghost-button--active")}
+            title={preset.description}
             onClick={() => setViewerMode({ kind: "compare", presetKey: preset.key })}
           >
             {preset.label}
           </button>
         ))}
+        <span className="preview-toolbar__spacer" />
+        <button className={clsx("ghost-button", wireframe && "ghost-button--active")} onClick={() => setWireframe((value) => !value)}>
+          Wireframe
+        </button>
       </div>
 
       {activePreset ? (
         <div className="model-compare-grid">
-          <ModelPane source={sourceMap.get(activePreset.leftSourceKey) ?? null} caption={activePreset.description} orbit={compareOrbit} onOrbitChange={setCompareOrbit} />
-          <ModelPane source={sourceMap.get(activePreset.rightSourceKey) ?? null} caption={activePreset.description} orbit={compareOrbit} onOrbitChange={setCompareOrbit} />
+          <ModelPane source={sourceMap.get(activePreset.leftSourceKey) ?? null} stats={statsByKey[activePreset.leftSourceKey]} {...paneProps} />
+          <ModelPane
+            source={sourceMap.get(activePreset.rightSourceKey) ?? null}
+            stats={statsByKey[activePreset.rightSourceKey]}
+            baseline={statsByKey[activePreset.leftSourceKey]}
+            {...paneProps}
+          />
         </div>
       ) : singleSource ? (
         <div className="model-single-grid">
-          <ModelPane source={singleSource} orbit={singleOrbit} onOrbitChange={setSingleOrbit} />
+          <ModelPane source={singleSource} stats={statsByKey[singleSource.key]} {...paneProps} />
         </div>
       ) : null}
     </div>
@@ -102,14 +122,20 @@ export function ModelPreviewCompare({ preview }: { preview: FilePreview }) {
 
 function ModelPane({
   source,
-  caption,
+  stats,
+  baseline,
   orbit,
   onOrbitChange,
+  wireframe,
+  onStats,
 }: {
   source: ModelPreviewSource | null;
-  caption?: string;
+  stats?: ModelStats;
+  baseline?: ModelStats;
   orbit: OrbitState;
   onOrbitChange: (value: OrbitState) => void;
+  wireframe: boolean;
+  onStats: (key: string, stats: ModelStats) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -118,14 +144,11 @@ function ModelPane({
   const objectRef = useRef<THREE.Object3D | null>(null);
   const renderRef = useRef<(() => void) | null>(null);
   const orbitRef = useRef(orbit);
+  const wireframeRef = useRef(wireframe);
   const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; rotationX: number; rotationY: number } | null>(null);
   const resourceUrlsRef = useRef<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    orbitRef.current = orbit;
-  }, [orbit]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -137,16 +160,10 @@ function ModelPane({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+    const disposeLighting = applyStudioLighting(renderer, scene);
 
-    const ambient = new THREE.AmbientLight(0xffffff, 0.82);
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.35);
-    keyLight.position.set(4, 5, 6);
-    const rimLight = new THREE.DirectionalLight(0x7fb5ff, 0.55);
-    rimLight.position.set(-4, 3, -5);
-    scene.add(ambient, keyLight, rimLight);
-
-    const grid = new THREE.GridHelper(8, 16, 0x2f4c7c, 0x1d2636);
-    grid.position.y = -1.4;
+    const grid = new THREE.GridHelper(8, 16, 0x4a6aa5, 0x2a3650);
+    grid.position.y = -1.25;
     scene.add(grid);
 
     rendererRef.current = renderer;
@@ -154,29 +171,20 @@ function ModelPane({
     cameraRef.current = camera;
 
     const renderScene = () => {
-      const localRenderer = rendererRef.current;
-      const localCamera = cameraRef.current;
-      const localScene = sceneRef.current;
-      const localObject = objectRef.current;
-      const localCanvas = canvasRef.current;
-      if (!localRenderer || !localCamera || !localScene || !localCanvas) {
-        return;
+      const width = canvas.clientWidth || 320;
+      const height = canvas.clientHeight || 320;
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      camera.position.set(0, 0.6, orbitRef.current.distance);
+      camera.lookAt(0, 0, 0);
+
+      if (objectRef.current) {
+        objectRef.current.rotation.x = orbitRef.current.rotationX;
+        objectRef.current.rotation.y = orbitRef.current.rotationY;
       }
 
-      const width = localCanvas.clientWidth || 320;
-      const height = localCanvas.clientHeight || 320;
-      localRenderer.setSize(width, height, false);
-      localCamera.aspect = width / height;
-      localCamera.updateProjectionMatrix();
-      localCamera.position.set(0, 0.6, orbitRef.current.distance);
-      localCamera.lookAt(0, 0, 0);
-
-      if (localObject) {
-        localObject.rotation.x = orbitRef.current.rotationX;
-        localObject.rotation.y = orbitRef.current.rotationY;
-      }
-
-      localRenderer.render(localScene, localCamera);
+      renderer.render(scene, camera);
     };
 
     renderRef.current = renderScene;
@@ -191,6 +199,7 @@ function ModelPane({
       objectRef.current = null;
       revokeResourceUrls(resourceUrlsRef.current);
       resourceUrlsRef.current = [];
+      disposeLighting();
       renderer.dispose();
       renderRef.current = null;
       rendererRef.current = null;
@@ -200,8 +209,15 @@ function ModelPane({
   }, []);
 
   useEffect(() => {
+    orbitRef.current = orbit;
     renderRef.current?.();
   }, [orbit]);
+
+  useEffect(() => {
+    wireframeRef.current = wireframe;
+    setWireframe(objectRef.current, wireframe);
+    renderRef.current?.();
+  }, [wireframe]);
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -218,22 +234,22 @@ function ModelPane({
       resourceUrlsRef.current = [];
 
       try {
-        const object = await loadModelSource(source, resourceUrlsRef.current);
+        const model = await loadModelSource(source, resourceUrlsRef.current);
         if (cancelled) {
-          disposeObject3D(object);
-          revokeResourceUrls(resourceUrlsRef.current);
-          resourceUrlsRef.current = [];
+          disposeObject3D(model.object);
           return;
         }
 
+        onStats(source.key, measureModel(model));
         clearObject(scene, objectRef.current);
-        const normalizedObject = fitObjectToPreview(object);
-        scene.add(normalizedObject);
-        objectRef.current = normalizedObject;
+        const fitted = fitObjectToPreview(model.object);
+        setWireframe(fitted, wireframeRef.current);
+        scene.add(fitted);
+        objectRef.current = fitted;
         renderRef.current?.();
       } catch (reason) {
         if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : "Model preview failed.");
+          setError(reason instanceof Error ? reason.message : "This model could not be loaded.");
         }
       } finally {
         if (!cancelled) {
@@ -247,7 +263,7 @@ function ModelPane({
     return () => {
       cancelled = true;
     };
-  }, [source]);
+  }, [onStats, source]);
 
   const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.altKey) {
@@ -279,12 +295,10 @@ function ModelPane({
       return;
     }
 
-    const deltaX = event.clientX - dragState.startX;
-    const deltaY = event.clientY - dragState.startY;
     onOrbitChange({
       ...orbit,
-      rotationX: clamp(dragState.rotationX + deltaY * 0.012, -1.2, 1.2),
-      rotationY: dragState.rotationY + deltaX * 0.012,
+      rotationX: clamp(dragState.rotationX + (event.clientY - dragState.startY) * 0.012, -1.4, 1.4),
+      rotationY: dragState.rotationY + (event.clientX - dragState.startX) * 0.012,
     });
   };
 
@@ -295,22 +309,15 @@ function ModelPane({
     }
   };
 
-  const handleDoubleClick = () => onOrbitChange(DEFAULT_ORBIT);
-
   return (
     <div className="model-pane-card">
       <div className="preview-panel__header model-pane-card__header">
-        <div>
-          <strong>{source?.assetLabel ?? "Model preview"}</strong>
-          <p className="preview-panel__meta model-pane-card__meta">
-            {[source?.format?.toUpperCase(), caption].filter(Boolean).join(" • ")}
-          </p>
-        </div>
+        <strong>{source?.label ?? "Model"}</strong>
+        <span className="preview-panel__meta">{source ? `${source.assetLabel} (${source.format.toUpperCase()})` : ""}</span>
       </div>
 
-      {source?.notes.length ? <p className="muted">{source.notes[0]}</p> : null}
-      {loading ? <p className="muted">Loading model preview...</p> : null}
-      {error ? <p className="muted">{error}</p> : null}
+      {loading ? <p className="muted">Loading model...</p> : null}
+      {error ? <p className="preview-note preview-note--warning">{error}</p> : null}
 
       <div
         className="preview-frame model-pane-card__frame"
@@ -319,69 +326,182 @@ function ModelPane({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        onDoubleClick={handleDoubleClick}
+        onDoubleClick={() => onOrbitChange(DEFAULT_ORBIT)}
       >
         <canvas ref={canvasRef} className="model-preview-canvas" />
       </div>
+
+      {stats ? <ModelStatsTable stats={stats} baseline={baseline} /> : null}
+      {source?.notes.map((note) => <p key={note} className="preview-note">{note}</p>)}
     </div>
   );
 }
 
-async function loadModelSource(source: ModelPreviewSource, resourceUrls: string[]) {
+function ModelStatsTable({ stats, baseline }: { stats: ModelStats; baseline?: ModelStats }) {
+  const count = (label: string, pick: (value: ModelStats) => number) => {
+    const value = pick(stats);
+    const delta = baseline ? value - pick(baseline) : 0;
+
+    return (
+      <div key={label}>
+        <dt>{label}</dt>
+        <dd>
+          {value.toLocaleString()}
+          {delta !== 0 ? <span className={clsx("preview-delta", delta > 0 ? "preview-delta--up" : "preview-delta--down")}>{delta > 0 ? "+" : ""}{delta.toLocaleString()}</span> : null}
+        </dd>
+      </div>
+    );
+  };
+  const attributes = [stats.hasUvs && "UVs", stats.hasNormals && "normals", stats.hasVertexColors && "vertex colors"].filter(Boolean);
+
+  return (
+    <dl className="preview-details">
+      {count("Triangles", (value) => value.triangles)}
+      {count("Vertices", (value) => value.vertices)}
+      {count("Meshes", (value) => value.meshes)}
+      {count("Materials", (value) => value.materials)}
+      {stats.textures > 0 || baseline?.textures ? count("Textures", (value) => value.textures) : null}
+      {stats.bones > 0 || baseline?.bones ? count("Bones", (value) => value.bones) : null}
+      {stats.blendShapes > 0 || baseline?.blendShapes ? count("Blend shapes", (value) => value.blendShapes) : null}
+      <div>
+        <dt>Size (x, y, z)</dt>
+        <dd>{stats.size.map((axis) => formatLength(axis)).join(" x ")}</dd>
+      </div>
+      <div>
+        <dt>Vertex data</dt>
+        <dd>{attributes.length > 0 ? attributes.join(", ") : "positions only"}</dd>
+      </div>
+      {stats.animations.length > 0 ? (
+        <div className="preview-details__wide">
+          <dt>Animations ({stats.animations.length})</dt>
+          <dd>{stats.animations.slice(0, 6).map((clip) => `${clip.name || "unnamed"} ${clip.duration.toFixed(2)}s`).join(", ")}{stats.animations.length > 6 ? ", ..." : ""}</dd>
+        </div>
+      ) : null}
+    </dl>
+  );
+}
+
+function formatLength(value: number) {
+  return value >= 100 ? value.toFixed(0) : value >= 1 ? value.toFixed(2) : value.toPrecision(2);
+}
+
+function measureModel({ object, animations }: LoadedModel): ModelStats {
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  const stats: ModelStats = {
+    meshes: 0,
+    vertices: 0,
+    triangles: 0,
+    materials: 0,
+    textures: 0,
+    bones: 0,
+    skinnedMeshes: 0,
+    blendShapes: 0,
+    animations: animations.map((clip) => ({ name: clip.name, duration: clip.duration })),
+    size: [0, 0, 0],
+    hasUvs: false,
+    hasNormals: false,
+    hasVertexColors: false,
+  };
+
+  object.updateMatrixWorld(true);
+  object.traverse((node) => {
+    if ((node as THREE.Bone).isBone) {
+      stats.bones += 1;
+    }
+
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) {
+      return;
+    }
+
+    const { attributes, index, morphAttributes } = mesh.geometry;
+    const vertexCount = attributes.position?.count ?? 0;
+    stats.meshes += 1;
+    stats.vertices += vertexCount;
+    stats.triangles += Math.floor((index ? index.count : vertexCount) / 3);
+    stats.skinnedMeshes += (mesh as THREE.SkinnedMesh).isSkinnedMesh ? 1 : 0;
+    stats.blendShapes += morphAttributes.position?.length ?? 0;
+    stats.hasUvs ||= Boolean(attributes.uv);
+    stats.hasNormals ||= Boolean(attributes.normal);
+    stats.hasVertexColors ||= Boolean(attributes.color);
+
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!material) {
+        continue;
+      }
+      materials.add(material);
+      for (const value of Object.values(material as unknown as Record<string, unknown>)) {
+        if (value instanceof THREE.Texture) {
+          textures.add(value);
+        }
+      }
+    }
+  });
+
+  const size = new THREE.Box3().setFromObject(object).getSize(new THREE.Vector3());
+  stats.size = [size.x, size.y, size.z];
+  stats.materials = materials.size;
+  stats.textures = textures.size;
+  return stats;
+}
+
+function setWireframe(object: THREE.Object3D | null, enabled: boolean) {
+  object?.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []) {
+      (material as THREE.MeshStandardMaterial).wireframe = enabled;
+    }
+  });
+}
+
+async function loadModelSource(source: ModelPreviewSource, resourceUrls: string[]): Promise<LoadedModel> {
   const bytes = decodeBase64(source.encodedBytesBase64);
+  const resourceMap = createResourceUrlMap(source.externalResources, resourceUrls);
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier((url) => {
+    if (url.startsWith("blob:") || url.startsWith("data:")) {
+      return url;
+    }
+    return resourceMap.get(url) ?? resourceMap.get(decodeURIComponent(url)) ?? BLANK_PIXEL;
+  });
 
   switch (source.format) {
     case "glb":
     case "gltf":
-      return loadGltf(bytes, source, resourceUrls);
-    case "fbx":
-      return loadFbx(bytes, source, resourceUrls);
-    case "obj":
-      return loadObj(bytes, source, resourceUrls);
+      return new Promise<LoadedModel>((resolve, reject) => {
+        new GLTFLoader(manager).parse(
+          toArrayBuffer(bytes),
+          "",
+          (gltf) => resolve({ object: gltf.scene || gltf.scenes[0], animations: gltf.animations ?? [] }),
+          (failure) => reject(failure instanceof Error ? failure : new Error("This glTF file could not be parsed.")),
+        );
+      });
+    case "fbx": {
+      const object = new FBXLoader(manager).parse(toArrayBuffer(bytes), "");
+      return { object, animations: object.animations ?? [] };
+    }
+    case "obj": {
+      const objLoader = new OBJLoader(manager);
+      const mtlResource = source.externalResources.find((resource) => resource.uri.toLowerCase().endsWith(".mtl"));
+
+      if (mtlResource) {
+        const materials = new MTLLoader(manager).parse(new TextDecoder().decode(decodeBase64(mtlResource.encodedBytesBase64)), "");
+        materials.preload();
+        objLoader.setMaterials(materials);
+      }
+
+      return { object: objLoader.parse(new TextDecoder().decode(bytes)), animations: [] };
+    }
     default:
-      throw new Error(`${source.format.toUpperCase()} preview is not available in this slice.`);
+      throw new Error(`${source.format.toUpperCase()} files cannot be previewed.`);
   }
-}
-
-async function loadGltf(bytes: Uint8Array, source: ModelPreviewSource, resourceUrls: string[]) {
-  const resourceMap = createResourceUrlMap(source.externalResources, resourceUrls);
-  const manager = new THREE.LoadingManager();
-  manager.setURLModifier((url) => resourceMap.get(url) ?? resourceMap.get(decodeURIComponent(url)) ?? url);
-  const loader = new GLTFLoader(manager);
-
-  return new Promise<THREE.Object3D>((resolve, reject) => {
-    loader.parse(toOwnedArrayBuffer(bytes), "", (gltf) => resolve(gltf.scene || gltf.scenes[0]), reject);
-  });
-}
-
-async function loadFbx(bytes: Uint8Array, _source: ModelPreviewSource, _resourceUrls: string[]) {
-  const loader = new FBXLoader();
-  return loader.parse(toOwnedArrayBuffer(bytes), "") as THREE.Object3D;
-}
-
-async function loadObj(bytes: Uint8Array, source: ModelPreviewSource, resourceUrls: string[]) {
-  const resourceMap = createResourceUrlMap(source.externalResources, resourceUrls);
-  const manager = new THREE.LoadingManager();
-  manager.setURLModifier((url) => resourceMap.get(url) ?? resourceMap.get(decodeURIComponent(url)) ?? url);
-
-  const objText = new TextDecoder().decode(bytes);
-  const mtlResource = source.externalResources.find((resource) => resource.uri.toLowerCase().endsWith(".mtl"));
-  const objLoader = new OBJLoader(manager);
-
-  if (mtlResource) {
-    const mtlLoader = new MTLLoader(manager);
-    const materials = mtlLoader.parse(new TextDecoder().decode(decodeBase64(mtlResource.encodedBytesBase64)), "");
-    materials.preload();
-    objLoader.setMaterials(materials);
-  }
-
-  return objLoader.parse(objText);
 }
 
 function createResourceUrlMap(resources: ModelPreviewSource["externalResources"], resourceUrls: string[]) {
   const resourceMap = new Map<string, string>();
   for (const resource of resources) {
-    const blob = new Blob([toOwnedUint8Array(decodeBase64(resource.encodedBytesBase64))], { type: resource.mimeType || "application/octet-stream" });
+    const blob = new Blob([toArrayBuffer(decodeBase64(resource.encodedBytesBase64))], { type: resource.mimeType || "application/octet-stream" });
     const objectUrl = URL.createObjectURL(blob);
     resourceUrls.push(objectUrl);
     resourceMap.set(resource.uri, objectUrl);
@@ -395,12 +515,11 @@ function fitObjectToPreview(object: THREE.Object3D) {
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const maxAxis = Math.max(size.x, size.y, size.z) || 1;
-  const scale = 2.4 / maxAxis;
 
   const pivot = new THREE.Group();
   pivot.add(object);
   object.position.sub(center);
-  pivot.scale.setScalar(scale);
+  pivot.scale.setScalar(2.4 / maxAxis);
   return pivot;
 }
 
@@ -415,55 +534,13 @@ function clearObject(scene: THREE.Scene, object: THREE.Object3D | null) {
 function disposeObject3D(object: THREE.Object3D) {
   object.traverse((node) => {
     const mesh = node as THREE.Mesh;
-    if (mesh.geometry) {
-      mesh.geometry.dispose();
-    }
-
-    if (mesh.material) {
-      disposeMaterial(mesh.material);
-    }
+    mesh.geometry?.dispose();
+    disposeMaterial(mesh.material);
   });
-}
-
-function disposeMaterial(material: THREE.Material | THREE.Material[] | null) {
-  if (!material) {
-    return;
-  }
-  if (Array.isArray(material)) {
-    material.forEach((entry) => disposeMaterial(entry));
-    return;
-  }
-  for (const value of Object.values(material as unknown as Record<string, unknown>)) {
-    if (value instanceof THREE.Texture) {
-      value.dispose();
-    }
-  }
-  material.dispose();
 }
 
 function revokeResourceUrls(urls: string[]) {
   for (const url of urls) {
     URL.revokeObjectURL(url);
   }
-}
-
-function decodeBase64(encoded: string) {
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function toOwnedUint8Array(bytes: Uint8Array) {
-  return new Uint8Array(bytes);
-}
-
-function toOwnedArrayBuffer(bytes: Uint8Array) {
-  return toOwnedUint8Array(bytes).buffer;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
 }

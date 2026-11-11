@@ -1,16 +1,19 @@
 import clsx from "clsx";
-import { readPsd } from "ag-psd";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FilePreview, ImagePreviewSource } from "../../features/repositories/api";
 import { formatFileSize } from "../utils/formatters";
+import { decodeBase64, decodeImageBytes } from "../utils/previewDecode";
+import { clamp } from "../utils/threePreview";
 
 type ChannelMode = "rgba" | "rgb" | "r" | "g" | "b" | "a";
 type ViewerMode = { kind: "single"; sourceKey: string } | { kind: "compare"; presetKey: string };
+type CompareLayout = "side" | "difference";
 type ImageViewport = { scale: number; offsetX: number; offsetY: number };
+type DecodedImage = { imageData: ImageData | null; error: string | null; loading: boolean };
 
 const DEFAULT_VIEWPORT: ImageViewport = { scale: 1, offsetX: 0, offsetY: 0 };
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 8;
+const MAX_ZOOM = 16;
 
 const CHANNEL_OPTIONS: Array<{ value: ChannelMode; label: string }> = [
   { value: "rgba", label: "RGBA" },
@@ -24,48 +27,38 @@ const CHANNEL_OPTIONS: Array<{ value: ChannelMode; label: string }> = [
 export function ImagePreviewCompare({ preview }: { preview: FilePreview }) {
   const sourceMap = useMemo(() => new Map(preview.imageSources.map((source) => [source.key, source])), [preview.imageSources]);
   const defaultSingleSourceKey = sourceMap.has("workingTree") ? "workingTree" : preview.imageSources[0]?.key ?? null;
-  const [singleChannelMode, setSingleChannelMode] = useState<ChannelMode>("rgba");
-  const [compareChannelMode, setCompareChannelMode] = useState<ChannelMode>("rgba");
-  const [singleViewport, setSingleViewport] = useState<ImageViewport>(DEFAULT_VIEWPORT);
-  const [compareViewport, setCompareViewport] = useState<ImageViewport>(DEFAULT_VIEWPORT);
-  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(() => {
-    if (preview.defaultImageComparisonPresetKey) {
-      return { kind: "compare", presetKey: preview.defaultImageComparisonPresetKey };
-    }
-
-    return defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null;
-  });
+  const [channelMode, setChannelMode] = useState<ChannelMode>("rgba");
+  const [viewport, setViewport] = useState<ImageViewport>(DEFAULT_VIEWPORT);
+  const [compareLayout, setCompareLayout] = useState<CompareLayout>("side");
+  const [viewerMode, setViewerMode] = useState<ViewerMode | null>(null);
 
   useEffect(() => {
     if (preview.defaultImageComparisonPresetKey) {
       setViewerMode({ kind: "compare", presetKey: preview.defaultImageComparisonPresetKey });
-      return;
+    } else {
+      setViewerMode(defaultSingleSourceKey ? { kind: "single", sourceKey: defaultSingleSourceKey } : null);
     }
-
-    if (defaultSingleSourceKey) {
-      setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey });
-      return;
-    }
-
-    setViewerMode(null);
   }, [defaultSingleSourceKey, preview.defaultImageComparisonPresetKey, preview.relativePath]);
 
   const activePreset = viewerMode?.kind === "compare"
     ? preview.imageComparisonPresets.find((preset) => preset.key === viewerMode.presetKey) ?? null
     : null;
-  const singleSource = viewerMode?.kind === "single"
-    ? sourceMap.get(viewerMode.sourceKey) ?? null
-    : null;
+  const beforeSource = activePreset ? sourceMap.get(activePreset.leftSourceKey) ?? null : null;
+  const currentSource = activePreset
+    ? sourceMap.get(activePreset.rightSourceKey) ?? null
+    : viewerMode?.kind === "single" ? sourceMap.get(viewerMode.sourceKey) ?? null : null;
+
+  const before = useDecodedImage(beforeSource);
+  const current = useDecodedImage(currentSource);
+  const difference = useMemo(
+    () => (activePreset && before.imageData && current.imageData ? diffImages(before.imageData, current.imageData) : null),
+    [activePreset, before.imageData, current.imageData],
+  );
 
   useEffect(() => {
-    setSingleChannelMode("rgba");
-    setSingleViewport(DEFAULT_VIEWPORT);
-  }, [singleSource?.key]);
-
-  useEffect(() => {
-    setCompareChannelMode("rgba");
-    setCompareViewport(DEFAULT_VIEWPORT);
-  }, [activePreset?.key]);
+    setChannelMode("rgba");
+    setViewport(DEFAULT_VIEWPORT);
+  }, [viewerMode]);
 
   if (preview.imageSources.length === 0) {
     return (
@@ -75,12 +68,14 @@ export function ImagePreviewCompare({ preview }: { preview: FilePreview }) {
     );
   }
 
+  const paneProps = { channelMode, viewport, onViewportChange: setViewport };
+
   return (
     <div className="image-preview-workbench">
       <div className="image-preview-toolbar">
         {defaultSingleSourceKey ? (
           <button
-            className={clsx("ghost-button", viewerMode?.kind === "single" && viewerMode.sourceKey === defaultSingleSourceKey && "ghost-button--active")}
+            className={clsx("ghost-button", viewerMode?.kind === "single" && "ghost-button--active")}
             onClick={() => setViewerMode({ kind: "single", sourceKey: defaultSingleSourceKey })}
           >
             Current image
@@ -90,118 +85,137 @@ export function ImagePreviewCompare({ preview }: { preview: FilePreview }) {
           <button
             key={preset.key}
             className={clsx("ghost-button", viewerMode?.kind === "compare" && viewerMode.presetKey === preset.key && "ghost-button--active")}
+            title={preset.description}
             onClick={() => setViewerMode({ kind: "compare", presetKey: preset.key })}
           >
             {preset.label}
           </button>
         ))}
+
+        <span className="preview-toolbar__spacer" />
+
+        {activePreset ? (
+          <span className="segmented">
+            <button className={clsx(compareLayout === "side" && "segmented__active")} onClick={() => setCompareLayout("side")}>Side by side</button>
+            <button className={clsx(compareLayout === "difference" && "segmented__active")} onClick={() => setCompareLayout("difference")}>Difference</button>
+          </span>
+        ) : null}
+        <span className="segmented" title="Show a single colour channel">
+          {CHANNEL_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              className={clsx(channelMode === option.value && "segmented__active")}
+              onClick={() => setChannelMode(option.value)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </span>
       </div>
 
-      {activePreset ? (
-        <div className="image-compare-grid">
-          <ImagePane
-            source={sourceMap.get(activePreset.leftSourceKey) ?? null}
-            caption={activePreset.description}
-            channelMode={compareChannelMode}
-            onChannelModeChange={setCompareChannelMode}
-            viewport={compareViewport}
-            onViewportChange={setCompareViewport}
-          />
-          <ImagePane
-            source={sourceMap.get(activePreset.rightSourceKey) ?? null}
-            caption={activePreset.description}
-            channelMode={compareChannelMode}
-            onChannelModeChange={setCompareChannelMode}
-            viewport={compareViewport}
-            onViewportChange={setCompareViewport}
-          />
-        </div>
-      ) : singleSource ? (
+      {activePreset && difference ? (
+        <p className="preview-note">
+          {difference.sameSize
+            ? difference.changedPixels === 0
+              ? "The pixels are identical. Only metadata or compression changed."
+              : `${formatPercent(difference.changedPixels / difference.totalPixels)} of pixels changed (${difference.changedPixels.toLocaleString()} px), strongest channel shift ${difference.maxDelta}/255.`
+            : `Size changed from ${before.imageData?.width} x ${before.imageData?.height} to ${current.imageData?.width} x ${current.imageData?.height}; a pixel difference needs equal sizes.`}
+        </p>
+      ) : null}
+
+      {activePreset && compareLayout === "difference" && difference?.sameSize ? (
         <div className="image-single-grid">
           <ImagePane
-            source={singleSource}
-            channelMode={singleChannelMode}
-            onChannelModeChange={setSingleChannelMode}
-            viewport={singleViewport}
-            onViewportChange={setSingleViewport}
+            title="Difference"
+            caption="Changed pixels are highlighted from yellow (subtle) to red (strong) over a dimmed copy of the new image."
+            decoded={{ imageData: difference.imageData, error: null, loading: false }}
+            {...paneProps}
+            channelMode="rgba"
           />
+        </div>
+      ) : activePreset ? (
+        <div className="image-compare-grid">
+          <ImagePane title={beforeSource?.label ?? "Before"} source={beforeSource} decoded={before} {...paneProps} />
+          <ImagePane title={currentSource?.label ?? "After"} source={currentSource} decoded={current} baseline={beforeSource} {...paneProps} />
+        </div>
+      ) : currentSource ? (
+        <div className="image-single-grid">
+          <ImagePane title={currentSource.label} source={currentSource} decoded={current} {...paneProps} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function ImagePane({
-  source,
-  caption,
-  channelMode,
-  onChannelModeChange,
-  viewport,
-  onViewportChange,
-}: {
-  source: ImagePreviewSource | null;
-  caption?: string;
-  channelMode: ChannelMode;
-  onChannelModeChange: (value: ChannelMode) => void;
-  viewport: ImageViewport;
-  onViewportChange: (value: ImageViewport) => void;
-}) {
-  const [imageData, setImageData] = useState<ImageData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const surfaceRef = useRef<HTMLDivElement | null>(null);
-  const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
+function useDecodedImage(source: ImagePreviewSource | null): DecodedImage {
+  const [state, setState] = useState<DecodedImage>({ imageData: null, error: null, loading: false });
 
   useEffect(() => {
     if (!source) {
-      setImageData(null);
-      setError("Preview source is unavailable.");
-      setLoading(false);
+      setState({ imageData: null, error: null, loading: false });
       return;
     }
 
     let cancelled = false;
+    setState({ imageData: null, error: null, loading: true });
 
-    const loadImage = async () => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const nextImageData = await decodeImageSource(source);
+    decodeImageBytes(decodeBase64(source.encodedBytesBase64), source.format, source.mimeType)
+      .then((imageData) => {
         if (!cancelled) {
-          setImageData(nextImageData);
+          setState({ imageData, error: null, loading: false });
         }
-      } catch (reason) {
+      })
+      .catch((reason) => {
         if (!cancelled) {
-          setImageData(null);
-          setError(reason instanceof Error ? reason.message : "Image preview failed.");
+          setState({
+            imageData: null,
+            error: reason instanceof Error ? reason.message : "This image could not be decoded.",
+            loading: false,
+          });
         }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadImage();
+      });
 
     return () => {
       cancelled = true;
     };
   }, [source]);
 
+  return state;
+}
+
+function ImagePane({
+  title,
+  caption,
+  source,
+  baseline,
+  decoded,
+  channelMode,
+  viewport,
+  onViewportChange,
+}: {
+  title: string;
+  caption?: string;
+  source?: ImagePreviewSource | null;
+  baseline?: ImagePreviewSource | null;
+  decoded: DecodedImage;
+  channelMode: ChannelMode;
+  viewport: ImageViewport;
+  onViewportChange: (value: ImageViewport) => void;
+}) {
+  const { imageData, error, loading } = decoded;
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
+
   const renderedImageData = useMemo(() => (imageData ? applyChannelMode(imageData, channelMode) : null), [channelMode, imageData]);
+  const facts = useMemo(() => (imageData && source ? describeImage(imageData) : []), [imageData, source]);
+  const sizeDelta = source && baseline ? source.byteSize - baseline.byteSize : 0;
 
   useEffect(() => {
-    if (!canvasRef.current || !renderedImageData) {
-      return;
-    }
-
     const canvas = canvasRef.current;
-    const context = canvas.getContext("2d");
+    const context = canvas?.getContext("2d");
 
-    if (!context) {
+    if (!canvas || !context || !renderedImageData) {
       return;
     }
 
@@ -222,9 +236,7 @@ function ImagePane({
       return;
     }
 
-    const zoomFactor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-    const nextScale = clamp(viewport.scale * zoomFactor, MIN_ZOOM, MAX_ZOOM);
-
+    const nextScale = clamp(viewport.scale * (event.deltaY < 0 ? 1.12 : 1 / 1.12), MIN_ZOOM, MAX_ZOOM);
     if (nextScale === viewport.scale) {
       return;
     }
@@ -252,7 +264,6 @@ function ImagePane({
       offsetX: viewport.offsetX,
       offsetY: viewport.offsetY,
     };
-
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
@@ -276,171 +287,142 @@ function ImagePane({
     }
   };
 
-  const handleDoubleClick = () => {
-    onViewportChange(DEFAULT_VIEWPORT);
-  };
-
   return (
     <div className="image-pane-card">
       <div className="preview-panel__header image-pane-card__header">
         <div>
-          <strong>{source?.label ?? "Preview"}</strong>
+          <strong>{title}</strong>
           {caption ? <p className="preview-panel__meta image-pane-card__caption">{caption}</p> : null}
         </div>
-        {source ? <span className="preview-panel__meta">{formatFileSize(source.byteSize)}</span> : null}
+        {source ? (
+          <span className="preview-panel__meta">
+            {formatFileSize(source.byteSize)}
+            {sizeDelta !== 0 ? ` (${sizeDelta > 0 ? "+" : "-"}${formatFileSize(Math.abs(sizeDelta))})` : ""}
+          </span>
+        ) : null}
       </div>
 
-      <div className="image-channel-toolbar">
-        {CHANNEL_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            className={clsx("ghost-button", channelMode === option.value && "ghost-button--active")}
-            onClick={() => onChannelModeChange(option.value)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {facts.length > 0 ? (
+        <div className="preview-chips">
+          {facts.map((fact) => <span key={fact} className="preview-chip">{fact}</span>)}
+        </div>
+      ) : null}
 
-      {loading ? <p className="muted">Loading image preview...</p> : null}
-      {error ? <p className="muted">{error}</p> : null}
+      {loading ? <p className="muted">Decoding image...</p> : null}
+      {error ? <p className="preview-note preview-note--warning">{error}</p> : null}
 
       {!loading && !error ? (
         <div
           ref={surfaceRef}
-          className={clsx("preview-frame image-pane-card__frame", dragStateRef.current && "image-pane-card__frame--dragging")}
+          className="preview-frame image-pane-card__frame"
           onWheel={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
-          onDoubleClick={handleDoubleClick}
+          onDoubleClick={() => onViewportChange(DEFAULT_VIEWPORT)}
         >
           <div
             className="image-preview-transform"
-            style={{
-              transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})`,
-            }}
+            style={{ transform: `translate(${viewport.offsetX}px, ${viewport.offsetY}px) scale(${viewport.scale})` }}
           >
-            <canvas ref={canvasRef} className="image-preview-canvas" />
+            <canvas
+              ref={canvasRef}
+              className={clsx("image-preview-canvas", viewport.scale >= 4 && "image-preview-canvas--pixelated")}
+            />
           </div>
+          {viewport.scale !== 1 ? <span className="preview-frame__badge">{Math.round(viewport.scale * 100)}%</span> : null}
         </div>
       ) : null}
     </div>
   );
 }
 
-async function decodeImageSource(source: ImagePreviewSource): Promise<ImageData> {
-  const bytes = decodeBase64(source.encodedBytesBase64);
+/** Facts a game artist checks first: size, power-of-two (matters for compression and mips), alpha. */
+function describeImage(imageData: ImageData) {
+  const { width, height, data } = imageData;
+  const isPowerOfTwo = (value: number) => (value & (value - 1)) === 0;
+  let hasAlpha = false;
 
-  if (source.isPsd) {
-    const psd = readPsd(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-    const imageData = (psd as { imageData?: ImageData }).imageData;
-
-    if (imageData) {
-      return cloneImageData(imageData);
+  for (let index = 3; index < data.length; index += 4) {
+    if (data[index] !== 255) {
+      hasAlpha = true;
+      break;
     }
-
-    const canvas = (psd as { canvas?: HTMLCanvasElement }).canvas;
-    if (canvas) {
-      const context = canvas.getContext("2d");
-      if (!context) {
-        throw new Error("PSD preview canvas could not be initialized.");
-      }
-
-      return context.getImageData(0, 0, canvas.width, canvas.height);
-    }
-
-    throw new Error("PSD preview data is unavailable for this file.");
   }
 
-  const blob = new Blob([bytes], { type: source.mimeType || "application/octet-stream" });
-  const bitmap = await createImageBitmap(blob);
-
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-    const context = canvas.getContext("2d");
-
-    if (!context) {
-      throw new Error("Image preview canvas could not be initialized.");
-    }
-
-    context.drawImage(bitmap, 0, 0);
-    return context.getImageData(0, 0, canvas.width, canvas.height);
-  } finally {
-    bitmap.close();
-  }
+  return [
+    `${width} x ${height} px`,
+    isPowerOfTwo(width) && isPowerOfTwo(height) ? "Power of two" : "Non power of two",
+    hasAlpha ? "Has transparency" : "Opaque",
+    `${((width * height) / 1_000_000).toFixed(2)} MP`,
+  ];
 }
 
-function decodeBase64(encoded: string) {
-  const binary = atob(encoded);
-  const bytes = new Uint8Array(binary.length);
+function diffImages(before: ImageData, after: ImageData) {
+  const totalPixels = after.width * after.height;
 
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  if (before.width !== after.width || before.height !== after.height) {
+    return { sameSize: false, changedPixels: 0, totalPixels, maxDelta: 0, imageData: null };
   }
 
-  return bytes;
+  const output = new Uint8ClampedArray(after.data.length);
+  let changedPixels = 0;
+  let maxDelta = 0;
+
+  for (let index = 0; index < output.length; index += 4) {
+    const delta = Math.max(
+      Math.abs(after.data[index] - before.data[index]),
+      Math.abs(after.data[index + 1] - before.data[index + 1]),
+      Math.abs(after.data[index + 2] - before.data[index + 2]),
+      Math.abs(after.data[index + 3] - before.data[index + 3]),
+    );
+
+    if (delta === 0) {
+      const gray = (after.data[index] * 0.3 + after.data[index + 1] * 0.59 + after.data[index + 2] * 0.11) * 0.25;
+      output[index] = gray;
+      output[index + 1] = gray;
+      output[index + 2] = gray;
+    } else {
+      changedPixels += 1;
+      maxDelta = Math.max(maxDelta, delta);
+      // Yellow for a faint change, through to red for a full-range one.
+      output[index] = 255;
+      output[index + 1] = 220 - (delta / 255) * 220;
+      output[index + 2] = (delta / 255) * 60;
+    }
+    output[index + 3] = 255;
+  }
+
+  return { sameSize: true, changedPixels, totalPixels, maxDelta, imageData: new ImageData(output, after.width, after.height) };
 }
 
-function cloneImageData(imageData: ImageData) {
-  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+function formatPercent(ratio: number) {
+  const percent = ratio * 100;
+  return percent > 0 && percent < 0.01 ? "<0.01%" : `${percent.toFixed(percent < 10 ? 2 : 1)}%`;
 }
 
 function applyChannelMode(imageData: ImageData, channelMode: ChannelMode) {
   if (channelMode === "rgba") {
-    return cloneImageData(imageData);
+    return imageData;
   }
 
   const next = new Uint8ClampedArray(imageData.data);
 
   for (let index = 0; index < next.length; index += 4) {
-    const red = imageData.data[index];
-    const green = imageData.data[index + 1];
-    const blue = imageData.data[index + 2];
     const alpha = imageData.data[index + 3];
 
-    switch (channelMode) {
-      case "rgb":
-        next[index] = red;
-        next[index + 1] = green;
-        next[index + 2] = blue;
-        next[index + 3] = 255;
-        break;
-      case "r":
-        next[index] = red;
-        next[index + 1] = 0;
-        next[index + 2] = 0;
-        next[index + 3] = 255;
-        break;
-      case "g":
-        next[index] = 0;
-        next[index + 1] = green;
-        next[index + 2] = 0;
-        next[index + 3] = 255;
-        break;
-      case "b":
-        next[index] = 0;
-        next[index + 1] = 0;
-        next[index + 2] = blue;
-        next[index + 3] = 255;
-        break;
-      case "a":
-        next[index] = alpha;
-        next[index + 1] = alpha;
-        next[index + 2] = alpha;
-        next[index + 3] = 255;
-        break;
-      default:
-        break;
+    if (channelMode === "a") {
+      next[index] = alpha;
+      next[index + 1] = alpha;
+      next[index + 2] = alpha;
+    } else if (channelMode !== "rgb") {
+      next[index] = channelMode === "r" ? imageData.data[index] : 0;
+      next[index + 1] = channelMode === "g" ? imageData.data[index + 1] : 0;
+      next[index + 2] = channelMode === "b" ? imageData.data[index + 2] : 0;
     }
+    next[index + 3] = 255;
   }
 
   return new ImageData(next, imageData.width, imageData.height);
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), max);
 }
