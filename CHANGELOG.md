@@ -1,3 +1,9 @@
+## [0.25.0](https://github.com/flamacore/UniGit/compare/v0.24.1...v0.25.0) (2026-11-11)
+
+### Features
+
+* reliable merging, special-character paths and richer asset previews ([7cbca8b](https://github.com/flamacore/UniGit/commit/7cbca8b042bcded6c8efef78985c81aec0a0d420))
+
 ## [0.24.1](https://github.com/flamacore/UniGit/compare/v0.24.0...v0.24.1) (2026-08-06)
 
 ### Bug Fixes
