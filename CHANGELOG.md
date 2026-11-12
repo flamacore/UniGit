@@ -1,3 +1,9 @@
+## [0.25.1](https://github.com/flamacore/UniGit/compare/v0.25.0...v0.25.1) (2026-11-12)
+
+### Bug Fixes
+
+* stop git commands freezing the app and add a Logs window ([5e8fba6](https://github.com/flamacore/UniGit/commit/5e8fba6db5f80a6614b184304d532c1a451b3efc))
+
 ## [0.25.0](https://github.com/flamacore/UniGit/compare/v0.24.1...v0.25.0) (2026-11-11)
 
 ### Features
