@@ -1037,7 +1037,7 @@ fn discover_repository_ssh_support() -> GitResult<RepositorySshDiscovery> {
         user_config_path: user_config_path.map(|path| path.to_string_lossy().into_owned()),
         config_hosts,
         private_keys,
-        open_ssh_command: find_executable_path("ssh.exe", &[PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe")])
+        open_ssh_command: find_openssh_executable()
             .map(|path| path.to_string_lossy().into_owned()),
         putty_command: find_executable_path(
             "plink.exe",
@@ -1388,6 +1388,19 @@ fn find_executable_path(file_name: &str, fallbacks: &[PathBuf]) -> Option<PathBu
     fallbacks.iter().find(|candidate| candidate.is_file()).cloned()
 }
 
+/// Windows' own OpenSSH is preferred over whatever `ssh.exe` comes first on PATH: only it
+/// talks to the Windows ssh-agent service, where passphrase-protected keys are usually loaded.
+/// Git's bundled ssh (first on PATH when started from Git Bash) cannot see those keys, so git
+/// and git-lfs failed with "Permission denied (publickey)".
+fn find_openssh_executable() -> Option<PathBuf> {
+    let system_openssh = PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe");
+    if cfg!(windows) && system_openssh.is_file() {
+        return Some(system_openssh);
+    }
+
+    find_executable_path("ssh.exe", &[]).or_else(|| find_executable_path("ssh", &[]))
+}
+
 fn quote_cmd_argument(value: &str) -> String {
     if value.is_empty() {
         return "\"\"".to_string();
@@ -1525,7 +1538,7 @@ fn build_git_remote_environment(repo_path: &Path) -> GitResult<Option<GitRemoteE
         }));
     }
 
-    let executable = find_executable_path("ssh.exe", &[PathBuf::from(r"C:\Windows\System32\OpenSSH\ssh.exe")])
+    let executable = find_openssh_executable()
         .ok_or_else(|| GitServiceError::GitCommandFailed("OpenSSH ssh.exe was not found on PATH or in C:\\Windows\\System32\\OpenSSH.".to_string()))?;
     let mut arguments = Vec::new();
 
