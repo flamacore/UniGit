@@ -1,3 +1,9 @@
+## [0.25.2](https://github.com/flamacore/UniGit/compare/v0.25.1...v0.25.2) (2026-11-12)
+
+### Bug Fixes
+
+* always use Windows OpenSSH so keys in the ssh-agent work ([667508b](https://github.com/flamacore/UniGit/commit/667508bccb2be4678bb261be4f484fbf99910a02))
+
 ## [0.25.1](https://github.com/flamacore/UniGit/compare/v0.25.0...v0.25.1) (2026-11-12)
 
 ### Bug Fixes
