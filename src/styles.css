@@ -273,7 +273,13 @@ pre {
   transform: translateY(0);
 }
 
+.git-activity-bar--active .git-activity-bar__label {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 .git-activity-bar__label {
+  font: inherit;
   position: absolute;
   right: 0;
   bottom: 10px;
@@ -737,6 +743,246 @@ h4 {
 
 .notification-toggle--active {
   background: var(--surface-button-active);
+}
+
+.logs-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.logs-panel {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 40;
+  width: min(560px, calc(100vw - 20px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 20px;
+  box-shadow: var(--elevated-shadow), var(--panel-shadow);
+}
+
+.logs-panel__header,
+.logs-panel__header-actions,
+.logs-panel__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.logs-panel__header {
+  justify-content: space-between;
+}
+
+.logs-panel__search {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--line-subtle);
+  background: var(--surface-input);
+  color: var(--text-1);
+}
+
+.logs-panel__running {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.logs-running {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-selection-subtle);
+}
+
+.logs-running > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.logs-running--slow {
+  border-color: rgba(255, 180, 84, 0.45);
+  background: rgba(173, 114, 28, 0.16);
+}
+
+.logs-running__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.logs-running__text code,
+.logs-running__text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logs-running__text small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.logs-running__text .logs-running__hint {
+  color: var(--text-2);
+  white-space: normal;
+}
+
+.logs-panel__list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid var(--line-subtle);
+  background: var(--surface-section);
+  font-size: 12px;
+}
+
+.logs-panel__empty {
+  padding: 14px;
+}
+
+.logs-entry {
+  border-bottom: 1px solid var(--line-softer);
+}
+
+.logs-entry--problem {
+  background: rgba(160, 40, 40, 0.12);
+}
+
+.logs-entry__row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-1);
+  text-align: left;
+}
+
+.logs-entry__row:disabled {
+  cursor: default;
+}
+
+.logs-entry__chevron {
+  flex-shrink: 0;
+  color: var(--text-3);
+  transition: transform 120ms ease;
+}
+
+.logs-entry__chevron--open {
+  transform: rotate(90deg);
+}
+
+.logs-entry__chevron--hidden {
+  visibility: hidden;
+}
+
+.logs-entry__time,
+.logs-entry__meta {
+  flex-shrink: 0;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.logs-entry__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+code.logs-entry__text,
+.logs-running__text code,
+.logs-entry__body {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.logs-entry__scope {
+  flex-shrink: 0;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+}
+
+.logs-entry__scope--action {
+  color: var(--accent);
+}
+
+.logs-entry__body {
+  margin: 0;
+  padding: 6px 10px 8px 34px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.logs-state {
+  flex-shrink: 0;
+}
+
+.logs-state--running {
+  color: var(--accent);
+}
+
+.logs-state--ok {
+  color: var(--accent-2);
+}
+
+.logs-state--failed {
+  color: #f07a7a;
+}
+
+.logs-state--cancelled {
+  color: #f0a53c;
+}
+
+.logs-spin {
+  animation: logs-spin 900ms linear infinite;
+}
+
+@keyframes logs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.logs-panel__footer {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-3);
+  font-size: 11px;
 }
 
 .notifications-pane {

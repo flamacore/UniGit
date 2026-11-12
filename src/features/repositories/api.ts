@@ -484,6 +484,24 @@ export const mergeBranch = (
   return invoke<MergeBranchResult>("merge_branch", { repoPath, fullName, localChanges, conflictPreference });
 };
 
+export type LogEvent = {
+  seq: number;
+  atMs: number;
+  kind: "log" | "start" | "output" | "end";
+  commandId: number | null;
+  source: string;
+  scope: string;
+  message: string;
+  detail: string | null;
+  state: "ok" | "failed" | "cancelled" | null;
+  durationMs: number | null;
+  transient: boolean;
+};
+
+export const cancelGitCommand = (commandId: number) => {
+  return invoke<void>("cancel_git_command", { commandId });
+};
+
 export const abortOperation = (repoPath: string) => {
   return invoke<string>("abort_operation", { repoPath });
 };

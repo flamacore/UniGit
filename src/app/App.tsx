@@ -9,6 +9,7 @@ import {
   GripVertical,
   Minimize2,
   RefreshCw,
+  ScrollText,
   Sparkles,
   Settings2,
   Undo2,
@@ -28,6 +29,8 @@ import { DetachHeadDialog } from "./components/DetachHeadDialog";
 import { DropLane } from "./components/DropLane";
 import { ErrorDetailDialog } from "./components/ErrorDetailDialog";
 import { MergeDialog } from "./components/MergeDialog";
+import { LogsPanel } from "./components/LogsPanel";
+import { useActivityLog } from "./hooks/useActivityLog";
 import { StashDialog } from "./components/StashDialog";
 import { useChangeWorkbench } from "./hooks/useChangeWorkbench";
 import { HiddenLocalDialog } from "./components/HiddenLocalDialog";
@@ -96,6 +99,7 @@ import {
   mergeBranch,
   previewMerge,
   abortOperation,
+  cancelGitCommand,
   continueOperation,
   ConflictStrategy,
   MergeConflictPreference,
@@ -364,6 +368,21 @@ export function App() {
   const gitActivityHideTimeoutRef = useRef<number | null>(null);
   const appliedThemeVariableKeysRef = useRef<string[]>([]);
   const [logFilePath, setLogFilePath] = useState<string | null>(null);
+  const { entries: activityEntries, clear: clearActivity } = useActivityLog();
+  const [logsOpen, setLogsOpen] = useState(false);
+  const runningCommands = useMemo(
+    () => activityEntries.filter((entry) => entry.kind === "command" && entry.state === "running"),
+    [activityEntries],
+  );
+  const [activityNow, setActivityNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (runningCommands.length === 0) {
+      return;
+    }
+    const timer = window.setInterval(() => setActivityNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runningCommands.length]);
   const [gitActivityShown, setGitActivityShown] = useState(false);
 
   const dismissNotificationToast = useCallback((notificationId: string) => {
@@ -2267,6 +2286,12 @@ export function App() {
     return "Working...";
   }, [commitDetailLoading, errorRecoveryBusy, fileHistoryLoading, graphLoading, loading, previewLoading, repoConfigLoading, submitting]);
 
+  // The longest-running command is the one worth naming when the app seems stuck.
+  const oldestRunning = runningCommands[0];
+  const activityDetail = oldestRunning && oldestRunning.kind === "command" && activityNow - oldestRunning.startedAt > 3000
+    ? `${oldestRunning.command.replace(/^git -C (?:"[^"]*"|\S+) /, "git ").slice(0, 48)} · ${Math.round((activityNow - oldestRunning.startedAt) / 1000)} s`
+    : null;
+
   useEffect(() => {
     if (gitActivityHideTimeoutRef.current) {
       window.clearTimeout(gitActivityHideTimeoutRef.current);
@@ -3172,7 +3197,14 @@ export function App() {
         className={clsx("git-activity-bar", gitActivityShown && "git-activity-bar--active")}
         aria-hidden={!gitActivityShown}
       >
-        <div className="git-activity-bar__label">{gitActivityLabel}</div>
+        <button
+          className="git-activity-bar__label"
+          tabIndex={gitActivityShown ? 0 : -1}
+          title="Open logs"
+          onClick={() => setLogsOpen(true)}
+        >
+          {activityDetail ?? gitActivityLabel}
+        </button>
         <div className="git-activity-bar__track" />
         <div className="git-activity-bar__indicator" />
       </div>
@@ -3263,6 +3295,15 @@ export function App() {
               onClick={() => void refreshRepository({ fetchRemote: true })}
             >
               <RefreshCw size={16} />
+            </button>
+            <button
+              className={clsx("icon-button notification-toggle", logsOpen && "notification-toggle--active")}
+              onClick={() => setLogsOpen((current) => !current)}
+              aria-label="Open logs"
+              title="Logs: every git command, its output and how long it took"
+            >
+              <ScrollText size={16} />
+              {runningCommands.length > 0 ? <span className="logs-badge">{runningCommands.length}</span> : null}
             </button>
             <button
               ref={notificationsButtonRef}
@@ -4314,6 +4355,22 @@ export function App() {
         <BranchCommandInfoDialog
           kind={branchCommandInfoKind}
           onClose={() => setBranchCommandInfoKind(null)}
+        />
+      ) : null}
+
+      {logsOpen ? (
+        <LogsPanel
+          entries={activityEntries}
+          logFilePath={logFilePath}
+          onClear={clearActivity}
+          onClose={() => setLogsOpen(false)}
+          onCancel={async (commandId) => {
+            try {
+              await cancelGitCommand(commandId);
+            } catch (reason) {
+              setStatusMessage(getReasonMessage(reason, "Could not cancel the command."));
+            }
+          }}
         />
       ) : null}
 

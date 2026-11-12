@@ -28,6 +28,7 @@ use super::models::{
     RepositorySshDiscovery, RepositorySshKeyOption, RepositorySshSettings, UnityColorValue,
     UnityMaterialPreviewSource, UnityMaterialProperty, UnityMaterialTexturePreview,
 };
+use super::activity;
 use super::unity_shader::{parse_shader, ParsedShader, ShaderProperty, ShaderPropertyKind};
 
 const MAX_INLINE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
@@ -37,6 +38,7 @@ const MAX_PREVIEW_READ_BYTES: u64 = 64 * 1024 * 1024;
 const LARGE_COMMIT_CHUNK_BYTES: u64 = 1024 * 1024 * 1024;
 const LARGE_LFS_TRACK_BYTES: u64 = 50 * 1024 * 1024;
 const LOG_DETAIL_LIMIT: usize = 6_000;
+const MAX_LOG_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const COMMIT_MESSAGE_DIFF_LIMIT: usize = 30_000;
 const COMMIT_MESSAGE_UPSTREAM_LIMIT: usize = 8;
 
@@ -58,6 +60,8 @@ fn git_command(repo_path: Option<&Path>) -> Command {
     // There is no terminal behind the app: an editor prompt (merge --continue, etc.) would hang
     // forever in a hidden console, so accept git's prepared message instead.
     command.env("GIT_EDITOR", "true");
+    // Never wait for a typed answer: there is no terminal, so a prompt would hang forever.
+    command.env("GIT_TERMINAL_PROMPT", "0");
     // Emit non-ASCII paths as UTF-8 instead of octal-escaped quoted strings.
     command.args(["-c", "core.quotepath=false"]);
 
@@ -464,6 +468,11 @@ pub async fn preview_merge(repo_path: String, full_name: String) -> Result<Merge
     preview_merge_inner(repo_path, full_name)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[command]
+pub async fn cancel_git_command(command_id: u64) -> Result<(), String> {
+    activity::cancel(command_id).await
 }
 
 #[command]
@@ -3025,7 +3034,7 @@ async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool)
     }
 
     if let Some(local_name) = trimmed.strip_prefix("refs/heads/") {
-        run_git_remote_owned(repo_path, vec!["switch".into(), local_name.to_string()]).await?;
+        run_git_remote_owned(repo_path, vec!["switch".into(), "--progress".into(), local_name.to_string()]).await?;
         return Ok(format!("Switched to {local_name}."));
     }
 
@@ -3044,12 +3053,13 @@ async fn switch_branch_to_target(repo_path: &Path, full_name: &str, force: bool)
             .is_empty();
 
         if local_exists {
-            run_git_remote_owned(repo_path, vec!["switch".into(), branch_name.clone()]).await?;
+            run_git_remote_owned(repo_path, vec!["switch".into(), "--progress".into(), branch_name.clone()]).await?;
         } else {
             run_git_remote_owned(
                 repo_path,
                 vec![
                     "switch".into(),
+                    "--progress".into(),
                     "--track".into(),
                     "-c".into(),
                     branch_name.clone(),
@@ -4790,8 +4800,7 @@ async fn run_git_global_owned(args: Vec<String>) -> GitResult<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = command
-        .output()
+    let output = activity::execute(command, activity::describe(None, &args), None)
         .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
@@ -4844,7 +4853,7 @@ async fn run_git_owned_with_env(
         }
     }
 
-    let output = match command.output().await {
+    let output = match activity::execute(command, activity::describe(Some(repo_path), &args), None).await {
         Ok(output) => output,
         Err(error) => {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -4936,7 +4945,7 @@ async fn rerun_git_owned_with_env(
         }
     }
 
-    let output = command.output().await.map_err(|error| match error.kind() {
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), None).await.map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
         _ => GitServiceError::GitCommandFailed(error.to_string()),
     })?;
@@ -5070,8 +5079,7 @@ async fn run_git_owned_without_retry(repo_path: &Path, args: Vec<String>) -> Git
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = command
-        .output()
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), None)
         .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
@@ -5118,8 +5126,7 @@ async fn run_git_capture_owned(repo_path: &Path, args: Vec<String>) -> GitResult
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = command
-        .output()
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), None)
         .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
@@ -5155,8 +5162,7 @@ async fn run_git_bytes_owned(repo_path: &Path, args: Vec<String>) -> GitResult<V
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = command
-        .output()
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), None)
         .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
@@ -5203,29 +5209,12 @@ async fn run_git_owned_with_input(repo_path: &Path, args: Vec<String>, input: Ve
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command
-        .spawn()
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), Some(input))
+        .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
             _ => GitServiceError::GitCommandFailed(error.to_string()),
         })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(&input)
-            .await
-            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -5268,29 +5257,12 @@ async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, inp
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command
-        .spawn()
+    let output = activity::execute(command, activity::describe(Some(repo_path), &args), Some(input))
+        .await
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => GitServiceError::GitUnavailable,
             _ => GitServiceError::GitCommandFailed(error.to_string()),
         })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(&input)
-            .await
-            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|error| GitServiceError::GitCommandFailed(error.to_string()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -5314,12 +5286,23 @@ async fn run_git_bytes_owned_with_input(repo_path: &Path, args: Vec<String>, inp
 }
 
 fn append_log(source: &str, scope: &str, message: &str, detail: Option<&str>) -> std::io::Result<()> {
-    let _guard = LOG_LOCK.get_or_init(|| Mutex::new(())).lock().expect("log mutex poisoned");
+    // Command start/end lines are reported by `activity::execute` itself, with live output.
+    if !scope.starts_with("git.command.") {
+        activity::publish_log(source, scope, message, detail);
+    }
+
+    // A poisoned lock used to make every later git command panic, which froze the UI
+    // (the pending Tauri call never resolves). Logging must never be able to do that.
+    let _guard = LOG_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let log_path = resolve_log_path()?;
 
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
     }
+    activity::rotate_if_large(&log_path, MAX_LOG_FILE_BYTES);
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -5387,11 +5370,9 @@ fn resolve_log_path() -> std::io::Result<PathBuf> {
 }
 
 fn truncate_for_log(value: &str) -> String {
-    if value.len() <= LOG_DETAIL_LIMIT {
-        return value.to_string();
-    }
-
-    format!("{}\n...[truncated {} chars]", &value[..LOG_DETAIL_LIMIT], value.len() - LOG_DETAIL_LIMIT)
+    // Byte slicing here panicked whenever the cut fell inside a multi-byte character
+    // (any non-ASCII author name or path), which froze the app. `clip` cuts on a boundary.
+    activity::clip(value, LOG_DETAIL_LIMIT)
 }
 
 fn parse_status_output(output: &str) -> (String, bool, usize, usize, Vec<FileChange>, RepositoryCounts) {
@@ -5878,6 +5859,20 @@ Material:
         let summary = parse_glb_summary(&glb).unwrap();
         assert_eq!(summary.pipeline_state, "glTF 2.0");
         assert!(summary.details.iter().any(|detail| detail.label == "Meshes" && detail.value == "2"));
+    }
+
+    #[test]
+    fn logging_long_non_ascii_output_does_not_panic() {
+        // The reflog of a repo whose author is "Çağlayan Karagözler" froze the app: the log
+        // truncation sliced through a multi-byte character, panicked and poisoned the log lock.
+        let detail = "Çağlayan Karagözler ".repeat(LOG_DETAIL_LIMIT / 10);
+        // Every alignment of the 23-byte phrase, so the cut lands inside "Ç", "ğ" and "ö" at least once.
+        for offset in 0..23 {
+            let text = format!("{}{}", "x".repeat(offset), detail);
+            assert!(truncate_for_log(&text).contains("truncated"));
+        }
+        append_log("backend", "test.unicode", "non-ascii detail", Some(&detail)).unwrap();
+        append_log("backend", "test.unicode", "still logging afterwards", None).unwrap();
     }
 
     #[test]

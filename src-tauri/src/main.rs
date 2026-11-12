@@ -6,7 +6,7 @@ use git::{
     add_paths_to_gitignore, apply_commit_file_patch, create_commit, delete_branch,
     conditional_prune_branches, hard_prune_local_branches,
     create_branch, force_switch_branch, merge_branch, resolve_conflicted_files,
-    preview_merge, abort_operation, continue_operation,
+    preview_merge, abort_operation, continue_operation, cancel_git_command,
     apply_stash, drop_stash, list_stashes, stash_paths,
     cherry_pick_commit, detach_head_to_commit,
     discard_paths, export_file_from_commit,
@@ -23,6 +23,10 @@ use git::{
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            git::attach_app_handle(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             inspect_repository,
             inspect_repository_config,
@@ -56,6 +60,7 @@ pub fn run() {
             preview_merge,
             abort_operation,
             continue_operation,
+            cancel_git_command,
             resolve_conflicted_files,
             list_file_history,
             apply_commit_file_patch,
